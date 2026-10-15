@@ -1,0 +1,49 @@
+{
+  "name": "hud",
+  "version": "0.1.0",
+  "description": "Local live canvas of tickets and status monitors, drivable by humans and any agent (MCP, CLI, HTTP).",
+  "type": "module",
+  "private": true,
+  "main": "appdir/main.mjs",
+  "bin": {
+    "hud": "./bin/hud.js"
+  },
+  "engines": {
+    "node": ">=23.6"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "mcp": "node src/mcp.ts",
+    "check": "tsc --noEmit",
+    "icons": "node scripts/icons.mjs",
+    "bundle": "node scripts/build.mjs",
+    "dev": "npm run bundle && node scripts/dev.mjs",
+    "pack": "npm run icons && npm run bundle && electron-builder --dir",
+    "dist": "npm run icons && npm run bundle && electron-builder",
+    "dist:mac": "npm run icons && npm run bundle && electron-builder --mac",
+    "dist:win": "npm run icons && npm run bundle && electron-builder --win",
+    "dist:linux": "npm run icons && npm run bundle && electron-builder --linux"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.0",
+    "typescript": "^7.0.2"
+  },
+  "author": "hud contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeKnight314/hud.git"
+  },
+  "homepage": "https://github.com/CodeKnight314/hud#readme",
+  "keywords": [
+    "dashboard",
+    "monitoring",
+    "tickets",
+    "mcp",
+    "agents",
+    "local-first"
+  ]
+}

@@ -1,0 +1,9 @@
+node_modules/
+data/
+dist/
+bundle/
+appdir/main.mjs
+.claude/
+.DS_Store
+*.log
+*.tmp

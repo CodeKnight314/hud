@@ -1,0 +1,63 @@
+# electron-builder packaging for hud.
+#
+# The app shell (appdir/main.mjs) goes into resources/app (asar is off); everything the node-mode server reads at runtime
+# (the CLI bundle, web/ UI, guide, probes, package.json) is copied loose under resources/hud/ so
+# there is no asar in the server's file paths.
+appId: local.hud.dashboard
+productName: hud
+copyright: hud
+
+directories:
+  output: dist
+  buildResources: build
+  app: appdir
+
+asar: false
+
+extraResources:
+  # electron-builder's app-dir copy drops the manifest; place it ourselves into the app dir
+  - from: appdir/package.json
+    to: app/package.json
+  - from: bundle/hud.mjs
+    to: hud/bin/hud.mjs
+  - from: web
+    to: hud/web
+  - from: probes
+    to: hud/probes
+  - from: views
+    to: hud/views
+  - from: GUIDE.md
+    to: hud/GUIDE.md
+  - from: package.json
+    to: hud/package.json
+  - from: build/trayTemplate.png
+    to: trayTemplate.png
+  - from: build/trayTemplate@2x.png
+    to: trayTemplate@2x.png
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  # no Developer ID: left to electron-builder's default (ad-hoc signature on Apple silicon). Hardened runtime and
+  # entitlements only make sense with a real identity + notarization, so they are deliberately not set.
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+linux:
+  icon: build/icon.png
+  category: Utility
+  target:
+    - AppImage
+    - deb

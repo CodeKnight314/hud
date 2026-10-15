@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hud</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3Crect x='3' y='3' width='4' height='10' fill='%23fff'/%3E%3Crect x='9' y='3' width='4' height='4' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="top">
+  <span class="brand">hud</span>
+  <nav id="tabs"></nav>
+  <span class="spacer"></span>
+  <span id="who" title="actors active in the last 10 minutes"></span>
+  <button id="btn-alerts" style="display:none"></button>
+  <button id="btn-organize" title="group into frames and tidy this board (o)">organize</button>
+  <button id="btn-auto" title="keep this board organized automatically (shift+o)">auto</button>
+  <button id="btn-view" title="switch between the ticket list and the canvas (l)">list</button>
+  <button id="btn-trash" title="trash: restore or purge deleted items (T)">trash</button>
+  <button id="btn-activity" title="activity feed (a)">activity</button>
+  <button id="btn-help" title="help (?)">?</button>
+  <span id="conn" class="off" title="live connection">○ offline</span>
+</header>
+
+<main id="canvas">
+  <div id="world"></div>
+  <div id="marquee"></div>
+</main>
+
+<section id="list"></section>
+
+<div id="empty">
+  <pre>
+<b>blank canvas</b>
+
+double-click      add something here
+t m n f w         ticket · monitor · note · frame · widget
+:                 command line
+?                 help
+
+agents            hud_overview (MCP) · hud ls (CLI)</pre>
+</div>
+
+<aside id="drawer"></aside>
+<aside id="activity"><div class="phd"><span>activity</span><button data-close>×</button></div><div class="list"></div></aside>
+<aside id="trash"><div class="phd"><span>trash</span><span class="sp"></span><button data-purge-all title="empty trash">empty</button><button data-close>×</button></div><div class="list"></div></aside>
+<div id="menu"></div>
+<div id="help"></div>
+<div id="toast"></div>
+
+<footer id="bar">
+  <span id="mode">NORMAL</span>
+  <span id="cmdwrap"><span>:</span><input id="cmd" spellcheck="false" autocomplete="off"></span>
+  <span id="hint"></span>
+  <span class="spacer"></span>
+  <span id="pos"></span>
+  <span id="zoom"></span>
+</footer>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
