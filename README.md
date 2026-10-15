@@ -102,10 +102,10 @@ data dir · `src/engine.ts` monitor runner · `src/mcp.ts` MCP stdio server · `
 `src/cli.ts` CLI · `src/cliinstall.ts` the `hud` command shim · `src/client.ts` TS client · `src/summary.ts` text
 overview · `src/types.ts` data model · `src/config.ts`, `src/assets.ts`, `src/electron-runtime.ts` paths and entry
 points · `electron/main.ts` the desktop shell · `web/` UI (`app.js`, `views.js` charts, `utils.js`) · `views/` renderer
-modules · `probes/` probe modules · `scripts/` build, dev and icon scripts · `data/state.json` your data,
-`data/backups/` snapshots, `data/server.log`.
+modules · `probes/` probe modules · `scripts/` build, dev and icon scripts · your data lives in the per-user dir (`~/Library/Application Support/hud` on macOS): `state.json`,
+`backups/`, `server.log`.
 
-Env: `HUD_PORT` (7317), `HUD_DATA` (./data from source, per-user dir when packaged), `HUD_PROBES`, `HUD_VIEWS` (renderer
+Env: `HUD_PORT` (7317), `HUD_DATA` (the per-user dir), `HUD_PROBES`, `HUD_VIEWS` (renderer
 dir), `HUD_ACTOR` (name shown on changes), `HUD_SESSION` (alert session name), `HUD_URL` (server URL for clients),
 `HUD_TIMEOUT` / `HUD_MCP_TIMEOUT` (ms), `HUD_ALERT_CMD` (shell hook; alert JSON on stdin), `HUD_BIN_DIR` (where
 `hud cli install` writes), `HUD_TRAY=0` (no tray icon). Internal/dev: `HUD_SOURCE_ROOT`, `HUD_CLI_ENTRY`, `HUD_SHIM`,

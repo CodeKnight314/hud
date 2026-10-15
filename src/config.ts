@@ -5,7 +5,7 @@ import { SOURCE_ROOT, isPackaged } from './assets.ts';
 /** @deprecated alias of SOURCE_ROOT, kept for importers; assets.ts is the one place that knows */
 export const ROOT = SOURCE_ROOT;
 
-/** per-user writable dir for a packaged app, so the app itself can stay read-only */
+/** the one per-user data dir, shared by the packaged app and source runs, so hud.lock allows a single server */
 export function userDataDir(): string {
   const home = homedir();
   if (process.platform === 'darwin') return join(home, 'Library', 'Application Support', 'hud');
@@ -24,7 +24,7 @@ function parsePort(raw: string | undefined): number {
 
 export function config() {
   const packaged = isPackaged();
-  const dataDir = resolve(process.env.HUD_DATA || (packaged ? userDataDir() : join(SOURCE_ROOT, 'data')));
+  const dataDir = resolve(process.env.HUD_DATA || userDataDir());
   return {
     port: parsePort(process.env.HUD_PORT),
     dataDir,

@@ -180,7 +180,7 @@ Where the data comes from depends on how it is launched — the same command hit
 | launch | port | data |
 |---|---|---|
 | packaged app | 7317 | `~/Library/Application Support/hud` (`%APPDATA%\hud`, `$XDG_DATA_HOME/hud`) |
-| `node bin/hud.js …` from this repo | 7317 | `data/` in this repo |
+| `node bin/hud.js …` from this repo | 7317 | same per-user dir as the app |
 | `npm run dev` (Electron) | 7399 | `/tmp/hud-scratch` |
 
 To ship a source change to the app you must **rebuild** — the bundle (`bundle/hud.mjs`) holds the server code, and
