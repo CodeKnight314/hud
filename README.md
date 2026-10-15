@@ -105,9 +105,8 @@ points · `electron/main.ts` the desktop shell · `web/` UI (`app.js`, `views.js
 modules · `probes/` probe modules · `scripts/` build, dev and icon scripts · your data lives in the per-user dir (`~/Library/Application Support/hud` on macOS): `state.json`,
 `backups/`, `server.log`.
 
-Env: `HUD_PORT` (7317), `HUD_DATA` (the per-user dir), `HUD_PROBES`, `HUD_VIEWS` (renderer
-dir), `HUD_ACTOR` (name shown on changes), `HUD_SESSION` (alert session name), `HUD_URL` (server URL for clients),
-`HUD_TIMEOUT` / `HUD_MCP_TIMEOUT` (ms), `HUD_ALERT_CMD` (shell hook; alert JSON on stdin), `HUD_BIN_DIR` (where
+Env: the port (7317) and data dir (per-user) are fixed: one board, one server. `HUD_PORT`, `HUD_DATA`,
+`HUD_PROBES`, `HUD_VIEWS` and `HUD_URL` are ignored unless `HUD_SCRATCH=1` (throwaway test instances only). `HUD_ACTOR` (name shown on changes), `HUD_SESSION` (alert session name), `HUD_TIMEOUT` / `HUD_MCP_TIMEOUT` (ms), `HUD_ALERT_CMD` (shell hook; alert JSON on stdin), `HUD_BIN_DIR` (where
 `hud cli install` writes), `HUD_TRAY=0` (no tray icon). Internal/dev: `HUD_SOURCE_ROOT`, `HUD_CLI_ENTRY`, `HUD_SHIM`,
 `HUD_NO_LOGIN_SHELL`, `HUD_DEV_PORT`, `HUD_DEV_DATA`.
 

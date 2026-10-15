@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { config } from './config.ts';
+import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
 import type { Board, DecisionOption, Item, MonitorResult } from './types.ts';
 
@@ -125,7 +125,7 @@ export class Hud {
   private warned = false;
 
   constructor(opts: HudOptions = {}) {
-    this.url = (opts.url ?? process.env.HUD_URL ?? `http://localhost:${config().port}`).replace(/\/$/, '');
+    this.url = (opts.url ?? (scratch ? process.env.HUD_URL : undefined) ?? `http://localhost:${config().port}`).replace(/\/$/, '');
     this.actor = opts.actor ?? process.env.HUD_ACTOR ?? 'api';
     this.autostart = opts.autostart ?? true;
     const t = Number(process.env.HUD_TIMEOUT);

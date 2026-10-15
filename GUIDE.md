@@ -330,7 +330,7 @@ server) with esbuild.
 
 A packaged app keeps its data in the per-user dir (`~/Library/Application Support/hud`, `%APPDATA%\hud`,
 `$XDG_DATA_HOME/hud`) and seeds the example probes and renderers into `<data>/probes` and `<data>/views` on first
-run. `HUD_DATA` / `HUD_PROBES` / `HUD_PORT` still override everything.
+run. The port and data dir are fixed (one board, one server); the `HUD_*` path/port overrides only apply with `HUD_SCRATCH=1`.
 
 ## Connect your agent
     hud mcp install                 # claude + codex + opencode (skips any that aren't installed)

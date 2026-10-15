@@ -13,6 +13,13 @@ export function userDataDir(): string {
   return join(process.env.XDG_DATA_HOME || join(home, '.local', 'share'), 'hud');
 }
 
+/**
+ * One board, one server: port 7317 and the per-user data dir are the only real configuration. HUD_PORT / HUD_DATA /
+ * HUD_PROBES / HUD_VIEWS / HUD_URL are honoured only with HUD_SCRATCH=1 (dev launcher, throwaway test instances).
+ */
+export const scratch = process.env.HUD_SCRATCH === '1';
+const env = (k: string) => (scratch ? process.env[k] : undefined);
+
 function parsePort(raw: string | undefined): number {
   if (raw === undefined || raw === '') return 7317;
   const n = Number(raw);
@@ -24,14 +31,14 @@ function parsePort(raw: string | undefined): number {
 
 export function config() {
   const packaged = isPackaged();
-  const dataDir = resolve(process.env.HUD_DATA || userDataDir());
+  const dataDir = resolve(env('HUD_DATA') || userDataDir());
   return {
-    port: parsePort(process.env.HUD_PORT),
+    port: parsePort(env('HUD_PORT')),
     dataDir,
     // packaged: probes live beside the user's data (seeded from the shipped defaults on first run)
-    probesDir: resolve(process.env.HUD_PROBES || (packaged ? join(dataDir, 'probes') : join(SOURCE_ROOT, 'probes'))),
+    probesDir: resolve(env('HUD_PROBES') || (packaged ? join(dataDir, 'probes') : join(SOURCE_ROOT, 'probes'))),
     // agent-authored chart renderers, loaded by the web UI; same layout rule as probes
-    viewsDir: resolve(process.env.HUD_VIEWS || (packaged ? join(dataDir, 'views') : join(SOURCE_ROOT, 'views'))),
+    viewsDir: resolve(env('HUD_VIEWS') || (packaged ? join(dataDir, 'views') : join(SOURCE_ROOT, 'views'))),
     packaged,
   };
 }

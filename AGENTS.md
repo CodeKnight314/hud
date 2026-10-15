@@ -25,7 +25,7 @@ src/mcp.ts       MCP stdio server (hand-written JSON-RPC) → HTTP client; also 
 src/cli.ts       `hud` CLI → HTTP client
 src/client.ts    the HTTP client (also the public TS API for external processes); autostarts the server
 src/summary.ts   plain-text board overview used by `hud ls` / hud_overview
-src/config.ts    ROOT and env config (HUD_PORT, HUD_DATA, HUD_PROBES); packaged builds use per-user dirs
+src/config.ts    ROOT and env config (fixed port + per-user data dir; HUD_PORT/HUD_DATA/HUD_PROBES/HUD_VIEWS/HUD_URL need HUD_SCRATCH=1); packaged builds use per-user dirs
 src/assets.ts    source-vs-packaged file access. `isPackaged()` (Electron), `asset()`, `assetKeys()`,
                  SOURCE_ROOT, isElectron/isElectronDev. The ONLY place that knows where files live
 src/electron-runtime.ts  `cliInvocation()` / `bundledCli()` — how the app shell runs the CLI+server in node mode
@@ -108,7 +108,7 @@ node --check web/app.js             # syntax-check the UI
 ```
 There is no test suite yet. Verify changes against a **scratch instance**, never the user's live one:
 ```sh
-export HUD_PORT=7399 HUD_DATA=/tmp/hud-scratch
+export HUD_SCRATCH=1 HUD_PORT=7399 HUD_DATA=/tmp/hud-scratch
 node bin/hud.js start
 node bin/hud.js add ticket "test" --group G && node bin/hud.js ls
 node bin/hud.js stop                                              # same env vars, or it stops the live server
@@ -205,7 +205,7 @@ process — new or changed MCP tools appear only after they reconnect (`/mcp` in
 
 ## Gotchas
 - `hud stop` asks whatever answers at `HUD_URL` / `HUD_PORT` (default 7317) to shut down, so the **port is the
-  selector**: set `HUD_PORT` and `HUD_DATA` together. Only when nothing answers does it fall back to `$HUD_DATA/hud.pid`,
+  selector**: set `HUD_SCRATCH=1`, `HUD_PORT` and `HUD_DATA` together (without HUD_SCRATCH they are ignored and you hit the live board). Only when nothing answers does it fall back to `$HUD_DATA/hud.pid`,
   and then it signals that pid only if it really is a hud server. A bare `hud stop` in a shell without the scratch vars
   has already killed the live instance this way. When in doubt, kill the pid you found with `lsof`/`pgrep`. `hud status`
   shows pid, port, data dir and mode without autostarting anything.

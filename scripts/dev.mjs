@@ -13,6 +13,7 @@ const env = {
   ...process.env,
   HUD_SOURCE_ROOT: ROOT,
   HUD_CLI_ENTRY: join(ROOT, 'bundle', 'hud.mjs'),
+  HUD_SCRATCH: '1',
   HUD_PORT: process.env.HUD_DEV_PORT || '7399',
   HUD_DATA: process.env.HUD_DEV_DATA || join(tmpdir(), 'hud-scratch'),
 };
