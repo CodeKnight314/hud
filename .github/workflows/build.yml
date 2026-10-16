@@ -1,0 +1,68 @@
+name: native builds
+
+on:
+  push:
+    branches:
+      - 'release/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+            args: --mac dmg --arm64
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+            args: --mac dmg --x64
+          - runner: windows-2025
+            platform: windows
+            arch: x64
+            args: --win nsis --x64
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+            args: --linux AppImage deb --x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build unsigned native installers
+        run: npm run dist -- --publish never --config.directories.output=dist/release ${{ matrix.args }}
+      - name: Check packaged runtime
+        run: node scripts/check-packaged.mjs dist/release ${{ matrix.arch }}
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: hud-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/release/*.dmg
+            dist/release/*.exe
+            dist/release/*.AppImage
+            dist/release/*.deb
+          if-no-files-found: error
+          retention-days: 7

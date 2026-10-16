@@ -26,40 +26,335 @@ const list = (v) => (Array.isArray(v) ? v : []); // util state is free-form JSON
 
 // ---------------------------------------------------------------- markdown (shared by notes, ticket bodies, the markdown util)
 
-const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+const SAFE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
-function mdLine(ln, i) {
-  let m;
-  if ((m = ln.match(/^(\s*)- \[( |x|X)\] (.*)$/))) {
-    const done = m[2] !== ' ';
-    return `<div>${m[1].replace(/ /g, '&nbsp;')}<span class="chk" data-line="${i}">${done ? '☒' : '☐'}</span> <span class="${done ? 'done' : ''}">${inline(m[3])}</span></div>`;
+function safeHref(value) {
+  const href = String(value ?? '').trim();
+  if (!href || /[\u0000-\u001f\u007f\s]/.test(href)) return null;
+  try {
+    const url = new URL(href);
+    return SAFE_PROTOCOLS.has(url.protocol.toLowerCase()) ? href : null;
+  } catch {
+    return null;
   }
-  if ((m = ln.match(/^#{1,3} (.*)$/))) return `<div class="h">${inline(m[1])}</div>`;
-  if ((m = ln.match(/^(\s*)[-*] (.*)$/))) return `<div>${m[1].replace(/ /g, '&nbsp;')}· ${inline(m[2])}</div>`;
-  return `<div>${inline(ln)}</div>`;
 }
 
-/** markdown subset -> HTML. Every interpolation goes through esc(); `data-line` is the source line index. */
-export function md(text) {
-  const lines = String(text ?? '').split('\n');
-  const out = [];
-  for (let i = 0; i < lines.length; i++) {
-    // table: header row, |---| separator, body rows
-    if (/^\s*\|.*\|\s*$/.test(lines[i]) && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1] || '') && lines[i + 1].includes('-')) {
-      const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
-      const align = cells(lines[i + 1]).map((c) => (c.endsWith(':') ? (c.startsWith(':') ? 'center' : 'right') : 'left'));
-      const head = cells(lines[i]);
-      const rows = [];
-      i += 2;
-      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(cells(lines[i++]));
-      i--;
-      const td = (tag, c, j) => `<${tag} style="text-align:${align[j] || 'left'}">${inline(c)}</${tag}>`;
-      out.push(`<table><thead><tr>${head.map((c, j) => td('th', c, j)).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c, j) => td('td', c, j)).join('')}</tr>`).join('')}</tbody></table>`);
+function markerAt(source, i) {
+  const triple = source.slice(i, i + 3);
+  if (triple === '***' || triple === '___') return triple;
+  const double = source.slice(i, i + 2);
+  if (double === '**' || double === '__') return double;
+  if (source[i] === '*' || source[i] === '_') return source[i];
+  return '';
+}
+
+function markerRun(source, i, marker) {
+  let n = 0;
+  while (source[i + n] === marker[0]) n++;
+  return n;
+}
+
+function markerCanOpen(source, i, marker) {
+  if (!source[i + marker.length] || /\s/.test(source[i + marker.length])) return false;
+  if (marker[0] === '_' && i > 0 && /\w/.test(source[i - 1])) return false;
+  return true;
+}
+
+function markerCanClose(source, i, marker) {
+  if (i <= 0 || /\s/.test(source[i - 1])) return false;
+  if (marker[0] === '_' && i + marker.length < source.length && /\w/.test(source[i + marker.length])) return false;
+  return true;
+}
+
+function closingMarker(source, from, marker) {
+  for (let i = from; i < source.length; i++) {
+    if (!source.startsWith(marker, i)) continue;
+    const run = markerRun(source, i, marker);
+    if (marker.length === 1 && run > 1) {
+      if (run >= 3) return i + run - 1;
+      i += run - 1;
       continue;
     }
-    out.push(mdLine(lines[i], i));
+    if (!markerCanClose(source, i, marker)) continue;
+    if (marker.length === 2 && run > marker.length) return i + run - marker.length;
+    return i;
+  }
+  return -1;
+}
+
+function emphasis(s, depth = 0) {
+  const source = String(s ?? '');
+  if (depth >= 32) return esc(source);
+  let html = '';
+  let plain = '';
+  const flush = () => {
+    if (plain) html += esc(plain);
+    plain = '';
+  };
+  for (let i = 0; i < source.length;) {
+    const marker = markerAt(source, i);
+    if (marker && markerCanOpen(source, i, marker)) {
+      const end = closingMarker(source, i + marker.length, marker);
+      if (end > i + marker.length) {
+        flush();
+        const content = emphasis(source.slice(i + marker.length, end), depth + 1);
+        html += marker.length === 1 ? `<i>${content}</i>` : marker.length === 2 ? `<b>${content}</b>` : `<b><i>${content}</i></b>`;
+        i = end + marker.length;
+        continue;
+      }
+    }
+    plain += source[i++];
+  }
+  flush();
+  return html;
+}
+
+function linkAt(source, start, allowImage = false) {
+  if (source[start] !== '[' || (!allowImage && source[start - 1] === '!')) return null;
+  let close = start + 1;
+  while (close < source.length && source[close] !== ']') close++;
+  if (source[close] !== ']' || source[close + 1] !== '(') return null;
+  let end = close + 2;
+  let depth = 0;
+  while (end < source.length) {
+    const c = source[end];
+    if (c === '(') depth++;
+    else if (c === ')' && depth-- === 0) break;
+    end++;
+  }
+  if (source[end] !== ')') return null;
+  const url = source.slice(close + 2, end).trim();
+  return { end: end + 1, label: source.slice(start + 1, close), url, raw: source.slice(start, end + 1) };
+}
+
+function stripLinks(source) {
+  let out = '';
+  for (let i = 0; i < source.length;) {
+    const image = source[i] === '!' && source[i + 1] === '[';
+    const start = image ? i + 1 : i;
+    const link = source[start] === '[' ? linkAt(source, start, image) : null;
+    if (link) {
+      out += link.label;
+      i = link.end;
+    } else {
+      out += source[i++];
+    }
+  }
+  return out;
+}
+
+function inline(s) {
+  const source = String(s ?? '');
+  let html = '';
+  let plain = '';
+  const flush = () => {
+    if (plain) html += emphasis(plain);
+    plain = '';
+  };
+  for (let i = 0; i < source.length;) {
+    if (source[i] === '`') {
+      let run = 1;
+      while (source[i + run] === '`') run++;
+      const fence = '`'.repeat(run);
+      const end = source.indexOf(fence, i + run);
+      if (end >= 0) {
+        flush();
+        html += `<code>${esc(source.slice(i + run, end))}</code>`;
+        i = end + run;
+        continue;
+      }
+    }
+    if (source[i] === '[') {
+      const link = linkAt(source, i);
+      if (link) {
+        flush();
+        const href = safeHref(link.url);
+        html += href ? `<a href="${esc(href)}">${inline(link.label)}</a>` : esc(link.raw);
+        i = link.end;
+        continue;
+      }
+    }
+    if (source[i] === '<') {
+      const end = source.indexOf('>', i + 1);
+      if (end >= 0) {
+        const candidate = source.slice(i + 1, end).trim();
+        const href = safeHref(candidate);
+        if (href) {
+          flush();
+          html += `<a href="${esc(href)}">${esc(candidate)}</a>`;
+          i = end + 1;
+          continue;
+        }
+      }
+    }
+    plain += source[i++];
+  }
+  flush();
+  return html;
+}
+
+function tableCells(line) {
+  let source = String(line ?? '').trim();
+  if (!source.includes('|')) return null;
+  if (source.startsWith('|')) source = source.slice(1);
+  if (source.endsWith('|') && !source.endsWith('\\|')) source = source.slice(0, -1);
+  const cells = [];
+  let cell = '';
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === '\\' && source[i + 1] === '|') {
+      cell += '|';
+      i++;
+    } else if (source[i] === '|') {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += source[i];
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function tableSeparator(line) {
+  const cells = tableCells(line);
+  return !!cells?.length && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+
+function tableHTML(lines) {
+  const head = tableCells(lines[0]) || [];
+  const separator = tableCells(lines[1]) || [];
+  const align = separator.map((cell) => (cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : 'left'));
+  const cellHTML = (tag, cell, col) => `<${tag} style="text-align:${align[col] || 'left'}">${inline(cell)}</${tag}>`;
+  const rows = lines.slice(2).map((row) => {
+    const cells = tableCells(row) || [];
+    return `<tr>${cells.map((cell, col) => cellHTML('td', cell, col)).join('')}</tr>`;
+  });
+  return `<div class="md-table"><table><thead><tr>${head.map((cell, col) => cellHTML('th', cell, col)).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+
+function listItem(line, lineNumber, readonly) {
+  const match = line.match(/^(\s*)([-+*]|\d+[.)])\s+(.*)$/);
+  if (!match) return '';
+  const indent = match[1].replace(/ /g, '&nbsp;');
+  const task = match[3].match(/^\[( |x|X)\](?:\s+(.*))?$/);
+  if (!task) return `${indent}${inline(match[3])}`;
+  const done = task[1] !== ' ';
+  const glyph = done ? '☒' : '☐';
+  const check = readonly || match[2] !== '-' ? glyph : `<span class="chk" data-line="${lineNumber}">${glyph}</span>`;
+  const body = inline(task[2] || '');
+  return `${indent}${check} ${done ? `<span class="done">${body}</span>` : body}`;
+}
+
+function listMatch(line) {
+  const match = line.match(/^\s*(?:[-+*]|\d+[.)])\s+/);
+  if (!match) return null;
+  return /^\s*\d+[.)]\s+/.test(line) ? 'ol' : 'ul';
+}
+
+function fenceMatch(line) {
+  const match = String(line).match(/^ {0,3}(`{3,}|~{3,}).*$/);
+  return match ? { char: match[1][0], length: match[1].length } : null;
+}
+
+function isFenceEnd(line, fence) {
+  const re = new RegExp(`^ {0,3}${fence.char}{${fence.length},}\\s*$`);
+  return re.test(line);
+}
+
+function headingMatch(line) {
+  const match = String(line).match(/^ {0,3}(#{1,3})(?:[ \t]+(.*)|[ \t]*)$/);
+  if (!match) return null;
+  return { level: match[1].length, text: (match[2] || '').replace(/[ \t]+#+[ \t]*$/, '').trim() };
+}
+
+/** markdown subset -> HTML. Default mode retains note task-list click hooks. */
+export function md(text, options = {}) {
+  const readonly = !!options?.readonly;
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { i++; continue; }
+    const fence = fenceMatch(lines[i]);
+    if (fence) {
+      const code = [];
+      i++;
+      while (i < lines.length && !isFenceEnd(lines[i], fence)) code.push(lines[i++]);
+      if (i < lines.length) i++;
+      out.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`);
+      continue;
+    }
+    const heading = headingMatch(lines[i]);
+    if (heading) {
+      out.push(`<h${heading.level} class="h">${inline(heading.text)}</h${heading.level}>`);
+      i++;
+      continue;
+    }
+    if (tableCells(lines[i]) && tableSeparator(lines[i + 1] || '')) {
+      const rows = [lines[i], lines[i + 1]];
+      i += 2;
+      while (i < lines.length && lines[i].trim() && tableCells(lines[i])) rows.push(lines[i++]);
+      out.push(tableHTML(rows));
+      continue;
+    }
+    const kind = listMatch(lines[i]);
+    if (kind) {
+      const items = [];
+      while (i < lines.length && listMatch(lines[i]) === kind) {
+        items.push(`<li>${listItem(lines[i], i, readonly)}</li>`);
+        i++;
+      }
+      out.push(`<${kind}>${items.join('')}</${kind}>`);
+      continue;
+    }
+    const paragraph = [];
+    while (i < lines.length && lines[i].trim()) {
+      if (paragraph.length && (fenceMatch(lines[i]) || headingMatch(lines[i]) || listMatch(lines[i]) || (tableCells(lines[i]) && tableSeparator(lines[i + 1] || '')))) break;
+      paragraph.push(inline(lines[i++]));
+    }
+    out.push(`<p>${paragraph.join('<br>')}</p>`);
   }
   return out.join('');
+}
+
+/** Strip the supported Markdown syntax for compact, human-readable excerpts. */
+export function plainText(text) {
+  const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const out = [];
+  let fence = null;
+  for (const sourceLine of lines) {
+    if (fence) {
+      if (isFenceEnd(sourceLine, fence)) fence = null;
+      else out.push(sourceLine);
+      continue;
+    }
+    const opening = fenceMatch(sourceLine);
+    if (opening) { fence = opening; continue; }
+    if (tableSeparator(sourceLine)) continue;
+    const table = tableCells(sourceLine);
+    let line = table ? table.join(' | ') : sourceLine;
+    line = stripLinks(line)
+      .replace(/^ {0,3}#{1,3}[ \t]+/, '')
+      .replace(/^\s*[-+*]\s+\[( |x|X)\]\s*/, (_, mark) => (mark === ' ' ? '☐ ' : '☒ '))
+      .replace(/^\s*[-+*]\s+/, '')
+      .replace(/^\s*\d+[.)]\s+/, '')
+      .replace(/`+([^`]*?)`+/g, '$1')
+      .replace(/(__|\*\*)([\s\S]*?)\1/g, '$2')
+      .replace(/(^|[^\w])(_|\*)(?=\S)([\s\S]*?\S)\2(?!\w)/g, '$1$3')
+      .replace(/<((?:https?|mailto):[^>\s]+)>/gi, '$1')
+      .replace(/<\/?[A-Za-z][^>]*>/g, '')
+      .replace(/\\([\\`*_[\]{}()#+.!-])/g, '$1');
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** Render a report as escaped plain text or non-interactive Markdown. */
+export function reportHTML(text, format = 'plain') {
+  const value = String(text ?? '');
+  const kind = String(format ?? 'plain').toLowerCase();
+  if (kind === 'md' || kind === 'markdown' || kind === 'rich') return md(value, { readonly: true });
+  return esc(value.replace(/\r\n?/g, '\n')).replace(/\n/g, '<br>');
 }
 
 // ---------------------------------------------------------------- safe arithmetic (no eval, no Function)

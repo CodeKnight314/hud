@@ -20,13 +20,19 @@ HTML string (or a DOM node). `ctx`:
 
 Use `helpers.svg(item, cls, W, H, body, hits)` to get the standard monochrome SVG wrapper.
 
+This contract is for trusted renderer modules installed in `views/`. For a data-bound program stored with a board,
+use the isolated `hud_graph` or `hud_canvas` flow documented in [GUIDE.md](../GUIDE.md); those programs have their own
+bindings, SDK and explicit capability grants. Do not treat a Markdown code block as executable code.
+
 ## Rules
 
-- **Monochrome.** The canvas has no colour: use fill/stroke opacity for emphasis. The only colours on
-  screen are the two semantic states (red = needs attention, green = done), applied by the card itself.
+- **Monochrome charts.** Use fill/stroke opacity for emphasis. Cards reserve red for blocked/decision/error states and
+  green for done/ok; renderer content should not add semantic colors.
 - **Never throw.** A module that throws shows its error inside its own card, but you should still guard.
 - **Size to `w`/`h`.** Cards resize; do not hard-code a canvas size.
 - **No network, no imports from `src/`.** Modules run in the page.
+- **Follow the HUD visual contract.** Include readable units and provenance, and avoid clipping or overlap; see
+  [STYLE.md](../STYLE.md).
 
 ## Reloading
 

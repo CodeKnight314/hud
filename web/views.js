@@ -23,6 +23,7 @@ const hhmm = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute
 
 export const DISPLAY_KINDS = [
   'auto', 'value', 'progress', 'status', 'text', 'log', 'spark',
+  'composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline',
   'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut',
   'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d',
 ];
@@ -46,11 +47,10 @@ function dig(obj, path) {
 export function seriesOf(it) {
   const useP = it.progress != null && !(it.max && typeof it.value === 'number');
   const key = useP ? 'p' : 'v';
-  const pts = (it.history || [])
-    .map((h) => ({ t: h.t, v: h[key] }))
-    .filter((p) => p.v !== null && p.v !== undefined && Number.isFinite(Number(p.v)))
-    .map((p) => ({ t: p.t, v: Number(p.v) }));
-  return { pts, key };
+  const allPts = (it.history || [])
+    .map((h) => ({ t: h.t, v: h[key], e: h.e || 'unknown' }))
+    .map((p) => ({ ...p, v: p.v === null || p.v === undefined || !Number.isFinite(Number(p.v)) ? null : Number(p.v) }));
+  return { pts: allPts.filter((p) => p.v !== null), allPts, key };
 }
 
 /**
@@ -65,16 +65,16 @@ export function categoriesOf(it, plot) {
     return raw
       .map((e, i) =>
         Array.isArray(e)
-          ? { name: String(e[0]), value: Number(e[1]) }
+          ? { name: String(e[0]), value: e[1] == null ? NaN : Number(e[1]) }
           : typeof e === 'object' && e !== null
-            ? { name: String(e.label ?? e.name ?? i), value: Number(e.value) }
-            : { name: String(i), value: Number(e) },
+            ? { name: String(e.label ?? e.name ?? i), value: e.value == null ? NaN : Number(e.value) }
+            : { name: String(i), value: e == null ? NaN : Number(e) },
       )
       .filter((e) => Number.isFinite(e.value));
   }
   if (typeof raw === 'object') {
     return Object.entries(raw)
-      .map(([name, value]) => ({ name, value: Number(value) }))
+      .map(([name, value]) => ({ name, value: value == null ? NaN : Number(value) }))
       .filter((e) => Number.isFinite(e.value));
   }
   return [];
@@ -175,24 +175,63 @@ const shade = (i, n) => 0.14 + 0.72 * (1 - (n <= 1 ? 0 : i / (n - 1)));
 // ---------------------------------------------------------------- 1D: line / area / bars
 
 export function lineSVG(it, w, h, plot = {}) {
-  const { pts, key } = viewed(it, plot);
+  const { pts: basePts, key } = viewed(it, plot, true);
+  const lines = lineSeriesOf(it, basePts, plot);
   const W = Math.max(70, w), H = Math.max(54, h);
-  if (pts.length < 2) return EMPTY;
-  const vals = pts.map((p) => p.v);
+  const valid = lines.flatMap((series) => series.pts.filter((p) => p.v != null));
+  if (valid.length < 2) return EMPTY;
+  const targets = targetList(it, plot);
+  const vals = valid.map((p) => p.v).concat(targets.map((target) => target.value));
   const { lo, hi } = rangeOf(vals, plot);
-  const L = 38, R = 6, T = 8, B = 16, n = pts.length;
-  const X = (i) => L + (i / (n - 1)) * (W - L - R);
+  const L = 38, R = 6, T = 8, B = 16;
+  const times = valid.map((p) => Number(p.t)).filter(Number.isFinite);
+  const timeLo = minOf(times), timeHi = maxOf(times);
+  const useTime = Number.isFinite(timeLo) && Number.isFinite(timeHi) && timeHi > timeLo;
+  const X = (p, i, series) => useTime && Number.isFinite(Number(p.t))
+    ? L + ((Number(p.t) - timeLo) / (timeHi - timeLo)) * (W - L - R)
+    : L + (i / Math.max(1, series.pts.length - 1)) * (W - L - R);
   const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const cl = (v) => clamp(Y(v), T - 2, H - B + 2);
-  const d = vals.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${cl(v).toFixed(1)}`).join(' ');
-  const area = `${d} L${X(n - 1).toFixed(1)} ${(H - B).toFixed(1)} L${X(0).toFixed(1)} ${(H - B).toFixed(1)} Z`;
+  const segments = (series) => {
+    const out = [];
+    let segment = [];
+    series.pts.forEach((p, i) => {
+      if (p.v == null) { if (segment.length) out.push(segment); segment = []; }
+      else {
+        if (segment.length && segment[segment.length - 1].e !== p.e) { out.push(segment); segment = []; }
+        segment.push({ ...p, i, x: X(p, i, series) });
+      }
+    });
+    if (segment.length) out.push(segment);
+    return out;
+  };
+  const paths = lines.flatMap((series) => segments(series).map((segment) => ({
+    series,
+    segment,
+    d: segment.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${cl(p.v).toFixed(1)}`).join(' '),
+  })));
+  const area = paths.map(({ segment, d }) => segment.length > 1
+    ? `<path d="${d} L${segment[segment.length - 1].x.toFixed(1)} ${(H - B).toFixed(1)} L${segment[0].x.toFixed(1)} ${(H - B).toFixed(1)} Z" fill="rgba(255,255,255,.06)"/>`
+    : '').join('');
+  const linePaths = paths.map(({ d, series, segment }, i) => {
+    const pattern = { reported: '5 3', estimate: '1 3', unknown: '2 5' }[segment[0]?.e || 'unknown'];
+    return `<path d="${d}" fill="none" stroke="#fff" stroke-width="${i ? '1' : '1.2'}"${pattern ? ` stroke-dasharray="${pattern}"` : ''}><title>${esc(series.label)} · ${esc(segment[0]?.e || 'unknown')}</title></path>`;
+  }).join('');
+  const lastTime = maxOf(times);
+  const firstTime = minOf(times);
   const yl = [hi, (hi + lo) / 2, lo].map((v) => `<text x="4" y="${(cl(v) + 3).toFixed(1)}">${fmt(v)}</text>`).join('');
-  const xl = `<text x="${L}" y="${H - 3}">${hhmm(pts[0].t)}</text><text x="${W - R}" y="${H - 3}" text-anchor="end">${hhmm(pts[n - 1].t)}</text>`;
+  const xl = Number.isFinite(firstTime) && Number.isFinite(lastTime) ? `<text x="${L}" y="${H - 3}">${hhmm(firstTime)}</text><text x="${W - R}" y="${H - 3}" text-anchor="end">${hhmm(lastTime)}</text>` : '';
   const dots = plot.points
-    ? vals.map((v, i) => `<circle cx="${X(i).toFixed(1)}" cy="${cl(v).toFixed(1)}" r="1.8" fill="#fff"/>`).join('')
+    ? lines.flatMap((series) => series.pts.map((p, i) => p.v == null ? '' : `<circle cx="${X(p, i, series).toFixed(1)}" cy="${cl(p.v).toFixed(1)}" r="1.8" fill="#fff"/>`)).join('')
     : '';
-  const hits = pts.map((p, i) => ({ px: X(i), py: cl(p.v), value: p.v, t: p.t }));
-  return svg(it, 'line', W, H, `<path d="${area}" fill="rgba(255,255,255,.06)"/><path d="${d}" fill="none" stroke="#fff" stroke-width="1.2"/>${dots}${thresholdLines(it, key, lo, hi, cl, W, L, R)}${yl}${xl}`, hits);
+  const hits = lines.flatMap((series) => series.pts.map((p, i) => p.v == null ? null : ({ px: X(p, i, series), py: cl(p.v), value: p.v, t: p.t, label: series.label })).filter(Boolean));
+  const targetLines = targets.filter((target) => target.value >= lo && target.value <= hi).map((target) => {
+    const y = cl(target.value).toFixed(1);
+    return `<g class="target"><line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#aaa" stroke-dasharray="2 3"/><text x="${W - R}" y="${(Number(y) - 2).toFixed(1)}" text-anchor="end">${esc(target.label || 'target')} ${fmt(target.value)}</text></g>`;
+  }).join('');
+  const events = eventMarkers(it, plot, useTime ? timeLo : firstTime, useTime ? timeHi : lastTime, (t) => useTime && timeHi > timeLo ? L + ((t - timeLo) / (timeHi - timeLo)) * (W - L - R) : null, T, H - B);
+  const legend = lines.length > 1 ? `<text x="${L}" y="${T + 8}">${lines.map((series) => esc(series.label)).join(' · ')}</text>` : '';
+  return svg(it, 'line', W, H, `${area}${targetLines}${events}${linePaths}${dots}${thresholdLines(it, key, lo, hi, cl, W, L, R)}${yl}${xl}${legend}`, hits);
 }
 
 export function areaSVG(it, w, h, plot = {}) {
@@ -521,19 +560,219 @@ export function gaugeSVG(it, w, h, plot = {}) {
   return svg(it, 'gauge', W, H, body, [{ px: cx + r * Math.cos(Math.PI * (1 + p / 100)), py: cy + r * Math.sin(Math.PI * (1 + p / 100)), value: p, label: 'percent' }]);
 }
 
+// ---------------------------------------------------------------- semantic monitor views
+
+function valueOf(it) {
+  return it?.value !== null && it?.value !== undefined ? it.value : it?.label;
+}
+
+function numberOf(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function targetList(it, plot = {}) {
+  const targets = Array.isArray(plot?.targets) ? plot.targets : [];
+  const values = targets.map((target) => typeof target === 'number' ? { value: target } : target);
+  if (it?.metric?.target != null && !values.some((target) => Number(target?.value) === Number(it.metric.target))) {
+    values.push({ value: it.metric.target, label: 'target' });
+  }
+  return values
+    .map((target) => ({ value: numberOf(target?.value), label: target?.label == null ? '' : String(target.label) }))
+    .filter((target) => target.value !== null);
+}
+
+function lineSeriesOf(it, basePts, plot) {
+  const raw = Array.isArray(it?.plotSeries) ? it.plotSeries.filter((series) => Array.isArray(series?.history)) : [];
+  if (!raw.length) return [{ label: String(it?.metric?.key || it?.label || it?.title || 'value'), unit: it?.metric?.unit || it?.unit || '', pts: basePts }];
+  const preferredUnit = String(it?.metric?.unit || it?.unit || raw[0]?.unit || '');
+  const compatible = raw.filter((series) => !series.unit || !preferredUnit || String(series.unit) === preferredUnit);
+  const selected = Array.isArray(plot?.metrics) && plot.metrics.length
+    ? compatible.filter((series) => plot.metrics.includes(series.label))
+    : compatible;
+  return (selected.length ? selected : compatible).map((series, index) => ({
+    label: String(series.label || `series ${index + 1}`),
+    unit: String(series.unit || preferredUnit),
+    pts: series.history.map((point) => ({
+      t: point?.t,
+      e: point?.e || 'unknown',
+      v: point?.v === null || point?.v === undefined || !Number.isFinite(Number(point.v)) ? null : Number(point.v),
+    })),
+  }));
+}
+
+function eventTime(event) {
+  if (typeof event?.time === 'number' && Number.isFinite(event.time)) return event.time;
+  const t = Date.parse(event?.time);
+  return Number.isFinite(t) ? t : null;
+}
+
+function eventMarkers(it, plot, t0, t1, X, top, bottom) {
+  const events = Array.isArray(plot?.events) ? plot.events : (Array.isArray(it?.plot?.events) ? it.plot.events : []);
+  return events.map((event) => {
+    const t = eventTime(event);
+    if (t === null || t < t0 || t > t1 || !X) return '';
+    const x = X(t);
+    if (x === null || !Number.isFinite(x)) return '';
+    const title = String(event.text ?? event.id ?? 'event');
+    return `<g class="event"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top}" y2="${bottom}" stroke="#777" stroke-dasharray="1 3"/><text x="${(x + 2).toFixed(1)}" y="${top + 8}"><title>${esc(title)}</title>${esc(title.slice(0, 18))}</text></g>`;
+  }).join('');
+}
+
+export function compositeSVG(it, w, h, plot = {}) {
+  const W = Math.max(90, w), H = Math.max(54, h);
+  const value = valueOf(it);
+  const unit = it?.metric?.unit || it?.unit || '';
+  const pts = seriesOf(it).allPts.slice(-Math.max(2, Math.floor(W / 10)));
+  const defined = pts.filter((point) => point.v != null);
+  const target = targetList(it, plot)[0];
+  const nums = defined.map((point) => point.v).concat(numberOf(value) ?? [], target ? [target.value] : []);
+  const lo = nums.length ? minOf(nums) : 0;
+  const hi = nums.length ? maxOf(nums) : 1;
+  const span = hi - lo || Math.max(1, Math.abs(lo) * 1e-6);
+  const left = 4, right = W - 4, top = Math.max(22, H * 0.48), bottom = H - 5;
+  const X = (index) => left + (index / Math.max(1, pts.length - 1)) * (right - left);
+  const Y = (number) => bottom - ((number - lo) / span) * Math.max(5, bottom - top);
+  const paths = [];
+  let seg = [];
+  pts.forEach((point, i) => {
+    if (point.v == null) { if (seg.length) paths.push(seg); seg = []; }
+    else seg.push({ x: X(i), y: Y(point.v), point });
+  });
+  if (seg.length) paths.push(seg);
+  const trend = paths.map((part) => `<path d="${part.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="#fff" stroke-width="1"/>`).join('');
+  const targetY = target && target.value >= lo && target.value <= hi ? Y(target.value).toFixed(1) : null;
+  const targetLine = targetY === null ? '' : `<line x1="${left}" x2="${right}" y1="${targetY}" y2="${targetY}" stroke="#777" stroke-dasharray="2 3"><title>${esc(target.label || 'target')} ${fmt(target.value)}</title></line>`;
+  const valueText = esc(fmt(value));
+  const unitText = unit ? `<text x="${Math.min(W - 4, 8 + valueText.length * 10)}" y="${Math.max(18, H * 0.4)}">${esc(unit)}</text>` : '';
+  const targetLabel = target ? `<text x="${W - 4}" y="${H - 4}" text-anchor="end">${esc(target.label || 'target')} ${fmt(target.value)}</text>` : '';
+  const hits = defined.map((point) => ({ px: X(pts.indexOf(point)), py: Y(point.v), value: point.v, t: point.t }));
+  return svg(it, 'composite', W, H, `<text x="4" y="${Math.max(17, H * 0.35)}" class="gv">${valueText}</text>${unitText}${targetLine}${trend}${targetLabel}`, hits);
+}
+
+export function capacitySVG(it, w, h) {
+  const W = Math.max(90, w), H = Math.max(54, h);
+  const value = numberOf(valueOf(it));
+  const capacity = numberOf(it?.metric?.denominator) ?? numberOf(it?.max);
+  const unit = it?.metric?.unit || it?.unit || '';
+  if (value === null || capacity === null || capacity <= 0) return compositeSVG(it, W, H);
+  const ratio = clamp(value / capacity, 0, 1);
+  const x = 4, width = W - 8, barY = H * 0.58, barH = Math.max(6, Math.min(12, H * 0.18));
+  const label = `${fmt(value)} / ${fmt(capacity)}${unit ? ` ${unit}` : ''}`;
+  const body = `<text x="4" y="${Math.max(17, H * 0.34)}" class="gv">${esc(label)}</text><rect x="${x}" y="${barY.toFixed(1)}" width="${width.toFixed(1)}" height="${barH.toFixed(1)}" fill="#222" stroke="#777"/><rect x="${x}" y="${barY.toFixed(1)}" width="${(width * ratio).toFixed(1)}" height="${barH.toFixed(1)}" fill="#fff"/><text x="${W - 4}" y="${H - 4}" text-anchor="end">${(ratio * 100).toFixed(0)}%</text>`;
+  return svg(it, 'capacity', W, H, body, [{ px: x + width * ratio, py: barY + barH / 2, value, label: `${fmt(value)} / ${fmt(capacity)}` }]);
+}
+
+function tableShape(it) {
+  const data = it?.data;
+  if (!data || !Array.isArray(data.rows)) return { columns: [], rows: [] };
+  const first = data.rows.find((row) => row && typeof row === 'object');
+  const columns = (Array.isArray(data.columns) && data.columns.length ? data.columns : Object.keys(first || {}).map((key) => ({ key })))
+    .filter((column) => column && column.key != null)
+    .slice(0, 50)
+    .map((column) => ({ key: String(column.key), label: String(column.label ?? column.key), unit: column.unit == null ? '' : String(column.unit) }));
+  return { columns, rows: data.rows.slice(0, 1000) };
+}
+
+function cellText(value) {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') return fmt(value);
+  if (typeof value === 'boolean' || typeof value === 'string') return String(value);
+  try { return JSON.stringify(value); } catch { return String(value); }
+}
+
+export function tableHTML(it, grid = false) {
+  const { columns, rows } = tableShape(it);
+  if (!columns.length || !rows.length) return EMPTY;
+  const numeric = columns.flatMap((column) => rows.map((row) => numberOf(row?.[column.key]))).filter((n) => n !== null);
+  const nlo = numeric.length ? minOf(numeric) : 0, nhi = numeric.length ? maxOf(numeric) : 0;
+  const thStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap;color:#fff;background:#111;font-weight:400';
+  const tdStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap';
+  const header = columns.map((column, index) => `<th scope="col" style="${thStyle}"><button type="button" data-monitor-sort="${index}" style="font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer" title="sort by ${esc(column.label)}">${esc(column.label)}${column.unit ? ` <span class="u">${esc(column.unit)}</span>` : ''} ↕</button></th>`).join('');
+  const body = rows.map((row, rowIndex) => {
+    const cells = columns.map((column) => {
+      const value = row?.[column.key];
+      const n = numberOf(value);
+      const shade = grid && value !== null && value !== undefined && n !== null ? (0.12 + 0.48 * ((n - nlo) / (nhi - nlo || 1))).toFixed(2) : null;
+      const style = `${tdStyle}${shade ? `;background:rgba(255,255,255,${shade})` : ''}`;
+      return `<td style="${style}" data-sort-value="${esc(value == null ? '' : cellText(value))}">${esc(cellText(value))}</td>`;
+    }).join('');
+    const metadata = ['observedAt', 'source', 'state', 'coverage'].filter((key) => row?.[key] !== null && row?.[key] !== undefined)
+      .map((key) => `${key}: ${cellText(row[key])}`).join(' · ');
+    return `<tr data-monitor-row="${rowIndex}">${cells}</tr>${metadata ? `<tr class="row-meta" data-monitor-meta="${rowIndex}"><td colspan="${columns.length}" style="${tdStyle};color:#8c8c8c;font-size:10px">${esc(metadata)}</td></tr>` : ''}`;
+  }).join('');
+  return `<div class="monitor-data" style="overflow:auto;max-height:100%;min-height:0;min-width:0;width:100%;flex:1"><table role="${grid ? 'grid' : 'table'}" style="border-collapse:collapse;width:100%;text-align:left"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+export function breakdownSVG(it, w, h, plot = {}) {
+  let cats = categoriesOf(it, plot);
+  if (!cats.length && Array.isArray(it?.data?.rows)) {
+    const rows = it.data.rows;
+    const valueKey = it.metric?.key || it.data.columns?.find((column) => column.type === 'number')?.key || 'value';
+    const labelKey = it.data.columns?.find((column) => column.key !== valueKey)?.key || 'label';
+    cats = rows.map((row, index) => ({ name: row?.[labelKey] ?? index, value: numberOf(row?.[valueKey]) })).filter((entry) => entry.value !== null);
+  }
+  if (!cats.length) return EMPTY;
+  const W = Math.max(70, w), H = Math.max(44, h);
+  return catBars(it, cats, W, H, 30, 4, 10, 16, plot).replace('class="v bars"', 'class="v breakdown"');
+}
+
+const PIPELINE_FIELDS = [
+  ['throughput', 'rate'], ['queued', 'queued'], ['inFlight', 'in flight'],
+  ['oldestAge', 'oldest'], ['retries', 'retries'], ['rejected', 'rejected'],
+];
+
+export function pipelineHTML(it) {
+  const view = it?.pipelineView;
+  const stages = Array.isArray(view?.stages) ? view.stages : (Array.isArray(it?.pipeline?.stages) ? it.pipeline.stages : []);
+  if (!stages.length) return `<div class="chart-empty faint">${esc(view?.message || 'no pipeline stages')}</div>`;
+  const thStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap;color:#fff;background:#111;font-weight:400';
+  const tdStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap';
+  const headers = PIPELINE_FIELDS.map(([, label]) => `<th scope="col" style="${thStyle}">${esc(label)}</th>`).join('');
+  const rows = stages.map((stage) => {
+    const metrics = PIPELINE_FIELDS.map(([key]) => {
+      const metric = stage?.[key];
+      if (metric === null || metric === undefined) return `<td style="${tdStyle}">—</td>`;
+      const object = typeof metric === 'object' ? metric : { value: metric };
+      const stale = object.stale ? ' · stale' : '';
+      const detail = [object.source, object.state, object.ageSeconds != null ? `${fmt(object.ageSeconds)}s old` : null].filter(Boolean).join(' · ');
+      return `<td style="${tdStyle}" title="${esc(detail)}">${esc(cellText(object.value))}${object.unit ? ` <span class="u">${esc(object.unit)}</span>` : ''}${stale ? `<span class="faint">${esc(stale)}</span>` : ''}</td>`;
+    }).join('');
+    const label = `${stage?.candidate ? '○ ' : ''}${stage?.label ?? stage?.key ?? 'stage'}`;
+    return `<tr><th scope="row" style="${thStyle}">${esc(label)}</th>${metrics}</tr>`;
+  }).join('');
+  const queues = stages.map(s => numberOf(s.queued?.value) ?? 0), maximum = Math.max(1, ...queues);
+  const flow = stages.map((stage, index) => {
+    const rate = stage.throughput, queue = stage.queued, age = stage.oldestAge;
+    const detail = [rate?.source, rate?.ageSeconds != null ? `${fmt(rate.ageSeconds)}s old` : '', rate?.stale ? 'STALE' : ''].filter(Boolean).join(' · ');
+    return `<div style="min-width:120px;border:1px dashed #777;padding:6px;${stage.candidate ? 'background:#eee;color:#080808;' : ''}"><div>${stage.candidate ? '▲ ' : ''}${esc(stage.label || stage.key)}${index < stages.length - 1 ? ' →' : ''}</div><div>${esc(cellText(rate?.value))} ${esc(rate?.unit || '')}</div><div style="height:6px;background:#333;margin:5px 0"><div style="height:100%;width:${Math.max(0, queues[index]) / maximum * 100}%;background:#aaa"></div></div><div>queued ${esc(cellText(queue?.value))} · oldest ${esc(cellText(age?.value))}${esc(age?.unit || '')}</div><small>${esc(detail)}</small></div>`;
+  }).join('');
+  return `<div class="monitor-data" style="overflow:auto;max-height:100%;min-height:0;min-width:0;width:100%;flex:1"><div class="pipeline-flow" style="display:grid;grid-template-columns:repeat(${stages.length},minmax(120px,1fr));gap:10px;margin-bottom:8px">${flow}</div>${view?.message ? `<div class="faint">${esc(view.message)}</div>` : ''}<table role="table" style="border-collapse:collapse;width:100%;text-align:left"><thead><tr><th scope="col" style="${thStyle}">stage</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 // ---------------------------------------------------------------- dispatch
 
 /**
  * Which view to show when the monitor is on `auto`. Re-evaluated on every render (and every ticker pass),
- * so a monitor grows from a number into a chart on its own once it has a series, and into a pie once
- * whoever feeds it starts publishing named values in meta.
+ * so semantic metrics choose their view automatically and an unclassified numeric monitor stays compact.
  */
 export function autoDisplay(it) {
+  const metricView = {
+    scalar: 'composite',
+    capacity: 'capacity',
+    rate: 'line',
+    counter: 'composite',
+    breakdown: 'breakdown',
+    table: 'table',
+    grid: 'grid',
+  }[it.metric?.kind];
+  if (metricView) return metricView;
+  if (it.pipelineView || it.pipeline?.stages?.length) return 'pipeline';
+  if (it.data?.columns?.length && it.data?.rows?.length) return 'table';
   if (it.progress !== null && it.progress !== undefined) return 'progress';
   const numeric = typeof it.value === 'number' && Number.isFinite(it.value);
-  const n = (it.history || []).filter((x) => x.v !== null && x.v !== undefined).length;
-  if (numeric && n >= 2) return 'line';
-  if (numeric) return 'value';
+  if (numeric) return 'composite';
   if (categoriesOf(it, it.plot).length >= 2) return 'pie';
   if (pointsOf(it, it.plot, 3).length >= 2) return 'scatter3d';
   if (it.label != null && it.label !== '') return 'text';
@@ -547,11 +786,18 @@ export function renderChart(disp, it, ctx) {
   const h = Math.max(40, (it.h || 150) - (ctx?.reserve ?? 58));
   const out = drawChart(disp, it, w, h, animated(it.plot));
   // non-finite coordinates (huge/odd values) would make the browser log an error per attribute on every redraw
-  return /NaN|Infinity/.test(out) ? EMPTY : out;
+  const badNumber = /\b(?:x|y|x1|y1|x2|y2|cx|cy|r|rx|ry|width|height)=['"]-?(?:NaN|Infinity)/.test(out);
+  return badNumber ? EMPTY : out;
 }
 
 function drawChart(disp, it, w, h, plot) {
   switch (disp) {
+    case 'composite': return compositeSVG(it, w, h, plot);
+    case 'capacity': return capacitySVG(it, w, h);
+    case 'breakdown': return breakdownSVG(it, w, h, plot);
+    case 'table': return tableHTML(it);
+    case 'grid': return tableHTML(it, true);
+    case 'pipeline': return pipelineHTML(it);
     case 'line': return lineSVG(it, w, h, plot);
     case 'area': return areaSVG(it, w, h, plot);
     case 'bars': return barsSVG(it, w, h, plot);
@@ -584,11 +830,12 @@ export function animated(plot, t = Date.now()) {
 export const isAnimated = (it) => !!it?.plot?.animate && it.plot.animate !== 'none';
 
 /** the series as it should be drawn right now — `plot.reveal` (from animate: "replay") shortens it */
-function viewed(it, plot) {
-  const { pts, key } = seriesOf(it);
-  if (!plot?.reveal) return { pts, key };
-  const n = Math.max(2, Math.round(pts.length * clamp(Number(plot.reveal), 0.05, 1)));
-  return { pts: pts.slice(-n), key };
+function viewed(it, plot, preserveGaps = false) {
+  const { pts, allPts, key } = seriesOf(it);
+  const source = preserveGaps ? allPts : pts;
+  if (!plot?.reveal) return { pts: source, key };
+  const n = Math.max(2, Math.round(source.length * clamp(Number(plot.reveal), 0.05, 1)));
+  return { pts: source.slice(-n), key };
 }
 
 /** shared by histogram + categorical bars */

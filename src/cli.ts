@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { asset, isElectron } from './assets.ts';
 import { Hud } from './client.ts';
-import type { SearchQuery } from './client.ts';
+import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
 import { line } from './summary.ts';
 
@@ -58,18 +58,38 @@ usage:
                                      (util: --kind timer|stopwatch|clock|counter|calculator|sheet|markdown|dice)
                                      (monitor: --display pie --plot.series gpu --plot.yMin 0)
   hud set <id> --k v [...]           patch fields
-  hud push <id> [value] [--label "2/4 busy"] [--state s] [--message m] [--progress p]
+  hud push <id> [value] [--label "2/4 busy"] [--state s] [--message m] [--messageFormat plain|markdown] [--details md] [--progress p]
            [--unit u] [--max n] [--warnBelow n] [--staleAfter s] [--group g] [--title t]
                                      report a monitor reading (creates/configures the monitor)
   hud watch <name> [ids...] [--board b] [--off]   wake session <name> on alerts from these monitors/board
   hud alerts [--ack] [--all]         list (and acknowledge) monitor alerts
-  hud comment <id> <text...>         add a comment to a ticket
-  hud comment edit <id> <cid> <text...> | hud comment rm <id> <cid>
+  hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n]
+                                     list or review human-attention items (separate from agent alert ack)
+  hud runs                           list run summaries and linked monitors/tickets
+  hud changes --since ms             list changes after a timestamp (for incremental sync)
+  hud readout [board]                text and metric readout for one board or all boards
+  hud snapshot [board] [--format auto|png|text] [--out path]
+                                     capture a board; PNG is saved to snapshot.png when available
+  hud dashboard [board] [--file path] [--dry-run] [--expected-revision rev]
+                                     read or replace the declarative dashboard spec (JSON may come from stdin)
+  hud annotate <board> <time> <text...> | hud annotate list <board> | hud annotate delete <board> <id>
+                                     add, list, or remove a time annotation
+  hud compare <board> [left relation right] [--tolerance n] [--holdFor s] [--maxSkew s]
+                                     list or add a metric comparison; use compare delete <board> <id> to remove
+  hud lint [board]                   lint a board and its dashboard spec
+  hud graph <item> [--action get|preview|apply|disable] [--file JSON] [--code-file path]
+                                     inspect or program an item renderer; preview before apply
+  hud canvas [board] [--action get|preview|apply|disable] [--file JSON] [--code-file path]
+                                     inspect or program a board canvas renderer; preview before apply
+  hud comment <id> <text...> [--format plain|markdown]
+                                     add a comment to a ticket
+  hud comment edit <id> <cid> <text...> [--format plain|markdown] | hud comment rm <id> <cid>
   hud log <id> [--limit n]           the item's activity history
-  hud ask <id> --option A --option B [--question "…"]
+  hud ask <id> --option A --option B [--question "…"] [--questionFormat plain|markdown]
                                      propose choices on a ticket and block it until a human picks one
                                        (--options '[{"label":"A","detail":"…","status":"done"}]' for detail/status)
-  hud decide <id> <optionId> [--note "…"]   record the choice
+  hud decide <id> <optionId> --version UUID [--note "…"]
+                                     record the choice using the current decision version (prevents stale answers)
   hud finish [ids...] [--board b] [--note "…"] [--no-organize]
                                      mark items done and tidy the board (how an agent ends a run)
   hud run <id>                       run an automatic monitor now
@@ -80,9 +100,10 @@ usage:
   hud import <file> [--merge]        replace (default; a backup is taken first) or merge the state
   hud ping <id> [start|fail|<code>]  heartbeat for a cron-style monitor
   hud organize [board] [--auto on|off]
-                                     group items into frames and tidy the board (--auto keeps it tidy)
+                                     fit the fixed 1600×900 board (--auto on|off; default on)
   hud arrange [--board b] [--frame f]
-  hud board [list|add <name>|rm <id>|rename <id> <name>]
+  hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]
+                                     clear keeps the board/settings; rm deletes the board
   hud guide                          full guide (for agents)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
   hud mcp                            run the MCP server on stdio (what agents connect to)
@@ -107,7 +128,7 @@ examples:
 class UsageError extends Error {}
 
 const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help']);
-const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame']);
+const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
@@ -147,7 +168,7 @@ function parseArgs(argv: string[]) {
       for (const p of path.slice(0, -1)) o = typeof o[p] === 'object' && o[p] ? o[p] : (o[p] = {});
       const key = path[path.length - 1];
       // repeated --option accumulates, so `hud ask t1 --option A --option B` works
-      if (key === 'option') (flags.option ??= []).push(v);
+      if (key === 'option' || key === 'binding' || key === 'capability') (flags[key] ??= []).push(v);
       else o[key] = STR_KEYS.has(key) ? v : parseVal(v);
     } else pos.push(a);
   }
@@ -173,10 +194,21 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   push: { u: 'hud push <id> [value] [--label l] [--state s] [--message m] [--progress p] [--unit u] [--max n] [--warnBelow n] [--staleAfter s] [--group g] [--title t]', min: 1, max: 2, f: '*' },
   watch: { u: 'hud watch <name> [ids...] [--board b] [--off]', min: 1, f: ['board', 'off', 'json'] },
   alerts: { u: 'hud alerts [--ack] [--all] [--json]', max: 0, f: ['ack', 'all', 'json'] },
-  comment: { u: 'hud comment <id> <text...> | hud comment edit <id> <cid> <text...> | hud comment rm <id> <cid>', min: 2, f: ['json'] },
+  attention: { u: 'hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n] [--json]', max: 2, f: ['revision', 'until', 'minutes', 'json'] },
+  runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
+  changes: { u: 'hud changes --since ms [--json]', max: 0, f: ['since', 'json'] },
+  readout: { u: 'hud readout [board] [--json]', max: 1, f: ['board', 'json'] },
+  snapshot: { u: 'hud snapshot [board] [--format auto|png|text] [--out path] [--json]', max: 1, f: ['board', 'format', 'out', 'json'] },
+  dashboard: { u: 'hud dashboard [board] [--file path] [--dry-run] [--expected-revision rev] [--json]', max: 1, f: ['board', 'file', 'dry-run', 'expected-revision', 'json'] },
+  annotate: { u: 'hud annotate <board> <time> <text...> | hud annotate list <board> | hud annotate delete <board> <id>', f: ['json'] },
+  compare: { u: 'hud compare <board> [left relation right] [--tolerance n] [--holdFor s] [--maxSkew s] | hud compare delete <board> <id>', f: ['id', 'left', 'right', 'relation', 'tolerance', 'holdFor', 'maxSkew', 'json'] },
+  lint: { u: 'hud lint [board] [--json]', max: 1, f: ['board', 'json'] },
+  graph: { u: 'hud graph <item> [--action get|preview|apply|disable|delete] [--file JSON] [--code-file path] [--language html|javascript|svg] [--expected-revision rev]', min: 1, max: 1, f: ['action', 'file', 'code-file', 'language', 'description', 'binding', 'bindings', 'capability', 'capabilities', 'expected-revision', 'json'] },
+  canvas: { u: 'hud canvas [board] [--action get|preview|apply|disable|delete] [--file JSON] [--code-file path] [--language html|javascript|svg] [--expected-revision rev]', max: 1, f: ['action', 'file', 'code-file', 'language', 'description', 'binding', 'bindings', 'capability', 'capabilities', 'expected-revision', 'json'] },
+  comment: { u: 'hud comment <id> <text...> | hud comment edit <id> <cid> <text...> | hud comment rm <id> <cid>', min: 2, f: ['format', 'json'] },
   log: { u: 'hud log <id> [--limit n] [--json]', min: 1, max: 1, f: ['limit', 'json'] },
-  ask: { u: 'hud ask <id> --option A --option B [--question q] [--options json]', min: 1, max: 1, f: ['option', 'options', 'question', 'json'] },
-  decide: { u: 'hud decide <id> <optionId> [--note text]', min: 1, max: 2, f: ['optionId', 'note', 'json'] },
+  ask: { u: 'hud ask <id> --option A --option B [--question q] [--questionFormat plain|markdown] [--options json]', min: 1, max: 1, f: ['option', 'options', 'question', 'questionFormat', 'json'] },
+  decide: { u: 'hud decide <id> <optionId> --version UUID [--note text]', min: 1, max: 2, f: ['optionId', 'note', 'version', 'json'] },
   finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize]', f: ['board', 'note', 'no-organize', 'json'] },
   run: { u: 'hud run <id>', min: 1, max: 1, f: ['json'] },
   rm: { u: 'hud rm <id...>', min: 1, f: ['json'] },
@@ -189,7 +221,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   ping: { u: 'hud ping <id> [start|fail|<code>]', min: 1, max: 2, f: ['json'] },
   organize: { u: 'hud organize [board] [--auto on|off]', max: 1, f: ['board', 'auto', 'json'] },
   arrange: { u: 'hud arrange [ids...] [--board b] [--frame f] [--width n]', f: ['board', 'frame', 'width', 'json'] },
-  board: { u: 'hud board [list|add <name>|rm <id>|rename <id> <name>]', f: ['json'] },
+  board: { u: 'hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]', f: ['json'] },
   guide: { u: 'hud guide', max: 0, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
@@ -403,6 +435,203 @@ async function main() {
       const lines = list.map((a) => `[${a.id}] ${new Date(a.t).toLocaleString()} ${a.itemId} ${a.from} → ${a.to}${a.value != null ? ` (${a.value})` : ''}${a.message ? `: ${a.message}` : ''}`);
       return emit(list, list.length ? [...lines, flags.ack ? `acknowledged ${list.length}` : ''].filter(Boolean).join('\n') : 'no alerts');
     }
+    case 'attention': {
+      const action = rest[0] ?? 'list';
+      if (action === 'list') {
+        if (rest.length > 1) throw new UsageError('usage: hud attention [review|unreview|snooze <id>]');
+        const r = await hud.attention();
+        const lines = r.items.map((a) => `[${a.kind}] ${a.itemId} ${a.title} priority=${a.priority} revision=${a.revision}${a.message ? ` — ${a.message}` : ''}`);
+        return emit(r, lines.length ? lines.join('\n') : 'no human-attention items');
+      }
+      if (action !== 'review' && action !== 'unreview' && action !== 'snooze') throw new UsageError('attention action must be list|review|unreview|snooze');
+      const id = rest[1];
+      if (!id) throw new UsageError(`usage: hud attention ${action} <id> --revision UUID${action === 'snooze' ? ' [--until ms|--minutes n]' : ''}`);
+      if (typeof flags.revision !== 'string' || !flags.revision) throw new UsageError('--revision is required (use hud attention to read the current revision)');
+      let until = flags.until;
+      if (flags.minutes !== undefined) {
+        const minutes = Number(flags.minutes);
+        if (!Number.isFinite(minutes) || minutes <= 0) throw new UsageError('--minutes must be a positive number');
+        if (until !== undefined) throw new UsageError('use only one of --until and --minutes');
+        until = Date.now() + minutes * 60_000;
+      }
+      if (action === 'snooze' && until === undefined) throw new UsageError('snooze requires --until timestamp or --minutes n');
+      const r = await hud.reviewAttention(id, { action, revision: flags.revision, ...(until === undefined ? {} : { until: Number(until) }) });
+      return emit(r, `${action} ${r.itemId} [${r.kind}] revision=${r.revision}${r.reviewedAt ? ' reviewed' : ''}${r.snoozedUntil ? ` snoozed-until=${r.snoozedUntil}` : ''}`);
+    }
+    case 'runs': {
+      const r = await hud.runs();
+      const lines = r.items.map((run) => {
+        const progress = run.progress == null ? '—' : `${run.progress}%`;
+        return `${run.id}  ${run.title}  [${run.status}]  progress=${progress}  issues=${run.issues}  monitors=${run.monitors.length}  tickets=${run.tickets.length}`;
+      });
+      return emit(r, lines.length ? lines.join('\n') : 'no runs');
+    }
+    case 'changes': {
+      if (flags.since === undefined) throw new UsageError('usage: hud changes --since timestamp');
+      const since = Number(flags.since);
+      if (!Number.isFinite(since) || since < 0) throw new UsageError('--since must be a non-negative timestamp');
+      const r = await hud.changes(since);
+      const lines = r.events.map((e: any) => {
+        if (e.action !== undefined) return `${new Date(e.t).toLocaleString()} ${e.action}${e.itemId ? ` ${e.itemId}` : ''}${e.actor ? ` @${e.actor}` : ''}${e.text ? ` — ${e.text}` : ''}`;
+        const it = e.item;
+        const value = it?.value !== undefined && it?.value !== null ? ` value=${it.value}` : '';
+        const progress = it?.progress !== undefined && it?.progress !== null ? ` progress=${it.progress}%` : '';
+        return `${e.kind}${e.actor ? ` @${e.actor}` : ''}${e.item?.id ? ` ${e.item.id}` : e.itemId ? ` ${e.itemId}` : ''}${value}${progress}`;
+      });
+      return emit(r, [`since=${r.since} now=${r.now} complete=${r.complete}`, ...lines].join('\n'));
+    }
+    case 'readout': {
+      const board = rest[0] ?? flags.board;
+      const r = await hud.readout(board);
+      const text = typeof r.text === 'string' ? r.text : JSON.stringify(r, null, 2);
+      return emit(r, text);
+    }
+    case 'snapshot': {
+      const format = flags.format ?? 'auto';
+      if (!['auto', 'png', 'text'].includes(format)) throw new UsageError('--format must be auto|png|text');
+      const r = await hud.snapshot({ board: rest[0] ?? flags.board, format });
+      if (json) return emit(r);
+      if (r.image && format !== 'text') {
+        const path = flags.out ?? 'snapshot.png';
+        writeFileSync(path, Buffer.from(r.image.data, 'base64'));
+        const warnings = [...(r.warnings ?? []), ...(r.imageUnavailable ? [r.imageUnavailable] : [])];
+        return emit({ board: r.board, capturedAt: r.capturedAt, out: path, warnings }, `saved ${path} (${r.board}, ${new Date(r.capturedAt).toISOString()})${warnings.length ? `\n${warnings.join('\n')}` : ''}`);
+      }
+      const warnings = [...(r.warnings ?? []), ...(r.imageUnavailable ? [r.imageUnavailable] : [])];
+      return emit(r, `${r.text}${warnings.length ? `\n\n${warnings.join('\n')}` : ''}`);
+    }
+    case 'dashboard': {
+      const board = rest[0] ?? flags.board ?? 'main';
+      const input = flags.file !== undefined
+        ? readFileSync(String(flags.file), 'utf8')
+        : !process.stdin.isTTY ? readFileSync(0, 'utf8') : '';
+      if (!input.trim()) {
+        if (flags['dry-run']) throw new UsageError('--dry-run needs a dashboard JSON document from --file or stdin');
+        const current = await hud.dashboard(board);
+        return emit(current, current ? JSON.stringify(current, null, 2) : `no dashboard spec on ${board}`);
+      }
+      let document: any;
+      try {
+        document = JSON.parse(input);
+      } catch (e) {
+        throw new UsageError(`invalid dashboard JSON: ${(e as Error).message}`);
+      }
+      const supplied = document && typeof document === 'object' && !Array.isArray(document) && 'spec' in document ? document : { spec: document };
+      if (!supplied.spec || typeof supplied.spec !== 'object' || Array.isArray(supplied.spec)) throw new UsageError('dashboard JSON must be a spec object or {spec: ...}');
+      const body = {
+        spec: supplied.spec,
+        ...(flags['dry-run'] || supplied.dryRun ? { dryRun: true } : {}),
+        ...((flags['expected-revision'] ?? supplied.expectedRevision) !== undefined ? { expectedRevision: String(flags['expected-revision'] ?? supplied.expectedRevision) } : {}),
+      };
+      const result = await hud.updateDashboard(board, body);
+      return emit(result, JSON.stringify(result, null, 2));
+    }
+    case 'annotate': {
+      const sub = rest[0];
+      const board = sub === 'list' || sub === 'delete' ? rest[1] ?? flags.board ?? 'main' : rest[0] ?? flags.board ?? 'main';
+      if (sub === 'delete') {
+        const id = rest[2] ?? flags.id;
+        if (!id) throw new UsageError('usage: hud annotate delete <board> <id>');
+        const result = await hud.deleteAnnotation(board, id);
+        return emit(result, `deleted annotation ${id} on ${board}`);
+      }
+      const adding = sub !== 'list' && rest.length >= 3 && Number.isFinite(Number(rest[1]));
+      if (adding) {
+        const time = Number(rest[1]);
+        const text = rest.slice(2).join(' ');
+        const result = await hud.addAnnotation(board, { time, text });
+        return emit(result, `added annotation on ${board} at ${new Date(time).toISOString()}: ${text}`);
+      }
+      if (sub !== undefined && sub !== 'list' && rest.length > 1) throw new UsageError('usage: hud annotate <board> <time> <text...> | hud annotate list <board> | hud annotate delete <board> <id>');
+      const annotations = await hud.annotations(board);
+      return emit(annotations, annotations.length ? annotations.map((a) => `${a.id}  ${new Date(a.time).toISOString()}  ${a.text}`).join('\n') : `no annotations on ${board}`);
+    }
+    case 'compare': {
+      const [firstArg, secondArg, thirdArg, fourthArg] = rest;
+      if (firstArg === 'delete') {
+        const board = secondArg ?? flags.board ?? 'main';
+        const id = thirdArg ?? flags.id;
+        if (!id) throw new UsageError('usage: hud compare delete <board> <id>');
+        const result = await hud.deleteComparison(board, id);
+        return emit(result, `deleted comparison ${id} on ${board}`);
+      }
+      const board = firstArg ?? flags.board ?? 'main';
+      const left = flags.left ?? secondArg;
+      const relation = flags.relation ?? thirdArg;
+      const right = flags.right ?? fourthArg;
+      if (left === undefined && right === undefined) {
+        const rules = await hud.comparisons(board);
+        return emit(rules, rules.length ? rules.map((r) => `${r.id}  ${r.left} ${r.relation} ${r.right}${r.tolerance === undefined ? '' : ` ±${r.tolerance}`}${r.holdFor === undefined ? '' : ` hold=${r.holdFor}s`}${r.maxSkew === undefined ? '' : ` maxSkew=${r.maxSkew}s`}`).join('\n') : `no comparisons on ${board}`);
+      }
+      if (typeof left !== 'string' || typeof right !== 'string' || !['equal', 'lte', 'gte'].includes(String(relation))) throw new UsageError('compare needs <board> <left> <equal|lte|gte> <right>');
+      const rule = {
+        left,
+        right,
+        relation: relation as 'equal' | 'lte' | 'gte',
+        ...(flags.tolerance !== undefined ? { tolerance: Number(flags.tolerance) } : {}),
+        ...(flags.holdFor !== undefined ? { holdFor: Number(flags.holdFor) } : {}),
+        ...(flags.maxSkew !== undefined ? { maxSkew: Number(flags.maxSkew) } : {}),
+      };
+      const result = await hud.addComparison(board, rule);
+      return emit(result, `added comparison ${result.id}: ${result.left} ${result.relation} ${result.right}`);
+    }
+    case 'lint': {
+      const board = rest[0] ?? flags.board ?? 'main';
+      const result = await hud.lint(board);
+      const text = typeof (result as any).text === 'string' ? (result as any).text : JSON.stringify(result, null, 2);
+      return emit(result, text);
+    }
+    case 'graph':
+    case 'canvas': {
+      const isCanvas = cmd === 'canvas';
+      const target = rest[0] ?? flags.board ?? 'main';
+      let action = flags.action;
+      let program: any;
+      if (flags.file !== undefined) {
+        try {
+          const fileDoc = JSON.parse(readFileSync(String(flags.file), 'utf8'));
+          program = fileDoc?.program ?? fileDoc;
+        } catch (e) {
+          throw new UsageError(`invalid program JSON in --file: ${(e as Error).message}`);
+        }
+      }
+      if (flags['code-file'] !== undefined) {
+        const code = readFileSync(String(flags['code-file']), 'utf8');
+        const language = flags.language ?? 'html';
+        if (!['html', 'javascript', 'svg'].includes(language)) throw new UsageError('--language must be html|javascript|svg');
+        const bindings = flags.bindings ?? flags.binding ?? [];
+        const capabilities = flags.capabilities ?? flags.capability ?? [];
+        const capabilityList = Array.isArray(capabilities) ? capabilities : [capabilities];
+        program = {
+          code,
+          language,
+          description: flags.description ?? 'agent-authored renderer',
+          bindings: (Array.isArray(bindings) ? bindings : [bindings]).flatMap((v: unknown) => String(v).split(',')).filter(Boolean),
+          capabilities: capabilityList.flatMap((v: unknown) => Array.isArray(v) ? v : String(v).split(',')).filter(Boolean).map((v: unknown) => {
+            if (typeof v === 'object' && v !== null) return v;
+            const [operation, ...scope] = String(v).split(':');
+            if (!operation || !scope.length) throw new UsageError('--capability uses operation:scope');
+            return { operation, scope: scope.join(':') };
+          }),
+        };
+      }
+      if (program && (!program.code || !program.description)) throw new UsageError('program JSON requires code and description');
+      if (!action) action = program ? 'preview' : 'get';
+      if (!['get', 'preview', 'apply', 'disable', 'delete'].includes(action)) throw new UsageError('--action must be get|preview|apply|disable|delete');
+      const expectedRevision = flags['expected-revision'] === undefined ? undefined : String(flags['expected-revision']);
+      if (action === 'get') {
+        if (program) throw new UsageError('use --action preview or apply when providing program code');
+        const result = isCanvas ? await hud.boardProgram(target) : await hud.itemProgram(target);
+        return emit(result, result.program ? JSON.stringify(result.program, null, 2) : `no ${isCanvas ? 'canvas' : 'item'} program on ${target}`);
+      }
+      if (action === 'delete') {
+        const result = isCanvas ? await hud.deleteBoardProgram(target, expectedRevision) : await hud.deleteItemProgram(target, expectedRevision);
+        return emit(result, `deleted ${isCanvas ? 'canvas' : 'item'} program on ${target}`);
+      }
+      const request = { action, ...(program ? { program } : {}), ...(expectedRevision ? { expectedRevision } : {}) } as ProgramAction;
+      const result = isCanvas ? await hud.boardProgramAction(target, request) : await hud.itemProgramAction(target, request);
+      return emit(result, JSON.stringify(result, null, 2));
+    }
     case 'comment': {
       const [a, b, c] = rest;
       if (a === 'rm' || a === 'delete') {
@@ -412,11 +641,11 @@ async function main() {
       if (a === 'edit') {
         const text = rest.slice(3).join(' ');
         if (!b || !c || !text) throw new UsageError('usage: hud comment edit <id> <cid> <text...>');
-        return emit(await hud.editComment(b, c, text), `edited comment ${c} on ${b}`);
+        return emit(await hud.editComment(b, c, text, flags.format), `edited comment ${c} on ${b}`);
       }
       const text = rest.slice(1).join(' ');
       if (!text.trim()) throw new UsageError('usage: hud comment <id> <text...>');
-      return emit(await hud.comment(a, text), `commented on ${a}`);
+      return emit(await hud.comment(a, text, flags.format), `commented on ${a}`);
     }
     case 'log': {
       const list = await hud.activityOf(rest[0], flags.limit);
@@ -426,13 +655,14 @@ async function main() {
       const arr = (v: unknown) => (Array.isArray(v) ? v : v === undefined ? [] : [v]);
       const list = [...arr(flags.option), ...arr(flags.options).flat()].map((o) => (typeof o === 'string' ? { label: o } : (o as { label: string })));
       if (!list.length) throw new UsageError('hud ask needs at least one --option');
-      const tk = (await hud.ask(rest[0], list, flags.question)) as { id: string; ident?: string; status?: string; question?: string; options?: { id: string; label: string; status?: string }[] };
-      return emit(tk, `${tk.ident ?? tk.id} ${tk.status} — needs a decision${tk.question ? `: ${tk.question}` : ''}\n${(tk.options ?? []).map((o) => `  ${o.id}  ${o.label}${o.status ? ` [→${o.status}]` : ''}`).join('\n')}`);
+      const tk = (await hud.ask(rest[0], list, flags.question, flags.questionFormat)) as { id: string; ident?: string; status?: string; question?: string; decisionVersion?: string; options?: { id: string; label: string; status?: string }[] };
+      return emit(tk, `${tk.ident ?? tk.id} ${tk.status} — needs a decision${tk.question ? `: ${tk.question}` : ''}\n${(tk.options ?? []).map((o) => `  ${o.id}  ${o.label}${o.status ? ` [→${o.status}]` : ''}`).join('\n')}\nrevision: ${tk.decisionVersion ?? '—'}`);
     }
     case 'decide': {
       const optionId = rest[1] ?? flags.optionId;
       if (optionId === undefined) throw new UsageError('usage: hud decide <id> <optionId>');
-      const tk = (await hud.decide(rest[0], String(optionId), flags.note)) as { id: string; ident?: string; status?: string };
+      if (typeof flags.version !== 'string' || !flags.version) throw new UsageError('--version is required (use hud show <id> to read decisionVersion)');
+      const tk = (await hud.decide(rest[0], String(optionId), flags.note, flags.version)) as { id: string; ident?: string; status?: string };
       return emit(tk, `decided ${tk.ident ?? tk.id} → ${tk.status}`);
     }
     case 'finish': {
@@ -519,6 +749,11 @@ async function main() {
         if (!a || !b.length) throw new UsageError('usage: hud board rename <id> <name>');
         return emit(await hud.request('PATCH', `/api/boards/${encodeURIComponent(a)}`, { name: b.join(' ') }));
       }
+      if (sub === 'clear') {
+        if (!a) throw new UsageError('usage: hud board clear <id>');
+        const result = await hud.clearBoard(a);
+        return emit(result, `cleared canvas ${a}: ${result.cleared} items moved to trash; board settings retained`);
+      }
       if (sub === 'rm' || sub === 'delete') {
         if (!a) throw new UsageError('usage: hud board rm <id>');
         return emit(await hud.request('DELETE', `/api/boards/${encodeURIComponent(a)}`));
@@ -526,7 +761,7 @@ async function main() {
       throw new UsageError(`unknown board command "${sub}"`);
     }
     case 'guide':
-      return raw((asset('GUIDE.md', 'utf8') ?? '').replaceAll('{{PORT}}', String(config().port)));
+      return raw(`${asset('GUIDE.md', 'utf8') ?? ''}\n\n${asset('STYLE.md', 'utf8') ?? ''}`.replaceAll('{{PORT}}', String(config().port)));
     case 'views': {
       const { dir, views } = await hud.views();
       if (json) return emit(views);

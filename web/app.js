@@ -1,11 +1,18 @@
 // hud — canvas client. No build step; plain ES module.
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
+import * as RichUtils from './utils.js';
+import './table-controls.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const GRID = 20;
 const ME = 'user';
 const SYSTEM = 'hud';
+const CAPTURE_TOKEN = new URLSearchParams(location.search).get('capture');
+const CAPTURE_READONLY = !!CAPTURE_TOKEN;
+const CAPTURE_BOARD = new URLSearchParams(location.search).get('board');
+document.body.classList.toggle('capture-readonly', CAPTURE_READONLY);
+if (CAPTURE_READONLY) window.__hudCapture = { ready: false, errors: [], customReady: false };
 const STATUSES = ['backlog', 'todo', 'doing', 'review', 'blocked', 'done', 'canceled'];
 const STATUS_GLYPH = { backlog: '[ ]', todo: '[ ]', doing: '[~]', review: '[?]', blocked: '[!]', done: '[x]', canceled: '[-]' };
 const PRIOS = ['', 'low', 'med', 'high', 'urgent'];
@@ -14,7 +21,7 @@ const MGLYPH = { ok: '●', warn: '▲', error: '✕', unknown: '○', running: 
 const KINDS = ['manual', 'push', 'command', 'http', 'probe', 'heartbeat'];
 const DISPLAYS = DISPLAY_KINDS;
 /** display kinds drawn as an SVG chart (so they get hover readout + y-range controls) */
-const CHART_SET = new Set(['line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut', 'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d']);
+const CHART_SET = new Set(['composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut', 'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d']);
 const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
 
 const S = {
@@ -28,25 +35,62 @@ const S = {
   sel: new Set(),
   expanded: new Set(), // item ids whose card is expanded in place (client-only; never persisted)
   drawer: null, // item id
+  drawerTab: 'overview',
+  drawerWide: false,
+  drawerWidth: 420,
+  detail: new Map(), // full single-item reads; list/SSE payloads stay lite
+  drafts: new Map(), // local unsent fields survive live refreshes and tab switches
   drawerDirty: false,
   mouse: { x: 0, y: 0 }, // world coords of last pointer position
   undo: [],
   alerts: [],
   live: false,
+  connected: false,
+  heartbeatAt: 0,
+  readoutAt: 0,
+  readoutBoards: new Map(),
+  captureNow: null,
+  captureErrors: [],
   views: [], // renderer modules from GET /api/views, used to cache-bust dynamic imports
+  page: 'attention', // attention | runs | board
+  attention: { items: [], now: Date.now() },
+  attentionExpanded: { reviewed: false, snoozed: false },
+  runs: { items: [], showCompleted: false },
+  changes: { since: 0, now: 0, complete: false, events: [] },
+  lastVisit: 0,
+  visitStarted: Date.now(),
+  boardQuery: '',
+  searchOpen: false,
+  searchQuery: '',
 };
 
 const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-dashboard, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #top-more > summary, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-dtab], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-drawer], [data-copy-ticket]';
+function applyReadonlyControls(root = document) {
+  if (!CAPTURE_READONLY) return;
+  for (const control of $$('button, input, select, textarea', root)) {
+    if (control.matches(READONLY_SAFE_CONTROLS) || control.matches('#global-search-input, [data-board-query]')) continue;
+    control.disabled = true;
+    control.setAttribute('aria-disabled', 'true');
+  }
+}
+document.addEventListener('click', (e) => {
+  if (!CAPTURE_READONLY || e.target.closest(READONLY_SAFE_CONTROLS)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}, true);
+
 // ---------------------------------------------------------------- utils
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const snap = (n) => Math.round(n / GRID) * GRID;
 const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+const displayNow = () => CAPTURE_READONLY && Number.isFinite(S.captureNow) ? S.captureNow : Date.now();
 function ago(t) {
   if (!t) return '—';
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  const s = Math.max(0, Math.round((displayNow() - t) / 1000));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -56,7 +100,35 @@ const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${Stri
 const isOverdue = (t) => !!(t.target && t.type === 'ticket' && t.status !== 'done' && t.status !== 'canceled' && String(t.target).slice(0, 10) < todayISO());
 const targetHTML = (t) => (t.target ? `<span class="${isOverdue(t) ? 'od' : 'dim'}" title="${isOverdue(t) ? 'overdue' : 'target date'}">${isOverdue(t) ? '‼ overdue' : '◷'} ${esc(String(t.target).slice(0, 10))}</span>` : '');
 const hhmmss = (t) => new Date(t).toTimeString().slice(0, 8);
-const isStale = (it) => !!(it.stale || (it.staleAfter && it.lastUpdate && Date.now() - it.lastUpdate > it.staleAfter * 1000));
+function monitorReadout(it) { return it?.readout && typeof it.readout === 'object' ? it.readout : {}; }
+function monitorState(it) { return monitorReadout(it).state || it?.state || 'unknown'; }
+function readingAgeSeconds(it) {
+  const readout = monitorReadout(it);
+  if (Number.isFinite(readout.ageSeconds)) {
+    const advanced = CAPTURE_READONLY ? 0 : Math.max(0, (Date.now() - (S.readoutAt || Date.now())) / 1000);
+    return Math.max(0, Number(readout.ageSeconds) + advanced);
+  }
+  const observation = it?.observation;
+  const t = observation?.observedAt ?? observation?.receivedAt ?? it?.lastUpdate;
+  return t ? Math.max(0, (displayNow() - t) / 1000) : null;
+}
+function staleAfterSeconds(it) {
+  const source = it?.source || {};
+  if (it?.freshness?.mode === 'static' || it?.state === 'done') return null;
+  if (it?.staleAfter != null) return Number(it.staleAfter);
+  if (source.kind === 'heartbeat') return Number(source.period ?? 60) + Number(source.grace ?? 60);
+  if (['command', 'http', 'probe'].includes(source.kind)) {
+    const interval = Number(source.interval ?? 30), timeout = Number(source.timeout ?? 30);
+    return Math.max(60, 3 * interval, interval + timeout);
+  }
+  return 300;
+}
+function isStale(it) {
+  const readout = monitorReadout(it);
+  if (readout.stale === true || it?.stale) return true;
+  const age = readingAgeSeconds(it), limit = staleAfterSeconds(it);
+  return age != null && limit != null && age > limit;
+}
 const localDT = (t) => (t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—');
 const hhmm = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtVal = (v) => {
@@ -82,6 +154,9 @@ function debounce(fn, ms) {
 }
 
 async function api(method, path, body) {
+  if (CAPTURE_READONLY && method !== 'GET') {
+    throw Object.assign(new Error('capture snapshots are read-only'), { toasted: true });
+  }
   let res;
   try {
     res = await fetch(path, {
@@ -102,6 +177,75 @@ async function api(method, path, body) {
   return data;
 }
 
+/** Optional supervision endpoints are allowed to be absent while an older server is running. */
+async function optionalGET(path) {
+  try {
+    const r = await fetch(path, { headers: { 'x-hud-actor': ME } });
+    if (!r.ok) return null;
+    return await r.json().catch(() => null);
+  } catch {
+    return null;
+  }
+}
+
+let readoutLoading = false;
+async function loadReadout(boardId = S.board) {
+  if (CAPTURE_READONLY || !boardId || readoutLoading) return;
+  readoutLoading = true;
+  try {
+    const data = await optionalGET(`/api/readout?board=${encodeURIComponent(boardId)}`);
+    if (!data) return;
+    S.readoutAt = Date.now();
+    for (const boardReadout of data.boards || []) {
+      S.readoutBoards.set(boardReadout.id, boardReadout);
+      const board = S.boards.find((b) => b.id === boardReadout.id);
+      if (board) {
+        if (Array.isArray(boardReadout.annotations)) board.annotations = boardReadout.annotations;
+        if (Array.isArray(boardReadout.comparisons)) board.comparisonResults = boardReadout.comparisons;
+      }
+    }
+    for (const reading of data.items || []) {
+      const item = S.items.get(reading.id);
+      if (!item || item.type !== 'monitor') continue;
+      const merged = { ...item, readout: reading };
+      if (reading.pipelineView) merged.pipelineView = reading.pipelineView;
+      S.items.set(item.id, merged);
+      if (merged.board === S.board) renderItem(merged, true);
+    }
+    if (boardId === S.board) {
+      updateChrome();
+      queueProgramsMount();
+    }
+  } finally {
+    readoutLoading = false;
+  }
+}
+
+function reportHTML(text, format = 'plain', options = {}) {
+  const value = String(text ?? '');
+  const fn = RichUtils.reportHTML;
+  if (typeof fn === 'function') return fn(value, format, options);
+  if (format === 'markdown') return md(value);
+  return esc(value).replace(/\n/g, '<br>');
+}
+function plainText(text) {
+  const fn = RichUtils.plainText;
+  if (typeof fn === 'function') return fn(text);
+  return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+function reportPreview(text, format = 'plain', lines = 4, id = '') {
+  const value = String(text ?? '');
+  if (!value.trim()) return '';
+  const rawLines = value.split(/\r?\n/);
+  let short = rawLines.slice(0, lines).join('\n');
+  const maxChars = 320;
+  const plain = plainText(value);
+  const more = rawLines.length > lines || plain.length > maxChars;
+  if (more && plainText(short).length > maxChars) short = short.slice(0, maxChars) + '…';
+  const key = id ? ` data-report-id="${esc(id)}"` : '';
+  return `<div class="report-preview${more ? '' : ' expanded'}"${key}>${reportHTML(short, format, { readonly: true })}</div>${more ? `<button class="report-more" data-report-more${key}>read more · details</button>` : ''}`;
+}
+
 // every api() failure already toasted; anything else that escapes a handler is surfaced instead of vanishing
 window.addEventListener('unhandledrejection', (e) => {
   e.preventDefault();
@@ -109,6 +253,7 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 let toastT;
+const createdToastIds = new Set();
 function toast(msg, ms = 2600) {
   const t = $('#toast');
   t.textContent = msg;
@@ -116,15 +261,45 @@ function toast(msg, ms = 2600) {
   clearTimeout(toastT);
   toastT = setTimeout(() => t.classList.remove('open'), ms);
 }
+function toastBoardCreated(it) {
+  if (createdToastIds.has(it.id)) return;
+  createdToastIds.add(it.id);
+  const t = $('#toast');
+  t.replaceChildren(document.createTextNode(`created ${it.title || it.id} on `));
+  const a = document.createElement('a');
+  a.href = `#item=${encodeURIComponent(it.uuid || it.id)}`;
+  a.textContent = boardName(it.board);
+  a.dataset.createdBoardLink = it.id;
+  t.append(a);
+  t.classList.add('open');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove('open'), 5000);
+  setTimeout(() => createdToastIds.delete(it.id), 5000);
+}
 
 const boardItems = () => [...S.items.values()].filter((i) => i.board === S.board);
-const hashId = () => {
+const canvasItems = () => boardItems().filter(i => {
+  if (i.type === 'ticket' || i.type === 'project') return false;
+  if (i.type !== 'frame') return true;
+  const members = membersOf(i);
+  return !members.length || members.some(m => m.type !== 'ticket' && m.type !== 'project');
+});
+function hashState() {
+  const raw = location.hash.replace(/^#/, '');
   try {
-    return decodeURIComponent(location.hash.slice(1));
+    if (raw === 'attention' || raw === 'runs') return { page: raw };
+    if (raw.startsWith('item=')) return { page: 'item', item: decodeURIComponent(raw.slice(5)) };
+    if (raw.startsWith('board=')) return { page: 'board', board: decodeURIComponent(raw.slice(6)) };
+    return { page: 'board', board: decodeURIComponent(raw) };
   } catch {
-    return '';
+    return { page: 'board', board: '' };
   }
-};
+}
+const hashId = () => hashState().board || '';
+function setNavHash(page, value = '') {
+  const h = page === 'attention' || page === 'runs' ? `#${page}` : page === 'item' ? `#item=${encodeURIComponent(value)}` : `#${encodeURIComponent(value)}`;
+  history.replaceState(null, '', h);
+}
 /** parent -> child tickets; rebuilt per synchronous pass (the microtask drops it before the next event) */
 let kidIdx = null;
 function kidsOf(id) {
@@ -138,8 +313,14 @@ function kidsOf(id) {
 /** the server lite() strips heavy fields from SSE/state; do the same to PATCH/POST responses before storing them */
 const lite = (it) => {
   if (!it || typeof it !== 'object') return it;
-  const { trend, graph, ...rest } = it;
+  const { trend, graph, reportHistory, uptime, ...rest } = it;
   return rest;
+};
+const itemFor = (id) => {
+  const base = S.items.get(id);
+  if (!base) return undefined;
+  const heavy = S.detail.get(id);
+  return heavy ? { ...base, ...heavy } : base;
 };
 
 /** KEY-12 when the ticket's project has a key, else #12 — the name used everywhere tickets are referred to */
@@ -153,6 +334,8 @@ function ticketBy(ref) {
   const s = String(ref || '').trim();
   if (!s) return null;
   if (S.items.get(s)) return S.items.get(s);
+  const uuid = [...S.items.values()].find(i => i.type === 'ticket' && i.uuid?.toLowerCase() === s.toLowerCase());
+  if (uuid) return uuid;
   const m = /^(?:([A-Za-z][A-Za-z0-9]{1,7})-)?#?(\d+)$/.exec(s);
   if (!m) return null;
   for (const it of S.items.values()) if (it.type === 'ticket' && it.num === Number(m[2]) && (!m[1] || (S.items.get(it.project)?.key ?? '').toUpperCase() === m[1].toUpperCase())) return it;
@@ -181,7 +364,7 @@ function membersOf(f) {
   return [...S.items.values()].filter((i) => i.board === f.board && i.type !== 'frame' && (key ? (i.group || '').toLowerCase() === key : !i.group && contains(f, i)));
 }
 function frameUnder(it, exclude) {
-  return boardItems()
+  return canvasItems()
     .filter((f) => f.type === 'frame' && !exclude?.has(f.id) && (f.title || '').trim() && contains(f, it))
     .sort((a, b) => a.w * a.h - b.w * b.h)[0];
 }
@@ -191,28 +374,101 @@ function contains(f, it) {
   return cx >= f.x && cx <= f.x + f.w && cy >= f.y && cy <= f.y + f.h;
 }
 
+function copyTicketButton(it) {
+  return `<button class="copy-ticket" data-copy-ticket="${esc(it.uuid || it.id)}" title="Copy ticket UUID: ${esc(it.uuid || it.id)}" aria-label="Copy ticket UUID"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M16 8V4H4v12h4"/></svg></button>`;
+}
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('[data-copy-ticket]')) e.stopPropagation();
+}, true);
+document.addEventListener('dblclick', e => {
+  if (e.target.closest('[data-copy-ticket]')) e.stopPropagation();
+}, true);
+document.addEventListener('click', async e => {
+  const b = e.target.closest('[data-copy-ticket]');
+  if (!b) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const value = b.dataset.copyTicket;
+  try {
+    await navigator.clipboard.writeText(value);
+    toast('Ticket UUID copied');
+  } catch {
+    const input = document.createElement('textarea');
+    input.value = value;
+    input.style.position = 'fixed';
+    input.style.opacity = '0';
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand('copy');
+    input.remove();
+    toast(copied ? 'Ticket UUID copied' : `Copy UUID: ${value}`);
+  }
+}, true);
+// Reports are read-only. Keep safe external Markdown links in a separate tab instead of navigating hud away.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest?.('.md a, .report-markdown a, .report-preview a, .drawer-report a, .comment a');
+  if (!a) return;
+  const href = a.getAttribute('href') || '';
+  if (/^(?:https?:|mailto:)/i.test(href)) {
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+  }
+}, true);
+document.addEventListener('click', (e) => {
+  const more = e.target.closest?.('[data-report-more]');
+  if (more) {
+    e.preventDefault();
+    e.stopPropagation();
+    const card = more.closest('.item');
+    const issue = more.closest('[data-attention-id]');
+    const id = card?.dataset.id || S.attention.items.find(a => a.id === issue?.dataset.attentionId)?.itemId;
+    if (id) openDrawer(id);
+  }
+}, true);
+
 // ---------------------------------------------------------------- view
 function loadView() {
+  if (CAPTURE_READONLY) return fittedView();
   try {
-    const v = JSON.parse(localStorage.getItem('hud.view.' + S.board));
-    if (v && Number.isFinite(v.x)) return v;
+    const v = JSON.parse(localStorage.getItem('hud.bounded-view.' + S.board));
+    if (v && [v.x, v.y, v.z].every(Number.isFinite)) return v;
   } catch {}
-  return { x: 60, y: 60, z: 1 };
+  return fittedView();
 }
 const saveView = debounce(() => {
+  if (CAPTURE_READONLY) return;
   try {
-    localStorage.setItem('hud.view.' + S.board, JSON.stringify(S.view));
+    localStorage.setItem('hud.bounded-view.' + S.board, JSON.stringify(S.view));
   } catch {}
 }, 300);
 
+function boardSize() {
+  const b = S.boards.find(b => b.id === S.board);
+  return { w: b?.width || 1600, h: b?.height || 900 };
+}
+function drawerPixels() { return S.drawerWide ? Math.min(900, innerWidth) : (S.drawerWidth || 420); }
+function viewport() {
+  const r = canvas.getBoundingClientRect();
+  return { w: Math.max(1, r.width - (S.drawer ? Math.min(drawerPixels(), r.width) : 0)), h: Math.max(1, r.height) };
+}
+function fittedView() {
+  const b = boardSize(), r = viewport();
+  const z = Math.max(0.01, Math.min(Math.max(1, r.w - 24) / b.w, Math.max(1, r.h - 24) / b.h));
+  return { x: (r.w - b.w * z) / 2, y: (r.h - b.h * z) / 2, z };
+}
+
 function applyView() {
+  const b = boardSize(), r = viewport(), min = fittedView().z;
+  S.view.z = clamp(S.view.z, min, Math.max(3, min));
+  S.view.x = b.w * S.view.z <= r.w ? (r.w - b.w * S.view.z) / 2 : clamp(S.view.x, r.w - b.w * S.view.z, 0);
+  S.view.y = b.h * S.view.z <= r.h ? (r.h - b.h * S.view.z) / 2 : clamp(S.view.y, r.h - b.h * S.view.z, 0);
   const { x, y, z } = S.view;
+  world.style.width = b.w + 'px';
+  world.style.height = b.h + 'px';
   world.style.transform = `translate(${x}px, ${y}px) scale(${z})`;
-  const g = GRID * z;
-  canvas.style.backgroundSize = `${g}px ${g}px`;
-  canvas.style.backgroundPosition = `${x - g / 2}px ${y - g / 2}px`;
-  canvas.style.backgroundImage = z < 0.35 ? 'none' : '';
   $('#zoom').textContent = `${Math.round(z * 100)}%`;
+  $('#zoom-out').disabled = z <= min + 0.001;
+  $('#zoom-in').disabled = z >= Math.max(3, min) - 0.001;
   saveView();
 }
 
@@ -222,7 +478,7 @@ function toWorld(cx, cy) {
 }
 
 function zoomAt(cx, cy, nz) {
-  nz = clamp(nz, 0.1, 3);
+  nz = clamp(nz, fittedView().z, Math.max(3, fittedView().z));
   const r = canvas.getBoundingClientRect();
   const px = cx - r.left, py = cy - r.top;
   const wx = (px - S.view.x) / S.view.z, wy = (py - S.view.y) / S.view.z;
@@ -232,7 +488,11 @@ function zoomAt(cx, cy, nz) {
   applyView();
 }
 
-function fit(items = boardItems()) {
+function fit(items) {
+  if (!items?.length) {
+    S.view = fittedView();
+    return applyView();
+  }
   const r = canvas.getBoundingClientRect();
   if (!items.length) {
     S.view = { x: 60, y: 60, z: 1 };
@@ -241,7 +501,7 @@ function fit(items = boardItems()) {
   const minX = Math.min(...items.map((i) => i.x)), minY = Math.min(...items.map((i) => i.y - (i.type === 'frame' ? 24 : 0)));
   const maxX = Math.max(...items.map((i) => i.x + i.w)), maxY = Math.max(...items.map((i) => i.y + i.h));
   const pad = 60;
-  const drawerW = S.drawer ? 420 : 0;
+  const drawerW = S.drawer ? Math.min(drawerPixels(), r.width) : 0;
   const z = clamp(Math.min((r.width - drawerW - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY)), 0.1, 1);
   S.view = { z, x: (r.width - drawerW - (maxX - minX) * z) / 2 - minX * z, y: (r.height - (maxY - minY) * z) / 2 - minY * z };
   applyView();
@@ -251,8 +511,13 @@ function focusItem(id) {
   const it = S.items.get(id);
   if (!it) return toast(`no item ${id}`);
   if (it.board !== S.board) switchBoard(it.board);
+  if (it.type === 'ticket' || it.type === 'project') {
+    setMode('list');
+    return openDrawer(id);
+  }
+  if (S.mode !== 'canvas') setMode('canvas');
   const r = canvas.getBoundingClientRect();
-  const drawerW = S.drawer ? 420 : 0;
+  const drawerW = S.drawer ? Math.min(drawerPixels(), r.width) : 0;
   S.view.z = Math.max(S.view.z, 0.6);
   S.view.x = (r.width - drawerW) / 2 - (it.x + it.w / 2) * S.view.z;
   S.view.y = r.height / 2 - (it.y + it.h / 2) * S.view.z;
@@ -312,8 +577,83 @@ function stateClass(it) {
     if (it.status === 'blocked' || needsDecision(it)) cls.push('needs-decision');
     return cls;
   }
-  if (it.type === 'monitor') return [`m-${it.state || 'unknown'}`];
+  if (it.type === 'monitor') return [`m-${monitorState(it)}`];
   return [];
+}
+
+function ageLabel(seconds) {
+  if (!Number.isFinite(seconds)) return 'unknown';
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+function pipelineStageReadings(it) {
+  const pipeline = it?.pipelineView || monitorReadout(it).pipelineView;
+  if (!Array.isArray(pipeline?.stages)) return [];
+  return pipeline.stages.flatMap((stage) => Object.values(stage || {}).filter((value) => value && typeof value === 'object' && typeof value.id === 'string' && Number.isFinite(value.ageSeconds)));
+}
+function monitorSourceLabel(it) {
+  const r = monitorReadout(it), m = it.metric || {}, s = it.source || {};
+  const stages = pipelineStageReadings(it);
+  if (stages.length || it.pipeline || it.display === 'pipeline') {
+    const names = [...new Set(stages.map((stage) => stage.source).filter(Boolean))];
+    return names.length ? `stage bindings · ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}` : 'derived from stage bindings';
+  }
+  if (it.display === 'custom' && it.program?.description) return `${r.source || m.source || `${s.kind || 'manual'} by ${it.observation?.actor || it.updatedBy || 'unknown'}`} · renderer ${it.program.description}`;
+  if (r.source) return String(r.source);
+  if (m.source) return String(m.source);
+  if (m.sourceId) return String(m.sourceId);
+  if (s.kind === 'probe' && s.probe) return `probe:${s.probe}`;
+  if (s.kind === 'command') return 'command collector';
+  if (s.kind === 'http') return 'HTTP collector';
+  return `${s.kind || 'manual'} by ${it.observation?.actor || it.updatedBy || 'unknown'}`;
+}
+function monitorMetadata(it) {
+  const readout = monitorReadout(it), observation = it.observation || {};
+  const legacy = !it.observation || observation.observedAt == null;
+  const stages = pipelineStageReadings(it);
+  const stageEvidence = [...new Set(stages.map((stage) => stage.evidence).filter(Boolean))];
+  const evidence = stages.length
+    ? stageEvidence.length === 1 ? stageEvidence[0] : 'unknown (derived)'
+    : legacy ? 'unknown (legacy)' : (observation.evidence || readout.evidence || it.evidence || 'unknown');
+  const age = stages.length ? Math.max(...stages.map((stage) => Number(stage.ageSeconds) + (CAPTURE_READONLY ? 0 : Math.max(0, (Date.now() - (S.readoutAt || Date.now())) / 1000)))) : readingAgeSeconds(it);
+  const coverage = readout.coverage || observation.coverage || it.coverage;
+  const coverageText = stages.length ? 'per stage' : coverage && Number.isFinite(coverage.responding) && Number.isFinite(coverage.total)
+    ? `${coverage.responding}/${coverage.total}` : '—';
+  const definition = it.metric?.definition || readout.definition || (it.display === 'custom' ? it.program?.description : '') || (stages.length || it.pipeline ? 'derived from declared stage bindings' : 'definition not set');
+  return { source: monitorSourceLabel(it), evidence, age: `${stages.length ? 'worst ' : ''}${ageLabel(age)}`, coverage: coverageText, definition };
+}
+function monitorMetaFooter(it) {
+  const readout = monitorReadout(it);
+  const hasNumeric = typeof it.value === 'number' || typeof readout.value === 'number' || typeof it.progress === 'number' || typeof readout.progress === 'number';
+  const hasStructuredData = !!(it.data || it.pipeline || it.pipelineView || readout.pipelineView || it.display === 'table' || it.display === 'pipeline' || it.display === 'custom');
+  if (it.type !== 'monitor' || (!hasNumeric && !hasStructuredData)) return '';
+  const meta = monitorMetadata(it);
+  return `<span>source ${esc(meta.source)}</span><span>evidence ${esc(meta.evidence)}</span><span>age ${esc(meta.age)}</span><span>coverage ${esc(meta.coverage)}</span><span class="definition" title="${esc(meta.definition)}">${esc(meta.definition)}</span>`;
+}
+function plotItemWithBoardContext(it) {
+  const board = S.boards.find((b) => b.id === it.board);
+  const plot = { ...(it.plot || {}) };
+  const events = [...(Array.isArray(plot.events) ? plot.events : [])];
+  for (const annotation of board?.annotations || []) {
+    if (annotation.deletedAt) continue;
+    if (!events.some((e) => (e.id && e.id === annotation.id) || (e.time === annotation.time && e.text === annotation.text))) {
+      events.push({ id: annotation.id, time: annotation.time, text: annotation.text });
+    }
+  }
+  const metrics = Array.isArray(plot.metrics) ? plot.metrics : [];
+  const unit = it.metric?.unit ?? it.unit ?? '';
+  const plotSeries = metrics.map((ref) => {
+    const name = String(ref);
+    const metric = S.items.get(name) || [...S.items.values()].find((candidate) => candidate.board === it.board && candidate.type === 'monitor' && (candidate.metric?.key === name || candidate.metric?.sourceId === name));
+    if (!metric || metric.type !== 'monitor' || metric.board !== it.board) return null;
+    const metricUnit = metric.metric?.unit ?? metric.unit ?? '';
+    if (metricUnit !== unit) return null;
+    return { label: name, unit: metricUnit, history: (metric.history || []).filter((point) => typeof point.v === 'number' && Number.isFinite(point.v)).map((point) => ({ t: point.t, v: point.v })) };
+  }).filter(Boolean);
+  return { ...it, plot: { ...plot, events }, ...(metrics.length ? { plotSeries } : {}) };
 }
 
 function cardHTML(it) {
@@ -337,7 +677,7 @@ function cardHTML(it) {
             .map((o) => {
               const chosen = it.decision?.optionId === o.id;
               if (it.decision && !chosen) return '';
-              return `<div class="opt${chosen ? ' chosen' : ''}" data-decide="${esc(o.id)}" data-label="${esc(o.label)}"><span class="k">${chosen ? '✓' : '▸'}${esc(o.id)}</span> ${esc(o.label)}${o.detail ? ` <span class="d">${esc(o.detail)}</span>` : ''}</div>`;
+              return `<div class="opt${chosen ? ' chosen' : ''}" data-decide="${esc(o.id)}" data-label="${esc(o.label)}" data-decision-version="${esc(it.decisionVersion ?? '')}"><span class="k">${chosen ? '✓' : '▸'}${esc(o.id)}</span> ${esc(o.label)}${o.detail ? ` <span class="d">${esc(o.detail)}</span>` : ''}</div>`;
             })
             .join('')}</div>`
         : '';
@@ -355,27 +695,33 @@ function cardHTML(it) {
       ]
         .filter(Boolean)
         .join('  ');
-      return `<div class="hd"><span class="st">${STATUS_GLYPH[it.status] || '[·]'} ${esc(it.status)}</span><span class="r">${it.autoStatus ? '<span title="status follows linked monitors">⟳</span> ' : ''}${pr} <span class="idt">${esc(identOf(it))}</span> <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      return `<div class="hd"><span class="st">${STATUS_GLYPH[it.status] || '[·]'} ${esc(it.status)}</span><span class="r">${it.autoStatus ? '<span title="status follows linked monitors">⟳</span> ' : ''}${pr} <span class="idt">${esc(identOf(it))}</span> ${copyTicketButton(it)} <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
         <div class="bd"><div class="ttl">${esc(it.title) || '<span class="faint">untitled</span>'}</div>${lineage ? `<div class="lineage">${lineage}</div>` : ''}${opts}${answer}${links ? `<div class="links">${links}</div>` : ''}<div class="body md">${md(it.body)}</div></div>
         <div class="ft">${by(it)}${it.assignee ? `<span>→${esc(it.assignee)}</span>` : ''}<span>${tags}</span>${targetHTML(it)}<span class="r">${nc} ${ago(it.updatedAt)}</span></div>`;
     }
     case 'monitor': {
-      const st = it.state || 'unknown';
+      const reading = monitorReadout(it);
+      const value = Object.hasOwn(reading, 'value') ? reading.value : it.value;
+      const label = Object.hasOwn(reading, 'label') ? reading.label : it.label;
+      const readingUnit = reading.unit || it.metric?.unit || it.unit || '';
+      const plotted = plotItemWithBoardContext({ ...it, value, label, unit: readingUnit, state: reading.state || it.state, progress: reading.progress ?? it.progress });
+      const st = reading.state || it.state || 'unknown';
       const g = st === 'running' ? `<span class="g spin">${SPIN[0]}</span>` : `<span class="g">${MGLYPH[st]}</span>`;
-      const stale = isStale(it) ? '<span class="tag">stale</span>' : '';
-      const lbl = it.label != null && it.label !== '';
-      const v = lbl ? it.label : fmtVal(it.value);
-      const hasP = it.progress !== null && it.progress !== undefined;
+      const stale = isStale(it) ? '<span class="tag">◌ stale</span>' : '';
+      const lbl = label != null && label !== '';
+      const v = lbl ? label : fmtVal(value);
+      const progress = reading.progress ?? it.progress;
+      const hasP = progress !== null && progress !== undefined;
       let disp = it.display || 'auto';
       if (disp === 'auto') disp = autoDisplay(it);
       let body = '';
-      const unit = it.unit && !lbl ? `<span class="u">${esc(it.unit)}</span>` : '';
+      const unit = readingUnit && !lbl ? `<span class="u">${esc(readingUnit)}</span>` : '';
       const rate = (disp === 'value' || disp === 'progress') && rateOf(it);
       const rateHTML = rate ? `<div class="rate">${esc(rate.text)}</div>` : '';
       if (disp === 'value') {
         body = `<div class="big ${String(v).length > 9 ? 'txt' : ''}">${esc(v) || '—'}${v ? unit : ''}</div><div class="spark">${spark(it.history, cols)}</div>${rateHTML}`;
       } else if (disp === 'progress') {
-        const p = hasP ? it.progress : 0;
+        const p = hasP ? progress : 0;
         body = `<div class="big">${Math.round(p)}<span class="u">%</span>${v ? `<span class="u">· ${esc(v)}${lbl ? '' : esc(it.unit || '')}</span>` : ''}</div><div class="bar">${bar(p, cols)}</div>${rateHTML}`;
       } else if (disp === 'text') {
         body = `<div class="big txt">${esc(v) || '—'}${v ? unit : ''}</div>`;
@@ -386,25 +732,32 @@ function cardHTML(it) {
         body = `<div class="lg">${(it.log || []).slice(-lines).map((l) => `<div>${MGLYPH[l.s] || '·'} ${hhmmss(l.t)} ${esc(l.m)}</div>`).join('') || '<span class="faint">no messages</span>'}</div>`;
       } else if (disp === 'spark') {
         body = `<div class="spark big-spark">${spark(it.history, clamp(Math.floor((it.w - 20) / 9), cols, 400))}</div><div class="big txt">${esc(v) || '—'}${v ? unit : ''}</div>`;
+      } else if (disp === 'custom') {
+        const p = it.program || {};
+        body = p.disabled
+          ? `<div class="chart-empty faint">custom program disabled · ${esc(p.description || 'no description')}</div>`
+          : `<div class="vwrap hud-program" data-program-item="${esc(it.id)}" data-program-revision="${esc(p.revision || '')}"><div class="chart-empty faint">program ${esc(p.revision || 'unknown')} · ${esc(p.description || 'no description')}</div></div>`;
       } else if (disp.startsWith('view:')) {
         // an agent-authored renderer module; hydrated after mount (see hydrateViews)
         body = `<div class="vwrap" data-viewmod="${esc(disp.slice(5))}"><div class="chart-empty faint">loading ${esc(disp.slice(5))}…</div></div>`;
       } else {
-        const chart = renderChartView(disp, it, { reserve: 52 });
+        const chart = renderChartView(disp, plotted, { reserve: 52 });
         body = chart ? `<div class="vwrap" data-chart="1">${chart}</div>` : '';
         if (!chart) {
           // unknown display kind — fall back to the big number so a card is never blank
           body = `<div class="big ${String(v).length > 9 ? 'txt' : ''}">${esc(v) || '—'}${v ? unit : ''}</div>`;
         }
       }
-      const msg = disp !== 'log' && it.message ? `<div class="msg">${esc(it.message)}</div>` : '';
+      const msg = disp !== 'log' && it.message ? `<div class="msg report-card">${reportPreview(it.message, it.messageFormat || 'plain', 4, it.id + '-message')}</div>` : '';
       const src = it.source || { kind: 'manual' };
       const srcLabel = ({ manual: 'manual', push: 'push', command: 'cmd', http: 'http', probe: `probe:${src.probe}`, heartbeat: 'heartbeat' }[src.kind] ?? String(src.kind)) + (src.interval && ['command', 'http', 'probe'].includes(src.kind) ? ` /${src.interval}s` : '');
       const bell = it.notify?.length ? `<span title="wakes ${esc(it.notify.join(', '))}">⌁</span>` : '';
       const yhint = disp !== 'auto' && DISPLAYS.includes(disp) && CHART_SET.has(disp) ? `<span class="yhint" title="alt+scroll to stretch the y-range (meters/axes are auto by default)">⇕</span>` : '';
-      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${stale}${bell}${yhint}<span class="r" title="${esc(localDT(it.lastUpdate))}">${ago(it.lastUpdate)} <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      const metaFooter = monitorMetaFooter(it);
+      const observedTime = it.observation?.observedAt ?? it.observation?.receivedAt ?? it.lastUpdate;
+      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${stale}${bell}${yhint}<span class="r" title="observation ${esc(localDT(observedTime))}; received ${esc(localDT(it.observation?.receivedAt ?? it.lastUpdate))}">${ago(observedTime)} <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
         <div class="bd">${body}${msg}</div>
-        <div class="ft">${by(it)}<span>${esc(srcLabel)}</span><span class="r">${esc(it.id)}</span></div>`;
+        <div class="ft${metaFooter ? ' readout-footer' : ''}"${metaFooter ? ` title="${esc(monitorMetadata(it).definition)}"` : ''}>${by(it)}<span>${esc(srcLabel)}</span>${metaFooter}<span class="r">${esc(it.id)}</span></div>`;
     }
     case 'util': {
       const body = renderUtilCard(it);
@@ -415,7 +768,7 @@ function cardHTML(it) {
     case 'note':
       return `${it.title ? `<div class="hd"><span class="t">${esc(it.title)}</span>` : '<div class="hd"><span class="t faint">note</span>'}<span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div><div class="bd md">${md(it.text)}</div>`;
     case 'frame': {
-      const n = membersOf(it).length;
+      const n = membersOf(it).filter(i => i.type !== 'ticket' && i.type !== 'project').length;
       return `<div class="flabel">${esc(it.title) || 'frame'}<span class="n">${n}</span></div>`;
     }
     case 'project': {
@@ -435,6 +788,7 @@ let pressedId = null; // card under the pointer: tickers must not rebuild it bet
 /** `soft` = called from a ticker; skip a card the user is pressing so a click is not swallowed by a rebuild */
 function renderItem(it, soft = false) {
   if (it.board !== S.board) return removeEl(it.id);
+  if (it.type === 'ticket' || it.type === 'project' || (it.type === 'frame' && !canvasItems().some(i => i.id === it.id))) return removeEl(it.id);
   let el = els.get(it.id);
   if (!el) {
     el = document.createElement('div');
@@ -455,6 +809,34 @@ function renderItem(it, soft = false) {
     // SVGs and hover state). The signature therefore has to cover everything the card shows.
     const sig = cardSignature(it, className);
     if (el.dataset.sig === sig) return;
+    if (it.type === 'monitor' && it.display === 'custom' && !it.program?.disabled && el.querySelector('.hud-program[data-program-item]')) {
+      const preview = document.createElement('div');
+      preview.innerHTML = cardHTML(it) + (S.expanded.has(it.id) ? expandedHTML(it) : '') + '<div class="rz"></div>';
+      const nextProgram = preview.querySelector('.hud-program[data-program-item]');
+      const currentProgram = el.querySelector('.hud-program[data-program-item]');
+      if (nextProgram && currentProgram && nextProgram.dataset.programRevision === currentProgram.dataset.programRevision) {
+        el.dataset.sig = sig;
+        el.className = className;
+        el.style.left = it.x + 'px';
+        el.style.top = it.y + 'px';
+        el.style.width = it.w + 'px';
+        el.style.height = it.h + 'px';
+        const currentHead = el.querySelector('.hd'), nextHead = preview.querySelector('.hd');
+        const currentFooter = el.querySelector('.ft'), nextFooter = preview.querySelector('.ft');
+        if (currentHead && nextHead) currentHead.replaceWith(nextHead);
+        if (currentFooter && nextFooter) currentFooter.replaceWith(nextFooter);
+        const currentMessage = el.querySelector('.bd .msg'), nextMessage = preview.querySelector('.bd .msg');
+        if (currentMessage && nextMessage) currentMessage.replaceWith(nextMessage);
+        else if (currentMessage) currentMessage.remove();
+        else if (nextMessage) el.querySelector('.bd')?.append(nextMessage);
+        const currentMore = el.querySelector('.more'), nextMore = preview.querySelector('.more');
+        if (currentMore && nextMore) currentMore.replaceWith(nextMore);
+        else if (currentMore) currentMore.remove();
+        else if (nextMore) el.querySelector('.rz')?.before(nextMore);
+        applyReadonlyControls(el);
+        return;
+      }
+    }
     el.dataset.sig = sig;
     el.className = className;
     el.style.left = it.x + 'px';
@@ -462,8 +844,13 @@ function renderItem(it, soft = false) {
     el.style.width = it.w + 'px';
     el.style.height = it.h + 'px';
     if (it.type === 'frame') el.style.zIndex = String(Math.max(1, 9 - Math.round(Math.log10(it.w * it.h) || 0)));
+    const previousProgram = el.querySelector('.hud-program[data-program-item]');
     el.innerHTML = cardHTML(it) + (S.expanded.has(it.id) ? expandedHTML(it) : '') + '<div class="rz"></div>';
+    const nextProgram = el.querySelector('.hud-program[data-program-item]');
+    if (previousProgram && nextProgram && previousProgram.dataset.programRevision === nextProgram.dataset.programRevision) nextProgram.replaceWith(previousProgram);
+    applyReadonlyControls(el);
     hydrateViews(el);
+    queueProgramsMount();
   } catch (e) {
     // one malformed item must never take the page down: show it as an error card instead
     console.error('render failed', it?.id, e);
@@ -474,6 +861,7 @@ function renderItem(it, soft = false) {
     el.style.width = (Number(it.w) || 260) + 'px';
     el.style.height = (Number(it.h) || 120) + 'px';
     el.innerHTML = `<div class="hd"><span class="g">✕</span><span class="t">render error</span><span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div><div class="bd faint">${esc(it.id)}: ${esc(e.message)}</div><div class="rz"></div>`;
+    applyReadonlyControls(el);
   }
 }
 
@@ -486,7 +874,11 @@ function cardSignature(it, className) {
     it.updatedAt, it.lastUpdate,
     it.display, it.plot ? JSON.stringify(it.plot) : '',
     it.status, it.priority, it.assignee, it.state, it.label, it.value, it.progress, it.message, it.unit,
+    it.metric ? JSON.stringify(it.metric) : '', it.observation ? JSON.stringify(it.observation) : '',
+    it.freshness ? JSON.stringify(it.freshness) : '', it.readout ? JSON.stringify(it.readout) : '',
+    it.pipelineView ? JSON.stringify(it.pipelineView) : '', it.program ? JSON.stringify(programSummary(it.program)) : '',
     it.title, it.num, it.kind, it.util ? JSON.stringify(it.util) : '', it.text, it.body, it.key, it.lead, it.target,
+    it.messageFormat, it.details,
     (it.comments || []).length, (it.tags || []).length, (it.monitors || []).join(','),
     (it.options || []).length, it.decision ? it.decision.optionId : '',
     (it.history || []).length, (it.log || []).length,
@@ -494,7 +886,14 @@ function cardSignature(it, className) {
   // time-dependent text: only rebuild when the rendered label would actually change
   if (it.type === 'util') parts.push(isLive(it, now) ? renderUtilCard(it, now) : '');
   else if (isAnimated(it)) parts.push(Math.floor(now / 100));
-  if (it.type === 'monitor') parts.push(ago(it.lastUpdate));
+  if (it.type === 'monitor') {
+    parts.push(ago(it.lastUpdate), ageLabel(readingAgeSeconds(it)), JSON.stringify(activeBoard()?.annotations || []));
+    for (const ref of it.plot?.metrics || []) {
+      const linked = S.items.get(String(ref)) || [...S.items.values()].find((candidate) => candidate.board === it.board && candidate.type === 'monitor' && (candidate.metric?.key === String(ref) || candidate.metric?.sourceId === String(ref)));
+      const last = linked?.history?.at(-1);
+      parts.push(linked ? [linked.id, linked.metric?.unit || linked.unit || '', linked.history?.length || 0, last?.t || 0, last?.v ?? ''].join('~') : `missing:${ref}`);
+    }
+  }
   if (it.type === 'ticket') parts.push(ago(it.updatedAt));
   // values drawn from other items: frame counts, '+N sub', idents, linked monitors, project rollups
   if (it.type === 'frame') parts.push(membersOf(it).length);
@@ -574,6 +973,125 @@ function hydrateViews(el) {
   }
 }
 
+let programsPromise;
+let mountedProgramRoot = null;
+let mountedProgramSignature = '';
+let programMountQueued = false;
+let programMountFrame = 0;
+let programMountGeneration = 0;
+const programNodeIds = new WeakMap();
+let nextProgramNodeId = 1;
+function activeBoard() { return S.boards.find((b) => b.id === S.board) || null; }
+function programSummary(program) {
+  if (!program) return undefined;
+  return { revision: program.revision, description: program.description, disabled: !!program.disabled, bindings: programBindings(program) };
+}
+function boardProgramActive() {
+  const program = activeBoard()?.program;
+  return S.page === 'board' && S.mode === 'canvas' && !!program && !program.disabled;
+}
+function ensureBoardProgramHost() {
+  let host = $('#board-program-root');
+  if (!boardProgramActive()) {
+    host?.remove();
+    world.classList.remove('has-board-program');
+    return null;
+  }
+  const board = activeBoard();
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'board-program-root';
+    host.className = 'board-program-root';
+    world.prepend(host);
+  }
+  const revision = board.program.revision || 'unknown';
+  const changed = host.dataset.programBoard !== board.id || host.dataset.programRevision !== revision;
+  host.dataset.programBoard = board.id;
+  host.dataset.programRevision = revision;
+  if (changed) host.innerHTML = `<div class="hud-program" data-program-board="${esc(board.id)}" data-program-revision="${esc(revision)}" role="region" aria-label="${esc(board.name)} custom dashboard"><div class="program-loading">program ${esc(revision)} · ${esc(board.program.description || 'no description')}</div></div>`;
+  world.classList.add('has-board-program');
+  return host;
+}
+function programRenderRoot() {
+  return $('#board-program-root') || world;
+}
+function programInputSignature(root) {
+  const board = activeBoard();
+  const nodes = [...(root?.querySelectorAll('.hud-program') || [])];
+  const hosts = nodes.map((node) => {
+    if (!programNodeIds.has(node)) programNodeIds.set(node, nextProgramNodeId++);
+    return [programNodeIds.get(node), node.dataset.programItem || '', node.dataset.programBoard || '', node.dataset.programRevision || ''];
+  });
+  const items = boardItems().filter((it) => it.display === 'custom' && it.program && !it.program.disabled).map((it) => [it.id, it.program.revision || '', !!it.program.disabled]);
+  return JSON.stringify({ board: board?.id, boardProgram: board?.program ? [board.program.revision || '', !!board.program.disabled] : null, items, hosts, readonly: CAPTURE_READONLY });
+}
+async function getProgramsModule() {
+  if (!programsPromise) programsPromise = import('./programs.js').catch((error) => ({ __error: error }));
+  return programsPromise;
+}
+async function mountProgramsNow(force = false) {
+  if (programMountQueued) {
+    cancelAnimationFrame(programMountFrame);
+    programMountQueued = false;
+  }
+  const root = programRenderRoot();
+  const hosts = root ? root.querySelectorAll('.hud-program').length : 0;
+  if (!root || !hosts) {
+    if (mountedProgramRoot) {
+      const old = mountedProgramRoot;
+      mountedProgramRoot = null;
+      mountedProgramSignature = '';
+      const mod = await getProgramsModule();
+      try { await mod.disposePrograms?.(old); } catch (error) { S.captureErrors.push(String(error?.message || error)); }
+    }
+    return { errors: [] };
+  }
+  const signature = programInputSignature(root);
+  if (!force && mountedProgramRoot === root && mountedProgramSignature === signature) return { errors: [] };
+  const generation = ++programMountGeneration;
+  const mod = await getProgramsModule();
+  const errors = [];
+  if (mountedProgramRoot) {
+    try { await mod.disposePrograms?.(mountedProgramRoot); } catch (error) { errors.push(String(error?.message || error)); }
+  }
+  mountedProgramRoot = root;
+  mountedProgramSignature = signature;
+  if (mod.__error || typeof mod.mountPrograms !== 'function') {
+    const message = mod.__error?.message || 'program renderer has no mountPrograms()';
+    errors.push(message);
+    root.querySelectorAll('.hud-program').forEach((host) => {
+      host.innerHTML = `<div class="chart-empty faint">program unavailable: ${esc(message)}</div>`;
+    });
+  } else {
+    try {
+      const report = await mod.mountPrograms(root, {
+        board: { ...activeBoard(), program: programSummary(activeBoard()?.program) },
+        items: boardItems().map((item) => ({ ...item, program: programSummary(item.program) })), readonly: CAPTURE_READONLY,
+        ...(CAPTURE_TOKEN ? { captureToken: CAPTURE_TOKEN } : {}),
+      });
+      if (Array.isArray(report?.errors)) errors.push(...report.errors.map(String));
+    } catch (error) {
+      errors.push(String(error?.message || error));
+      root.querySelectorAll('.hud-program').forEach((host) => {
+        host.innerHTML = `<div class="chart-empty faint">program failed: ${esc(error?.message || error)}</div>`;
+      });
+    }
+  }
+  if (generation === programMountGeneration && CAPTURE_READONLY) S.captureErrors.push(...errors);
+  return { errors };
+}
+function queueProgramsMount() {
+  if (programMountQueued) return;
+  programMountQueued = true;
+  programMountFrame = requestAnimationFrame(() => {
+    programMountQueued = false;
+    mountProgramsNow().catch((error) => {
+      console.error('program mount failed', error);
+      if (CAPTURE_READONLY) S.captureErrors.push(String(error?.message || error));
+    });
+  });
+}
+
 /** the detail a double-click reveals: comments, history, source, thresholds, meta */
 function expandedHTML(it) {
   if (it.type === 'ticket') {
@@ -610,7 +1128,8 @@ function expandedHTML(it) {
         .filter(([, v]) => v != null)
         .map(([k, v]) => `${k}=${v}`)
         .join(' ') || 'none';
-    return `<div class="more"><div class="sec-h">history</div><div class="hist">${hist}</div><div class="sec-h">log</div><div class="hist">${lg}</div><div class="sec-h">config</div><div class="meta">thresholds ${esc(thr)} · max ${esc(it.max ?? '—')} · stale ${esc(it.staleAfter ?? '—')}s · notify ${esc((it.notify || []).join(', ') || '—')}</div><div class="meta">${esc(JSON.stringify(it.source ?? { kind: 'manual' }))}</div></div>`;
+    const meta = monitorMetadata(it);
+    return `<div class="more"><div class="sec-h">history</div><div class="hist">${hist}</div><div class="sec-h">log</div><div class="hist">${lg}</div><div class="sec-h">metric</div><div class="meta">source ${esc(meta.source)} · evidence ${esc(meta.evidence)} · age ${esc(meta.age)} · coverage ${esc(meta.coverage)}</div><div class="meta">${esc(meta.definition)}</div>${it.freshness?.mode === 'static' ? `<div class="meta">static · ${esc(it.freshness.reason || '')}</div>` : ''}<div class="sec-h">config</div><div class="meta">thresholds ${esc(thr)} · max ${esc(it.max ?? '—')} · stale ${esc(it.staleAfter ?? '—')}s · notify ${esc((it.notify || []).join(', ') || '—')}</div><div class="meta">${esc(JSON.stringify(it.source ?? { kind: 'manual' }))}</div></div>`;
   }
   if (it.type === 'util') {
     const detail =
@@ -633,29 +1152,90 @@ function removeEl(id) {
 }
 
 function renderAll() {
+  ensureBoardProgramHost();
   for (const [id, el] of els) if (S.items.get(id)?.board !== S.board) removeEl(id);
   for (const it of boardItems()) renderItem(it);
   refreshDerived();
   updateChrome();
+  queueProgramsMount();
+  applyReadonlyControls();
 }
 
 const renderFrames = refreshDerived;
 
 function updateChrome() {
-  const n = boardItems().length;
-  document.body.classList.toggle('blank', n === 0);
+  const n = canvasItems().length;
+  document.body.classList.toggle('blank', n === 0 && !boardProgramActive());
   renderTabs();
   const counts = { ticket: 0, monitor: 0, note: 0, frame: 0, util: 0, project: 0 };
   let open = 0, bad = 0;
   for (const it of boardItems()) {
     counts[it.type] = (counts[it.type] || 0) + 1;
     if (it.type === 'ticket' && it.status !== 'done') open++;
-    if (it.type === 'monitor' && (it.state === 'error' || it.state === 'warn')) bad++;
+      if (it.type === 'monitor' && (monitorState(it) === 'error' || monitorState(it) === 'warn')) bad++;
   }
   const utilPart = counts.util ? ` · ${counts.util} tools` : '';
   $('#pos').textContent = `${counts.ticket} tickets (${open} open) · ${counts.monitor} monitors${bad ? ` (${bad} ▲✕)` : ''} · ${counts.note} notes${utilPart}`;
+  $('#btn-view').textContent = `tickets ${counts.ticket}`;
+  $('#btn-dashboard').textContent = `dashboard ${canvasItems().filter(i => i.type !== 'frame').length}`;
+  renderMonitorAttentionStrip();
+  renderProgramInspector();
   setModeHint();
   if (S.mode === 'list') scheduleList();
+}
+
+function comparisonRows(board) {
+  return board?.comparisonResults || S.readoutBoards.get(board?.id)?.comparisons || S.readoutBoards.get(board?.id)?.comparisonResults || [];
+}
+function comparisonFocusId(board, result) {
+  const rule = (board?.comparisons || []).find((r) => r.id === result.id);
+  const ids = [result.itemId, result.monitorId, result.left?.id, result.right?.id, result.left, result.right, rule?.left, rule?.right];
+  return ids.map((id) => typeof id === 'string' ? id : '').find((id) => S.items.get(id)?.board === S.board) || '';
+}
+function renderMonitorAttentionStrip() {
+  const host = $('#monitor-attention-strip');
+  if (!host) return;
+  if (S.page !== 'board') { host.hidden = true; document.body.classList.remove('monitor-attention'); return; }
+  const monitors = boardItems().filter((it) => it.type === 'monitor' && (monitorState(it) === 'error' || isStale(it)));
+  const board = activeBoard();
+  const comparisons = comparisonRows(board).filter((r) => r && r.state && r.state !== 'ok');
+  const rows = [
+    ...monitors.map((it) => ({ id: it.id, kind: monitorState(it) === 'error' ? 'error' : 'stale', text: `${monitorState(it) === 'error' ? '✕' : '◌'} ${it.title || it.id}` })),
+    ...comparisons.map((r) => ({ id: comparisonFocusId(board, r), kind: r.state === 'conflict' ? 'conflict' : r.state === 'pending' ? 'pending' : 'unknown', text: `⇔ ${r.state}: ${r.reason || r.id}` })),
+  ];
+  const wasHidden = host.hidden;
+  host.hidden = !rows.length;
+  document.body.classList.toggle('monitor-attention', !host.hidden);
+  if (wasHidden !== host.hidden && S.mode === 'canvas') requestAnimationFrame(applyView);
+  const html = rows.length ? `<span class="strip-label">attention ${rows.length}</span>${rows.map((r) => `<button class="strip-${esc(r.kind)}" data-strip-focus="${esc(r.id)}" title="${esc(r.text)}">${esc(r.text)}</button>`).join('')}` : '';
+  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
+}
+
+function programBindings(program) {
+  return Array.isArray(program?.bindings) ? program.bindings : [];
+}
+function renderProgramInspector() {
+  const host = $('#program-inspector');
+  if (!host || host.hidden) return;
+  const board = activeBoard();
+  const sources = boardItems().filter((it) => it.type === 'monitor');
+  const boardProgram = board?.program;
+  const programSection = (owner, program) => {
+    if (!program) return '';
+    const bindings = programBindings(program);
+    const rows = bindings.map((id) => {
+      const bound = S.items.get(id);
+      return `<div class="meta">${bound ? '●' : '○'} ${esc(id)}${bound ? ` · ${esc(bound.title || bound.id)} · ${esc(monitorMetadata(bound).source)}` : ' · missing'}</div>`;
+    }).join('') || '<div class="meta">no declared bindings</div>';
+    return `<section class="source-item"><div><b>${esc(owner)}</b> · ${esc(program.revision || 'unknown')}${program.disabled ? ' · disabled' : ''}</div><div class="meta">${esc(program.description || '')}</div><div class="meta">bindings</div>${rows}</section>`;
+  };
+  const itemsHTML = sources.map((it) => {
+    const meta = monitorMetadata(it);
+    return `<section class="source-item"><button data-source-open="${esc(it.id)}">${esc(it.title || it.id)}</button><div class="meta">${esc(it.metric?.key || it.id)} · ${esc(meta.source)} · ${esc(meta.evidence)} · ${esc(meta.age)}${it.metric?.unit || it.unit ? ` · ${esc(it.metric?.unit || it.unit)}` : ''}</div><div class="meta">${esc(it.metric?.definition || meta.definition)}</div>${it.freshness?.mode === 'static' ? `<div class="meta">static · ${esc(it.freshness.reason || '')}</div>` : ''}</section>`;
+  }).join('');
+  const html = `<div class="phd"><b>source inspector</b><span class="sp"></span><button data-source-close aria-label="close source inspector">×</button></div><div class="sec"><div class="meta">${esc(board?.name || S.board || '')}</div>${boardProgram ? `<div class="meta">board program ${esc(boardProgram.revision || '')} · ${esc(boardProgram.description || '')}</div>` : ''}</div>${programSection('board program', boardProgram)}${sources.map((it) => programSection(it.title || it.id, it.program)).join('')}${itemsHTML || '<div class="sec faint">no monitor sources on this board</div>'}`;
+  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
+  applyReadonlyControls(host);
 }
 
 function flash(id) {
@@ -732,9 +1312,10 @@ function select(ids, add = false) {
 function setModeHint() {
   const n = S.sel.size;
   $('#mode').textContent = document.body.classList.contains('cmd') ? 'COMMAND' : n ? `SEL ${n}` : 'NORMAL';
-  $('#hint').textContent = n
+  $('#hint').textContent = S.page !== 'board' ? 'click to inspect · ⌘/Ctrl+K search · review keeps issues active · esc closes details' : n
     ? 'drag move · ⏎ open · ⌫ delete · arrows nudge · esc clear'
-    : 'dbl-click add · drag pan · ⌘/ctrl+scroll zoom · shift+drag select · : command · ? help';
+    : S.mode === 'list' ? 'click a ticket for details · / search · completed shows finished work · l dashboard'
+    : 'dbl-click details · drag pan · ⌘/ctrl+scroll zoom · shift+drag select · : command · ? help';
 }
 
 // ---------------------------------------------------------------- tabs / boards
@@ -754,20 +1335,26 @@ function renderTabs() {
   tabs.querySelector('.tab.on')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
 }
 
-function switchBoard(id) {
+function switchBoard(id, opts = {}) {
   if (!id || !S.boards.some((b) => b.id === id)) return toast(`no board ${id}`);
   S.board = id;
   S.sel.clear();
-  try {
-    localStorage.setItem('hud.board', id);
-  } catch {}
-  history.replaceState(null, '', '#' + encodeURIComponent(id));
+  if (!CAPTURE_READONLY) try { localStorage.setItem('hud.board', id); } catch {}
+  if (opts.hash !== false) setNavHash(opts.page === 'attention' || opts.page === 'runs' ? opts.page : 'board', id);
   S.view = loadView();
   applyView();
   closeDrawer();
+  let mode;
+  try { mode = localStorage.getItem('hud.mode.' + id); } catch {}
+  const hasCanvas = canvasItems().some((i) => i.type !== 'frame');
+  const hasTickets = boardItems().some((i) => i.type === 'ticket' || i.type === 'project');
+  setMode(mode === 'canvas' && !hasCanvas && hasTickets ? 'list' : (mode || (hasTickets && !hasCanvas ? 'list' : 'canvas')));
   renderAll();
   renderActivity();
   renderTrash();
+  if (opts.page && opts.page !== 'board') setPage(opts.page, { hash: false });
+  else if (opts.page !== false) setPage('board', { hash: false });
+  if (!CAPTURE_READONLY) loadReadout(id);
 }
 
 function tabInput(initial, onDone) {
@@ -822,29 +1409,422 @@ function upsertBoard(b) {
   if (i >= 0) S.boards[i] = b;
   else S.boards.push(b);
   renderTabs();
+  if (b.id === S.board) { renderMonitorAttentionStrip(); renderProgramInspector(); queueProgramsMount(); }
+  if (!$('#board-menu').hidden && document.activeElement?.dataset?.boardQuery === undefined) renderBoardMenu();
 }
+
+// ---------------------------------------------------------------- supervision: attention, runs, global navigation
+const ATTENTION_LABEL = { decision: 'decision', error: 'error', stale: 'stale', warn: 'warn', blocked: 'blocked' };
+const ATTENTION_GLYPH = { decision: '?', error: '✕', stale: '○', warn: '▲', blocked: '!' };
+const localKey = (k) => `hud.${k}`;
+function rememberBoard(id) {
+  if (CAPTURE_READONLY) return;
+  if (!id) return;
+  let ids = [];
+  try { ids = JSON.parse(localStorage.getItem(localKey('recent-boards')) || '[]') || []; } catch {}
+  ids = [id, ...ids.filter((x) => x !== id)].slice(0, 8);
+  try { localStorage.setItem(localKey('recent-boards'), JSON.stringify(ids)); } catch {}
+}
+function setPage(page, opts = {}) {
+  const next = ['attention', 'runs', 'board'].includes(page) ? page : 'attention';
+  S.page = next;
+  document.body.classList.toggle('supervision', next !== 'board');
+  $('#btn-attention').classList.toggle('on', next === 'attention');
+  $('#btn-runs').classList.toggle('on', next === 'runs');
+  $('#btn-board').classList.toggle('on', next === 'board');
+  if (opts.hash !== false) setNavHash(next, next === 'board' ? S.board : '');
+  if (next === 'attention') {
+    renderAttention();
+    if (!CAPTURE_READONLY) { loadAttention(); loadChanges(); }
+  } else if (next === 'runs') {
+    renderRuns();
+    if (!CAPTURE_READONLY) loadRuns();
+  } else {
+    renderAll();
+    if (S.mode === 'list') renderList();
+    else requestAnimationFrame(() => fit());
+  }
+  updateChrome();
+}
+function activeAttention(now = Date.now()) {
+  return (S.attention.items || []).filter((a) => !a.snoozedUntil || Number(a.snoozedUntil) <= now);
+}
+function snoozedAttention(now = Date.now()) {
+  return (S.attention.items || []).filter((a) => Number(a.snoozedUntil) > now);
+}
+function attentionByBoard(list) {
+  const groups = new Map();
+  for (const a of list) {
+    const k = a.board || 'unknown';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  return [...groups.entries()].sort((a, b) => Math.min(...a[1].map(i => i.priority)) - Math.min(...b[1].map(i => i.priority)) || a[0].localeCompare(b[0]));
+}
+function attentionCardHTML(a, now = Date.now()) {
+  const item = itemFor(a.itemId || a.id);
+  const title = a.title || item?.title || a.itemId || a.id;
+  const kind = ATTENTION_LABEL[a.kind] || a.kind || 'attention';
+  const when = a.lastUpdate || a.openedAt;
+  const review = a.reviewedAt ? `reviewed ${ago(a.reviewedAt)} ago` : 'unreviewed';
+  const snooze = a.snoozedUntil ? `snoozed until ${localDT(a.snoozedUntil)}` : review;
+  return `<article class="attention-card kind-${esc(kind)}" data-attention-id="${esc(a.id)}">
+    <div class="ac-head"><span class="ac-kind">${ATTENTION_GLYPH[kind] || '▲'} ${esc(kind)}</span><button class="ac-open ac-title" data-attention-open="${esc(a.itemId || '')}" title="open without acknowledging">${esc(title)}</button></div>
+    <div class="ac-meta">${esc(boardName(a.board))}${a.owner ? ` · @${esc(a.owner)}` : ''}${when ? ` · ${ago(when)} ago` : ''}</div>
+    ${a.message ? `<div class="ac-message">${reportPreview(a.message, a.messageFormat || 'plain', 4, `attention-${a.id}`)}</div>` : ''}
+    <div class="ac-foot">${a.runId ? `<button class="btn sm" data-attention-run="${esc(a.runId)}">open run</button>` : ''}<span class="dim">${esc(snooze)}</span><span class="sp"></span><button class="btn sm" data-attention-review>${a.reviewedAt ? 'unreview' : 'review'}</button><button class="btn sm" data-attention-snooze="15" title="snooze 15 minutes">15m</button><button class="btn sm" data-attention-snooze="60" title="snooze one hour">1h</button><button class="btn sm" data-attention-snooze="tomorrow" title="snooze until tomorrow at 09:00">tomorrow</button></div>
+  </article>`;
+}
+function attentionBoardHTML(list, now) {
+  return attentionByBoard(list).map(([board, rows]) => {
+    const runs = new Map();
+    for (const a of rows) {
+      const key = a.runId || `board:${board}`;
+      if (!runs.has(key)) runs.set(key, []);
+      runs.get(key).push(a);
+    }
+    const runBlocks = [...runs.entries()].sort((a, b) => Math.min(...a[1].map(i => i.priority)) - Math.min(...b[1].map(i => i.priority))).map(([key, issues]) => {
+      const runId = key.startsWith('board:') ? '' : key;
+      const runTitle = issues.find((a) => a.runTitle)?.runTitle || (runId && (S.runs.items || []).find((r) => r.id === runId || r.uuid === runId)?.title) || (runId ? `run ${runId}` : 'board issues');
+      const open = runId ? `<button class="btn sm" data-attention-run="${esc(runId)}">open run</button>` : '';
+      return `<div class="attention-run"><div class="attention-run-head"><span>${esc(runTitle)}</span><span class="dim">${issues.length}</span><span class="sp"></span>${open}</div><div class="attention-groups">${issues.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || (b.openedAt || 0) - (a.openedAt || 0)).map((a) => attentionCardHTML(a, now)).join('')}</div></div>`;
+    }).join('');
+    return `<div class="sup-section"><h2>${esc(boardName(board))} <span class="dim">${rows.length}</span></h2>${runBlocks}</div>`;
+  }).join('');
+}
+function renderChanges() {
+  const host = $('#since-last-visit');
+  if (!host) return;
+  const changes = S.changes;
+  if (!S.lastVisit) {
+    host.innerHTML = '<div class="sup-empty">No previous visit checkpoint yet.</div>';
+    return;
+  }
+  const rows = (changes.events || []).slice().reverse().map((a) => `<div class="change-row"><span class="change-time">${esc(localDT(a.t))}</span><span class="change-text"><span class="dim">@${esc(a.actor || '—')}</span> ${esc(a.text || a.kind || 'changed')} ${a.itemId && S.items.has(a.itemId) ? `<button class="btn sm" data-change-open="${esc(a.itemId)}">open</button>` : ''}</span></div>`).join('');
+  host.innerHTML = `<div class="sup-meta">${changes.complete ? `${changes.events?.length || 0} recorded change${changes.events?.length === 1 ? '' : 's'} since ${esc(localDT(S.lastVisit))}` : 'Change history is incomplete; showing the records returned by the server.'}</div>${rows || '<div class="sup-empty">No recorded changes since your last visit.</div>'}`;
+}
+function renderAttention() {
+  if (S.page !== 'attention') return;
+  const now = Number(S.attention.now) || Date.now();
+  const active = activeAttention(now);
+  const pending = active.filter((a) => !a.reviewedAt);
+  const current = pending;
+  const reviewed = active.filter((a) => a.reviewedAt);
+  const snoozed = snoozedAttention(now);
+  const head = $('#supervision-head');
+  const body = $('#supervision-body');
+  head.innerHTML = `<div class="sup-title"><h1>attention</h1><span class="sup-meta">${pending.length} unreviewed · ${active.length} current</span><span class="sp"></span><span class="sup-meta">${esc(localDT(now))}</span></div><div class="sup-actions"><button class="btn" data-attention-refresh>refresh</button><button class="btn" data-mark-read>mark since last visit read</button></div>`;
+  body.innerHTML = `<section class="sup-section"><h2>current · unreviewed <span class="dim">${current.length}</span></h2>${current.length ? attentionBoardHTML(current, now) : '<div class="sup-empty">No current unreviewed attention records.</div>'}</section>
+    <section class="sup-section ${S.attentionExpanded.reviewed ? '' : 'sup-collapsed'}" data-sup-section="reviewed"><h2>reviewed <span class="dim">${reviewed.length}</span><button class="btn sm" data-sup-toggle="reviewed">${S.attentionExpanded.reviewed ? 'hide' : 'show'}</button></h2><div class="sup-section-body">${reviewed.length ? attentionBoardHTML(reviewed, now) : '<div class="sup-empty">No reviewed records.</div>'}</div></section>
+    <section class="sup-section ${S.attentionExpanded.snoozed ? '' : 'sup-collapsed'}" data-sup-section="snoozed"><h2>snoozed <span class="dim">${snoozed.length}</span><button class="btn sm" data-sup-toggle="snoozed">${S.attentionExpanded.snoozed ? 'hide' : 'show'}</button></h2><div class="sup-section-body">${snoozed.length ? attentionBoardHTML(snoozed, now) : '<div class="sup-empty">No snoozed records.</div>'}</div></section>
+    <section class="sup-section"><h2>since your last visit</h2><div id="since-last-visit"></div></section>`;
+  applyReadonlyControls(head);
+  applyReadonlyControls(body);
+  renderChanges();
+}
+async function loadAttention() {
+  if (CAPTURE_READONLY) return;
+  const data = await optionalGET('/api/attention');
+  if (!data) return;
+  S.attention = { items: Array.isArray(data.items) ? data.items : [], now: data.now || Date.now() };
+  const n = activeAttention(S.attention.now).filter((a) => !a.reviewedAt).length;
+  $('#attention-count').textContent = n ? `(${n})` : '';
+  if (S.page === 'attention') renderAttention();
+  if (!$('#board-menu').hidden) renderBoardMenu();
+}
+function tomorrowNine() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(9, 0, 0, 0);
+  return d.getTime();
+}
+async function attentionAction(card, action, until) {
+  const a = S.attention.items.find((x) => x.id === card?.dataset.attentionId);
+  if (!a) return;
+  try {
+    await api('POST', `/api/attention/${encodeURIComponent(a.id)}`, { action, revision: a.revision, ...(until ? { until } : {}) });
+    await loadAttention();
+  } catch (e) {
+    if (e.status === 409) {
+      toast('attention changed elsewhere; refreshing');
+      await loadAttention();
+    }
+  }
+}
+function runStatus(run) { return String(run.status || 'unknown').toLowerCase(); }
+function runDone(run) { return ['done', 'completed', 'canceled', 'cancelled'].includes(runStatus(run)); }
+function boardName(id) { return S.boards.find((b) => b.id === id)?.name || id || ''; }
+function runCardHTML(run) {
+  const progress = run.progress == null ? null : clamp(Number(run.progress), 0, 100);
+  const summary = typeof run.summaryMonitor === 'string' ? itemFor(run.summaryMonitor) : run.summaryMonitor;
+  return `<article class="run-card run-${esc(runStatus(run))}" data-run-id="${esc(run.id || run.uuid || '')}">
+    <div class="run-head"><button class="run-title" data-run-open="${esc(run.id || run.uuid || '')}">${esc(run.title || run.ident || run.id || 'run')}</button><div class="run-context">${esc(run.status || 'unknown')} · ${esc(boardName(run.board))}</div></div>
+    ${summary ? `<div class="run-summary">${esc(summary.label || summary.title || '')}</div>` : '<div class="run-summary">No summary monitor linked</div>'}
+    ${progress != null ? `<div class="run-progress" aria-label="${progress}%"><i style="width:${progress}%"></i></div>` : ''}
+    <div class="run-meta">${progress != null ? `<span>${Math.round(progress)}%</span>` : ''}${run.eta ? `<span>ETA ${esc(run.eta)}</span>` : ''}${run.lastUpdate ? `<span>${ago(run.lastUpdate)} ago</span>` : ''}${run.owner ? `<span>@${esc(run.owner)}</span>` : ''}${run.issues ? `<span class="run-issues">${run.issues} issue${run.issues === 1 ? '' : 's'}</span>` : ''}</div>
+    <div class="run-links"><button data-run-open="${esc(run.id)}">${(run.monitors || []).length} monitors · ${(run.tickets || []).length} tickets →</button></div>
+  </article>`;
+}
+function renderRuns() {
+  if (S.page !== 'runs') return;
+  const all = S.runs.items || [];
+  const shown = S.runs.showCompleted ? all : all.filter((r) => !runDone(r));
+  $('#supervision-head').innerHTML = `<div class="sup-title"><h1>runs</h1><span class="sup-meta">${shown.length} shown · ${all.length} total</span><span class="sp"></span><span class="sup-meta">${esc(localDT(Date.now()))}</span></div><div class="sup-actions"><button class="btn" data-runs-refresh>refresh</button><button class="btn ${S.runs.showCompleted ? 'on' : ''}" data-runs-completed aria-pressed="${S.runs.showCompleted}">${S.runs.showCompleted ? 'hide' : 'show'} completed</button></div>`;
+  $('#supervision-body').innerHTML = shown.length ? `<div class="run-grid">${shown.map(runCardHTML).join('')}</div>` : '<div class="sup-empty">No runs match this view. Runs are ticket trees tagged <code>run</code>.</div>';
+  applyReadonlyControls($('#supervision-head'));
+  applyReadonlyControls($('#supervision-body'));
+}
+async function loadRuns() {
+  if (CAPTURE_READONLY) return;
+  const data = await optionalGET('/api/runs');
+  if (!data) return;
+  S.runs.items = Array.isArray(data.items) ? data.items : [];
+  $('#runs-count').textContent = S.runs.items.filter((r) => !runDone(r)).length ? `(${S.runs.items.filter((r) => !runDone(r)).length})` : '';
+  if (S.page === 'runs') renderRuns();
+  if (S.drawer && runForItem(S.drawer)) renderDrawer();
+}
+async function loadChanges() {
+  if (CAPTURE_READONLY) return;
+  if (!S.lastVisit) return renderChanges();
+  const data = await optionalGET(`/api/changes?since=${encodeURIComponent(S.lastVisit)}`);
+  if (!data) return;
+  S.changes = { since: data.since || S.lastVisit, now: data.now || Date.now(), complete: !!data.complete, events: Array.isArray(data.events) ? data.events : [] };
+  if (S.page === 'attention') renderChanges();
+}
+const refreshAttentionLater = debounce(() => { if (S.page === 'attention') loadAttention(); }, 350);
+const refreshRunsLater = debounce(() => { if (S.page === 'runs' || (S.drawer && runForItem(S.drawer))) loadRuns(); }, 350);
+const refreshChangesLater = debounce(() => { if (S.page === 'attention') loadChanges(); }, 350);
+function markSinceRead() {
+  if (CAPTURE_READONLY) return;
+  const now = Date.now();
+  S.lastVisit = now;
+  S.changes = { since: now, now, complete: true, events: [] };
+  try { localStorage.setItem(localKey('lastvisit'), String(now)); } catch {}
+  renderAttention();
+}
+function boardCounts() {
+  const out = {};
+  for (const it of S.items.values()) out[it.board] = (out[it.board] || 0) + 1;
+  return out;
+}
+function renderBoardMenu() {
+  const menu = $('#board-menu');
+  const counts = boardCounts();
+  const current = S.boards.find((b) => b.id === S.board);
+  const currentId = current?.id || '';
+  const currentName = current?.name || currentId || 'current board';
+  const currentCount = counts[currentId] || 0;
+  const mainBoard = currentId === 'main';
+  let recent = [];
+  try { recent = JSON.parse(localStorage.getItem(localKey('recent-boards')) || '[]') || []; } catch {}
+  const order = [...new Set([...recent, ...S.boards.map((b) => b.id)])];
+  const q = String(S.boardQuery || '').trim().toLowerCase();
+  const attCounts = {};
+  for (const a of activeAttention().filter((x) => !x.reviewedAt)) attCounts[a.board] = (attCounts[a.board] || 0) + 1;
+  const rows = order.map((id) => S.boards.find((b) => b.id === id)).filter(Boolean).filter((b) => !q || `${b.name} ${b.id}`.toLowerCase().includes(q)).map((b) => `<div class="board-row ${b.id === S.board ? 'on' : ''}" data-board-pick="${esc(b.id)}"><span class="name">${esc(b.name)}</span><span class="count">${attCounts[b.id] ? `▲${attCounts[b.id]} ` : ''}${counts[b.id] || 0}</span></div>`).join('');
+  menu.innerHTML = `<input class="board-search" data-board-query placeholder="search boards" value="${esc(S.boardQuery)}"><div>${rows || '<div class="faint">no matching boards</div>'}</div><div class="board-actions"><button class="btn sm" data-board-add>＋ board</button><button class="btn sm" data-board-rename>rename current</button></div><section class="board-maintenance" aria-label="current board actions"><div class="board-maintenance-title">current canvas · ${esc(currentName)} · ${currentCount} item${currentCount === 1 ? '' : 's'}</div><div class="board-maintenance-action"><button class="btn sm danger" data-board-clear aria-describedby="board-clear-help" title="Move every item on this canvas to Trash and reset its dashboard metadata">clear canvas</button><div class="board-maintenance-help" id="board-clear-help">Moves all items to Trash; keeps this board and its settings. Resets dashboard, annotations, comparisons, and its custom canvas program.</div></div><div class="board-maintenance-action"><button class="btn sm danger" data-board-delete aria-describedby="board-delete-help" title="Delete this board; its items move to Trash" ${mainBoard ? 'disabled aria-disabled="true"' : ''}>delete canvas</button><div class="board-maintenance-help" id="board-delete-help">Removes this board from the switcher; its items move to Trash.${mainBoard ? ' The main board cannot be deleted.' : ''}</div></div></section>`;
+  applyReadonlyControls(menu);
+}
+function toggleBoardMenu(on) {
+  const menu = $('#board-menu');
+  on = on ?? menu.hidden;
+  menu.hidden = !on;
+  $('#btn-board').setAttribute('aria-expanded', String(on));
+  if (on) { S.boardQuery = ''; renderBoardMenu(); menu.querySelector('[data-board-query]')?.focus(); }
+}
+function openSearch() {
+  S.searchOpen = true;
+  $('#global-search').hidden = false;
+  $('#global-search-input').value = S.searchQuery;
+  renderSearch();
+  $('#global-search-input').focus();
+  $('#global-search-input').select();
+}
+function closeSearch() {
+  S.searchOpen = false;
+  $('#global-search').hidden = true;
+}
+function searchResults(q) {
+  const words = String(q || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  return [...S.items.values()].filter((it) => {
+    const hay = [it.id, it.uuid, it.title, it.body, it.text, it.key, it.type === 'ticket' ? identOf(it) : '', it.board, ...(it.tags || [])].filter(Boolean).join(' ').toLowerCase();
+    return words.every((w) => hay.includes(w));
+  }).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 80);
+}
+function renderSearch() {
+  const host = $('#global-search-results');
+  const q = S.searchQuery;
+  const found = searchResults(q);
+  host.innerHTML = q.trim() ? (found.length ? `<div class="search-section">items</div>${found.map((it) => `<div class="search-result" data-search-open="${esc(it.id)}"><span class="sr-kind">${esc(it.type)}</span><span class="sr-title">${esc(it.title || it.text?.slice(0, 100) || it.id)}</span><span class="sr-board">${esc(S.boards.find((b) => b.id === it.board)?.name || it.board || '')}<br><span class="sr-id">${esc(it.type === 'ticket' ? identOf(it) : it.id)}</span></span></div>`).join('')}` : '<div class="sup-empty">No matching items.</div>') : '<div class="sup-empty">Search titles, ids, UUIDs, ticket idents, bodies and notes.</div>';
+}
+function openItemDeepLink(id) {
+  const it = itemFor(id) || ticketBy(id);
+  if (!it) return toast(`no item ${id}`);
+  id = it.id;
+  rememberBoard(it.board);
+  switchBoard(it.board, { page: 'board' });
+  setNavHash('item', id);
+  if (it.type === 'ticket' || it.type === 'project') setMode('list');
+  openDrawer(id);
+}
+
+$('#btn-attention').addEventListener('click', () => setPage('attention'));
+$('#btn-runs').addEventListener('click', () => setPage('runs'));
+$('#btn-board').addEventListener('click', () => toggleBoardMenu());
+$('#btn-source').addEventListener('click', () => {
+  const panel = $('#program-inspector');
+  panel.hidden = !panel.hidden;
+  $('#btn-source').classList.toggle('on', !panel.hidden);
+  if (!panel.hidden) renderProgramInspector();
+});
+$('#program-inspector').addEventListener('click', (e) => {
+  if (e.target.closest('[data-source-close]')) {
+    $('#program-inspector').hidden = true;
+    $('#btn-source').classList.remove('on');
+  }
+  const source = e.target.closest('[data-source-open]');
+  if (source) openDrawer(source.dataset.sourceOpen);
+});
+$('#monitor-attention-strip').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-strip-focus]');
+  if (!button?.dataset.stripFocus || !S.items.has(button.dataset.stripFocus)) return;
+  if (boardProgramActive()) openDrawer(button.dataset.stripFocus);
+  else focusItem(button.dataset.stripFocus);
+});
+$('#toast').addEventListener('click', (e) => {
+  const link = e.target.closest('[data-created-board-link]');
+  if (link) { e.preventDefault(); openItemDeepLink(link.dataset.createdBoardLink); }
+});
+$('#top-more').addEventListener('click', (e) => { if (e.target.closest('button')) $('#top-more').open = false; });
+$('#btn-search').addEventListener('click', () => openSearch());
+$('#global-search').addEventListener('click', (e) => {
+  if (e.target.closest('[data-search-close]')) return closeSearch();
+  const open = e.target.closest('[data-search-open]');
+  if (open) { closeSearch(); openItemDeepLink(open.dataset.searchOpen); }
+});
+$('#global-search-input').addEventListener('input', (e) => { S.searchQuery = e.target.value; renderSearch(); });
+$('#board-menu').addEventListener('input', (e) => {
+  if (e.target.dataset.boardQuery !== undefined) {
+    S.boardQuery = e.target.value;
+    const q = S.boardQuery.toLowerCase();
+    $$('.board-row', $('#board-menu')).forEach((r) => { r.hidden = !r.textContent.toLowerCase().includes(q); });
+  }
+});
+$('#board-menu').addEventListener('click', async (e) => {
+  const pick = e.target.closest('[data-board-pick]');
+  if (pick) { toggleBoardMenu(false); rememberBoard(pick.dataset.boardPick); return switchBoard(pick.dataset.boardPick); }
+  if (e.target.closest('[data-board-add]')) {
+    const name = prompt('new board name');
+    if (!name?.trim()) return;
+    const b = await api('POST', '/api/boards', { name: name.trim() });
+    upsertBoard(b); rememberBoard(b.id); toggleBoardMenu(false); return switchBoard(b.id);
+  }
+  if (e.target.closest('[data-board-rename]')) {
+    const b = S.boards.find((x) => x.id === S.board);
+    const name = prompt('rename board', b?.name || '');
+    if (!name?.trim() || !b) return;
+    await api('PATCH', `/api/boards/${encodeURIComponent(b.id)}`, { name: name.trim() });
+    toggleBoardMenu(false);
+  }
+  if (e.target.closest('[data-board-clear]')) {
+    const board = S.boards.find((x) => x.id === S.board);
+    if (!board) return;
+    const boardItemsBefore = boardItems();
+    const boardItemIds = new Set(boardItemsBefore.map((item) => item.id));
+    const count = boardItemsBefore.length;
+    const confirmed = confirm(`Clear canvas "${board.name}"? ${count} item${count === 1 ? '' : 's'} will move to Trash. This keeps the board and its settings, while resetting its dashboard, annotations, comparisons, and custom canvas program.`);
+    if (!confirmed) return;
+    toggleBoardMenu(false);
+    try {
+      const result = await api('POST', `/api/boards/${encodeURIComponent(board.id)}/clear`, {});
+      for (const id of boardItemIds) { S.sel.delete(id); S.expanded.delete(id); S.detail.delete(id); }
+      if (S.drawer && boardItemIds.has(S.drawer)) closeDrawer();
+      toast(`cleared canvas "${board.name}" · ${Number(result?.cleared ?? count)} item${Number(result?.cleared ?? count) === 1 ? '' : 's'} moved to Trash`, 5000);
+    } catch (error) { toast(error.message, 5000); }
+    return;
+  }
+  if (e.target.closest('[data-board-delete]')) {
+    const board = S.boards.find((x) => x.id === S.board);
+    if (!board) return;
+    if (board.id === 'main') return toast('the main board cannot be deleted', 5000);
+    const count = boardItems().length;
+    if (!confirm(`Delete canvas "${board.name}"? This removes the board and its settings. Its ${count} item${count === 1 ? '' : 's'} will move to Trash.`)) return;
+    const next = S.boards.find((x) => x.id !== board.id) || S.boards.find((x) => x.id === 'main');
+    toggleBoardMenu(false);
+    try {
+      await api('DELETE', `/api/boards/${encodeURIComponent(board.id)}`);
+      S.sel.clear();
+      S.expanded.clear();
+      if (S.drawer) closeDrawer();
+      if (S.board === board.id && next) switchBoard(next.id);
+      toast(`deleted canvas "${board.name}" · its items moved to Trash`, 5000);
+    } catch (error) { toast(error.message, 5000); }
+  }
+});
+$('#supervision').addEventListener('click', (e) => {
+  const run = e.target.closest('[data-attention-run]');
+  if (run) {
+    const rr = (S.runs.items || []).find((x) => x.id === run.dataset.attentionRun || x.uuid === run.dataset.attentionRun);
+    return openItemDeepLink(rr?.id || run.dataset.attentionRun);
+  }
+  const open = e.target.closest('[data-attention-open], [data-run-open], [data-change-open]');
+  if (open) return openItemDeepLink(open.dataset.attentionOpen || open.dataset.runOpen || open.dataset.changeOpen);
+  const card = e.target.closest('[data-attention-id]');
+  if (card && e.target.closest('[data-attention-review]')) return attentionAction(card, S.attention.items.find((a) => a.id === card.dataset.attentionId)?.reviewedAt ? 'unreview' : 'review');
+  if (card && e.target.closest('[data-attention-snooze]')) {
+    const choice = e.target.closest('[data-attention-snooze]').dataset.attentionSnooze;
+    const until = choice === 'tomorrow' ? tomorrowNine() : Date.now() + Number(choice || 15) * 60e3;
+    return attentionAction(card, 'snooze', until);
+  }
+  if (e.target.closest('[data-attention-refresh]')) return loadAttention();
+  if (e.target.closest('[data-mark-read]')) return markSinceRead();
+  if (e.target.closest('[data-runs-refresh]')) return loadRuns();
+  if (e.target.closest('[data-runs-completed]')) { S.runs.showCompleted = !S.runs.showCompleted; try { localStorage.setItem(localKey('show-completed-runs'), String(S.runs.showCompleted)); } catch {} return renderRuns(); }
+  const toggle = e.target.closest('[data-sup-toggle]');
+  if (toggle) {
+    const sec = toggle.closest('[data-sup-section]');
+    sec.classList.toggle('sup-collapsed');
+    toggle.textContent = sec.classList.contains('sup-collapsed') ? 'show' : 'hide';
+    S.attentionExpanded[toggle.dataset.supToggle] = !sec.classList.contains('sup-collapsed');
+  }
+  const more = e.target.closest('[data-report-more]');
+  if (more) { e.stopPropagation(); more.previousElementSibling?.classList.toggle('expanded'); }
+});
 
 // ---------------------------------------------------------------- data sync
 async function load() {
-  const [st, views] = await Promise.all([api('GET', '/api/state'), fetch('/api/views').then((r) => r.json()).then((v) => v.views ?? []).catch(() => [])]);
+  const statePath = CAPTURE_READONLY ? `/api/captures/${encodeURIComponent(CAPTURE_TOKEN)}` : '/api/state';
+  const [st, views] = await Promise.all([api('GET', statePath), fetch('/api/views').then((r) => r.json()).then((v) => v.views ?? []).catch(() => [])]);
+  if (CAPTURE_READONLY) S.captureNow = Number(st.now) || Date.now();
+  S.readoutAt = Date.now();
   S.views = views;
   viewMods.clear();
   S.boards = st.boards;
+  S.readoutBoards.clear();
+  for (const board of S.boards) {
+    if (Array.isArray(board.comparisonResults)) S.readoutBoards.set(board.id, { id: board.id, annotations: board.annotations || [], comparisons: board.comparisonResults });
+  }
   S.items = new Map(st.items.map((i) => [i.id, i]));
+  S.detail.clear();
   S.activity = st.activity;
   S.alerts = st.alerts || [];
   renderAlerts();
-  const want = hashId() || (() => {
+  const hs = hashState();
+  const want = CAPTURE_READONLY ? (CAPTURE_BOARD || hs.board || st.board || st.captureBoard) : hs.board || (() => {
     try {
       return localStorage.getItem('hud.board');
     } catch {}
   })();
   const id = S.boards.some((b) => b.id === want) ? want : S.board && S.boards.some((b) => b.id === S.board) ? S.board : S.boards[0].id;
-  if (id !== S.board) switchBoard(id);
-  else renderAll();
+  const initialPage = CAPTURE_READONLY ? 'board' : hs.page === 'runs' ? 'runs' : hs.page === 'attention' ? 'attention' : hs.page === 'item' || hs.board ? 'board' : 'attention';
+  if (id !== S.board) switchBoard(id, { page: initialPage, hash: false });
+  else { setPage(initialPage, { hash: false }); renderAll(); }
   if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
   else if (S.drawer) renderDrawer();
+  if (S.drawer) fetchDetail(S.drawer);
   renderActivity();
+  if (hs.page === 'item' && S.items.has(hs.item)) openItemDeepLink(hs.item);
 }
 
 let es;
@@ -869,16 +1849,38 @@ function connect() {
   es.onerror = () => setLive(false);
 }
 function setLive(on) {
+  S.connected = on;
+  renderConnection();
+  if (S.drawer) renderDrawer();
+}
+function renderConnection() {
   const c = $('#conn');
-  c.classList.toggle('off', !on);
-  c.textContent = on ? '● live' : '○ offline';
+  if (CAPTURE_READONLY) {
+    c.classList.remove('off');
+    c.textContent = '◉ snapshot';
+    c.title = 'frozen capture · read-only';
+    return;
+  }
+  const age = S.heartbeatAt ? Math.max(0, Math.floor((Date.now() - S.heartbeatAt) / 1000)) : null;
+  const fresh = age !== null && age <= 60;
+  const online = S.connected && fresh;
+  c.classList.toggle('off', !online);
+  c.textContent = online ? '● live' : S.connected ? `○ heartbeat ${age == null ? 'waiting' : `${age}s`}` : '○ offline';
+  c.title = `event stream ${S.connected ? 'connected' : 'disconnected'} · heartbeat ${age == null ? 'not received' : `${age}s ago`} · watchdog 60s`;
 }
 
 function onEvent(e) {
+  if (e.kind === 'heartbeat') {
+    S.heartbeatAt = Number(e.now) || Date.now();
+    renderConnection();
+    return;
+  }
   if (e.kind === 'hello') {
     // server restarted (possibly with new code): reload the page to pick it up
     if (S.serverPid && S.serverPid !== e.pid) return location.reload();
     S.serverPid = e.pid;
+    S.heartbeatAt = Number(e.now) || Date.now();
+    renderConnection();
     // the first hello is the boot snapshot's own stream; later ones are reconnects, which may have missed events
     if (S.live && S.ready) load().catch(() => {});
     S.live = true;
@@ -889,6 +1891,10 @@ function onEvent(e) {
     if (S.alerts.length > 300) S.alerts.splice(0, S.alerts.length - 300);
     renderAlerts();
     toast(`${e.alert.to === 'done' ? '✓' : '▲'} ${e.alert.title}: ${e.alert.from} → ${e.alert.to}`, 5000);
+    return;
+  }
+  if (e.kind === 'attention') {
+    loadAttention();
     return;
   }
   if (e.kind === 'item') {
@@ -905,12 +1911,20 @@ function onEvent(e) {
       refreshDerived();
       const stateChanged = prev && prev.state !== e.item.state;
       if (e.actor !== ME && (e.actor !== SYSTEM || stateChanged || e.created)) flash(e.item.id);
-    } else removeEl(e.item.id);
+    } else {
+      removeEl(e.item.id);
+      if (e.created && e.item.board !== S.board) toastBoardCreated(e.item);
+    }
     if (S.drawer === e.item.id && e.actor !== ME) renderDrawer();
     else if (S.drawer === e.item.id && e.item.type === 'monitor') renderDrawerLive();
+    if (S.drawer === e.item.id && e.item.type === 'monitor') refreshDetailLater(e.item.id);
+    refreshAttentionLater();
+    refreshRunsLater();
     updateChrome();
+    queueProgramsMount();
   } else if (e.kind === 'item.deleted') {
     S.items.delete(e.id);
+    S.detail.delete(e.id);
     S.sel.delete(e.id);
     S.expanded.delete(e.id);
     S.trend.delete(e.id);
@@ -921,11 +1935,24 @@ function onEvent(e) {
     renderTrash();
     renderFrames();
     updateChrome();
+    queueProgramsMount();
   } else if (e.kind === 'board') {
     upsertBoard(e.board);
+    if (e.board.id === S.board) { renderAll(); queueProgramsMount(); }
   } else if (e.kind === 'board.deleted') {
     S.boards = S.boards.filter((b) => b.id !== e.id);
-    for (const it of [...S.items.values()]) if (it.board === e.id) S.items.delete(it.id);
+    for (const it of [...S.items.values()]) if (it.board === e.id) {
+      S.items.delete(it.id);
+      S.detail.delete(it.id);
+      S.sel.delete(it.id);
+      S.expanded.delete(it.id);
+      S.trend.delete(it.id);
+      S.uptime.delete(it.id);
+      pendingNudge.delete(it.id);
+      removeEl(it.id);
+    }
+    if (drag?.ids && [...drag.ids].some((id) => !S.items.has(id))) endDragSilently();
+    if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
     if (S.board === e.id) switchBoard(S.boards[0]?.id);
     renderTabs();
     renderAll();
@@ -934,6 +1961,7 @@ function onEvent(e) {
     if (S.activity.length > 500) S.activity.shift();
     renderActivity(e.activity.id);
     renderWho();
+    refreshChangesLater();
   }
 }
 
@@ -962,6 +1990,7 @@ function markMoved() {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (CAPTURE_READONLY) return;
   if (e.button === 2) return;
   closeMenu();
   const t = e.target;
@@ -997,7 +2026,7 @@ canvas.addEventListener('pointerdown', (e) => {
   const ids = new Set(S.sel);
   for (const sid of S.sel) {
     const s = S.items.get(sid);
-    if (s?.type === 'frame') for (const c of membersOf(s)) ids.add(c.id);
+    if (s?.type === 'frame') for (const c of membersOf(s)) if (c.type !== 'ticket' && c.type !== 'project') ids.add(c.id);
   }
   const start = {};
   for (const i of ids) {
@@ -1024,8 +2053,10 @@ canvas.addEventListener('pointermove', (e) => {
     markMoved();
     const dx = w.x - drag.wx, dy = w.y - drag.wy;
     const lead = drag.start[drag.clicked];
-    const sdx = e.altKey ? dx : snap(lead.x + dx) - lead.x;
-    const sdy = e.altKey ? dy : snap(lead.y + dy) - lead.y;
+    const b = boardSize();
+    const originals = [...drag.ids].map(id => ({ ...drag.start[id], w: S.items.get(id)?.w || 0, h: S.items.get(id)?.h || 0 }));
+    const sdx = clamp(e.altKey ? dx : snap(lead.x + dx) - lead.x, -Math.min(...originals.map(i => i.x)), b.w - Math.max(...originals.map(i => i.x + i.w)));
+    const sdy = clamp(e.altKey ? dy : snap(lead.y + dy) - lead.y, -Math.min(...originals.map(i => i.y)), b.h - Math.max(...originals.map(i => i.y + i.h)));
     for (const id of drag.ids) {
       const it = S.items.get(id);
       const s = drag.start[id];
@@ -1044,6 +2075,8 @@ canvas.addEventListener('pointermove', (e) => {
     markMoved();
     it.w = Math.max(GRID * 4, e.altKey ? Math.round(drag.w0 + w.x - drag.wx) : snap(drag.w0 + w.x - drag.wx));
     it.h = Math.max(GRID * 3, e.altKey ? Math.round(drag.h0 + w.y - drag.wy) : snap(drag.h0 + w.y - drag.wy));
+    it.w = Math.min(it.w, boardSize().w - it.x);
+    it.h = Math.min(it.h, boardSize().h - it.y);
     renderItem(it);
   } else if (drag.mode === 'marquee') {
     const m = $('#marquee');
@@ -1052,7 +2085,7 @@ canvas.addEventListener('pointermove', (e) => {
     const x1 = Math.min(e.clientX, drag.sx) - r.left, y1 = Math.min(e.clientY, drag.sy) - r.top;
     Object.assign(m.style, { display: 'block', left: x1 + 'px', top: y1 + 'px', width: Math.abs(e.clientX - drag.sx) + 'px', height: Math.abs(e.clientY - drag.sy) + 'px' });
     const rx = Math.min(w.x, drag.wx), ry = Math.min(w.y, drag.wy), rw = Math.abs(w.x - drag.wx), rh = Math.abs(w.y - drag.wy);
-    const hit = boardItems().filter((i) => i.x < rx + rw && rx < i.x + i.w && i.y < ry + rh && ry < i.y + i.h && (i.type !== 'frame' || (i.x >= rx && i.y >= ry && i.x + i.w <= rx + rw && i.y + i.h <= ry + rh)));
+    const hit = canvasItems().filter((i) => i.x < rx + rw && rx < i.x + i.w && i.y < ry + rh && ry < i.y + i.h && (i.type !== 'frame' || (i.x >= rx && i.y >= ry && i.x + i.w <= rx + rw && i.y + i.h <= ry + rh)));
     select([...drag.base, ...hit.map((i) => i.id)]);
   }
 });
@@ -1113,11 +2146,12 @@ canvas.addEventListener('pointercancel', endDrag);
 canvas.addEventListener('dblclick', (e) => {
   const itemEl = e.target.closest('.item');
   if (!itemEl) {
+    if (CAPTURE_READONLY) return;
     const w = toWorld(e.clientX, e.clientY);
     return openMenu(e.clientX, e.clientY, w);
   }
   if (suppressClick) return;
-  toggleExpand(itemEl.dataset.id);
+  openDrawer(itemEl.dataset.id);
 });
 
 /** expand/collapse a card in place to reveal the detail we normally hide */
@@ -1181,6 +2215,7 @@ function stretchRange(it, deltaY) {
 }
 
 canvas.addEventListener('click', (e) => {
+  if (CAPTURE_READONLY && !e.target.closest('.expand-btn')) return;
   const dr = e.target.closest('.expand-btn');
   if (dr && !suppressClick) {
     e.stopPropagation();
@@ -1194,7 +2229,7 @@ canvas.addEventListener('click', (e) => {
   const opt = e.target.closest('.ticket .opt:not(.chosen)');
   if (opt && !suppressClick) {
     const id = opt.closest('.item').dataset.id;
-    decide(id, opt.dataset.decide, opt.dataset.label);
+    decide(id, opt.dataset.decide, opt.dataset.label, opt.dataset.decisionVersion);
     return;
   }
   const chk = e.target.closest('.chk');
@@ -1293,17 +2328,24 @@ async function utilAction(el) {
   patchItem(it.id, { util: u });
 }
 
-async function decide(id, optionId, label) {
-  const it = S.items.get(id);
+async function decide(id, optionId, label, renderedVersion) {
+  const it = itemFor(id);
   const opt = it?.options?.find((o) => o.id === optionId);
   if (!confirm(`Decide ${id}: ${opt?.label ?? label}?`)) return;
   try {
-    S.items.set(id, lite(await api('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId })));
+    const version = renderedVersion === undefined || renderedVersion === '' ? it?.decisionVersion : renderedVersion;
+    const updated = lite(await api('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId, ...(version != null ? { decisionVersion: version } : {}) }));
+    S.items.set(id, updated);
     renderItem(S.items.get(id));
     updateChrome();
     toast(`decided: ${opt?.label ?? label}`);
-  } catch {
-    load();
+    if (S.drawer === id) renderDrawer();
+  } catch (e) {
+    if (e.status === 409) {
+      toast('decision changed elsewhere; refreshing');
+      await load();
+      if (S.drawer === id) openDrawer(id);
+    }
   }
 }
 
@@ -1379,6 +2421,12 @@ async function createAt(type, pos, extra = {}) {
   }
   const it = lite(await api('POST', '/api/items', body));
   S.items.set(it.id, it);
+  if (it.board !== S.board) {
+    rememberBoard(it.board);
+    switchBoard(it.board);
+    toastBoardCreated(it);
+  }
+  if (it.type === 'ticket' || it.type === 'project') setMode('list');
   renderItem(it);
   renderFrames();
   updateChrome();
@@ -1389,6 +2437,15 @@ async function createAt(type, pos, extra = {}) {
 
 // ---------------------------------------------------------------- drawer
 /** optimistic: applies the patch locally, and puts the old values back (with the server's error toast) on failure */
+let saveStateTimer;
+function setSaveState(state) {
+  const el = $('#drawer-save-state');
+  if (!el) return;
+  clearTimeout(saveStateTimer);
+  el.className = `drawer-save-state ${state || ''}`;
+  el.textContent = state === 'pending' ? 'pending' : state === 'saving' ? 'saving…' : state === 'saved' ? 'saved' : state === 'failed' ? 'failed' : '';
+  if (state === 'saved') saveStateTimer = setTimeout(() => setSaveState(''), 1800);
+}
 function patchItem(id, patch) {
   const it = S.items.get(id);
   const prev = {};
@@ -1397,13 +2454,19 @@ function patchItem(id, patch) {
     Object.assign(it, patch);
     renderItem(it);
   }
+  if (S.drawer === id) setSaveState('saving');
   return api('PATCH', `/api/items/${encodeURIComponent(id)}`, patch).then(
     (u) => {
       u = lite(u);
       S.items.set(u.id, u);
+      for (const [k, v] of Object.entries(patch)) {
+        const selector = `[data-k="${k}"]`;
+        if (S.drafts.get(id)?.get(selector) === String(v ?? '')) S.drafts.get(id).delete(selector);
+      }
       renderItem(u);
       refreshDerived();
       updateChrome();
+      if (S.drawer === id) setSaveState('saved');
       return u;
     },
     (err) => {
@@ -1418,6 +2481,7 @@ function patchItem(id, patch) {
         if (S.drawer === id && !$('#drawer').contains(document.activeElement)) renderDrawer();
         updateChrome();
       }
+      if (S.drawer === id) setSaveState('failed');
       throw err;
     },
   );
@@ -1434,48 +2498,102 @@ async function cycleDisplay() {
 }
 
 function openDrawer(id, focusTitle = false) {
+  const changed = S.drawer !== id;
   S.drawer = id;
+  if (changed) S.drawerTab = 'overview';
+  if (focusTitle) S.drawerTab = 'settings';
   S.pendingKind = null;
-  if (S.items.get(id)?.type === 'monitor') fetchTrend(id);
-  if (S.items.get(id)?.type === 'ticket') fetchItemActivity(id);
+  if (itemFor(id)?.type === 'monitor') fetchTrend(id);
+  if (itemFor(id)?.type === 'ticket') fetchItemActivity(id);
+  fetchDetail(id);
+  loadRuns();
   $('#drawer').classList.add('open');
   document.body.classList.add('drawer-open');
   renderDrawer();
+  if (changed) $('#drawer').scrollTop = 0;
+  applyView();
   if (focusTitle) setTimeout(() => $('#drawer [data-k="title"]')?.focus(), 0);
 }
 function closeDrawer() {
   S.drawer = null;
   S.pendingKind = null;
+  S.drawerTab = 'overview';
+  S.drawerWide = false;
   $('#drawer').classList.remove('open');
   document.body.classList.remove('drawer-open');
+  document.body.classList.remove('drawer-wide');
+  applyView();
 }
+
+const DRAWER_MIN = 360;
+function setDrawerWidth(width, persist = true) {
+  const max = Math.min(900, innerWidth);
+  const min = Math.min(DRAWER_MIN, max);
+  S.drawerWidth = clamp(Number(width) || 420, min, max);
+  document.documentElement.style.setProperty('--drawer-width', `${S.drawerWidth}px`);
+  const grip = $('#drawer-grip');
+  if (grip) { grip.setAttribute('aria-valuemin', String(min)); grip.setAttribute('aria-valuemax', String(max)); grip.setAttribute('aria-valuenow', String(Math.round(S.drawerWidth))); }
+  if (persist && !CAPTURE_READONLY) try { localStorage.setItem(localKey('drawer-width'), String(S.drawerWidth)); } catch {}
+  if (S.drawer) applyView();
+}
+try { setDrawerWidth(Number(localStorage.getItem(localKey('drawer-width'))) || 420, false); } catch { setDrawerWidth(420, false); }
+let drawerResize = null;
+$('#drawer-grip').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const width = $('#drawer').getBoundingClientRect().width;
+  S.drawerWide = false;
+  document.body.classList.remove('drawer-wide');
+  setDrawerWidth(width);
+  drawerResize = { x: e.clientX, width };
+  e.currentTarget.setPointerCapture?.(e.pointerId);
+  e.preventDefault();
+});
+$('#drawer-grip').addEventListener('pointermove', (e) => {
+  if (!drawerResize) return;
+  setDrawerWidth(drawerResize.width + drawerResize.x - e.clientX);
+});
+$('#drawer-grip').addEventListener('pointerup', () => { drawerResize = null; });
+$('#drawer-grip').addEventListener('pointercancel', () => { drawerResize = null; });
+$('#drawer-grip').addEventListener('keydown', (e) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  const width = $('#drawer').getBoundingClientRect().width;
+  S.drawerWide = false;
+  document.body.classList.remove('drawer-wide');
+  setDrawerWidth(width);
+  const step = e.shiftKey ? 80 : 20;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); setDrawerWidth(S.drawerWidth + step); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); setDrawerWidth(S.drawerWidth - step); }
+  if (e.key === 'Home') { e.preventDefault(); setDrawerWidth(Math.min(900, innerWidth)); }
+  if (e.key === 'End') { e.preventDefault(); setDrawerWidth(Math.min(DRAWER_MIN, innerWidth)); }
+});
 
 const chips = (key, opts, cur, labels = {}) =>
   `<div class="chips" data-chips="${key}">${opts.map((o) => `<span class="chip ${o === (cur ?? '') ? 'on' : ''}" data-v="${esc(o)}">${esc(labels[o] ?? (o || '—'))}</span>`).join('')}</div>`;
 const row = (label, html) => `<div class="row"><label>${label}</label><div>${html}</div></div>`;
 const inp = (k, v, ph = '', extra = '') => `<input data-k="${k}" value="${esc(v ?? '')}" placeholder="${esc(ph)}" ${extra}>`;
 
-function drawerHTML(it) {
-  const head = `<div class="phd"><b>${esc(it.type)}</b><span>${esc(it.id)}</span><span class="sp"></span><button data-act="focus" title="center on canvas">◎</button><button data-act="close" title="close (esc)">×</button></div>`;
+function drawerSettingsHTML(it) {
+  const head = `<div class="phd"><b>${esc(it.type)}</b><span title="${esc(it.uuid || it.id)}">${esc(identOf(it))}</span>${it.type === 'ticket' ? copyTicketButton(it) : ''}<span class="sp"></span><button data-act="focus" title="center on canvas">◎</button><button data-act="close" title="close (esc)">×</button></div>`;
   const groups = [...new Set(boardItems().filter((f) => f.type === 'frame' && (f.title || '').trim()).map((f) => f.title.trim()))];
   const groupRow = it.type === 'frame' ? '' : row('group', `${inp('group', it.group, 'none — frame title', 'list="grouplist"')}<datalist id="grouplist">${groups.map((g) => `<option value="${esc(g)}">`).join('')}</datalist>`);
   const meta = `<div class="sec"><h4>meta</h4><div class="meta">created ${localDT(it.createdAt)} by @${esc(it.createdBy)}<br>updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy)}<br>board ${esc(it.board)} · ${esc(it.x)},${esc(it.y)} · ${esc(it.w)}×${esc(it.h)}${it.meta ? `<br>meta ${esc(JSON.stringify(it.meta))}` : ''}</div>
     <div class="btns"><button class="btn danger" data-act="delete">delete</button></div></div>`;
   if (it.type === 'ticket') {
     const comments = (it.comments || [])
-      .map((c) => `<div class="comment" data-cid="${esc(c.id)}"><div class="who"><span class="cact"><span data-act="cedit" title="edit">✎</span><span data-act="cdel" title="delete">×</span></span>@${esc(c.actor)} · ${localDT(c.t)}${c.edited ? ' · edited' : ''}</div><div class="txt">${esc(c.text)}</div></div>`)
+      .map((c) => `<div class="comment" data-cid="${esc(c.id)}"><div class="who"><span class="cact"><span data-act="cedit" title="edit">✎</span><span data-act="cdel" title="delete">×</span></span>@${esc(c.actor)} · ${localDT(c.t)}${c.edited ? ' · edited' : ''}${c.format ? ` · ${esc(c.format)}` : ''}</div><div class="txt">${reportHTML(c.text, c.format || 'plain', { readonly: true })}</div></div>`)
       .join('');
     const chosen = it.options?.find((o) => o.id === it.decision?.optionId);
     const decision = it.options?.length
       ? `<div class="sec"><h4>decision</h4>
       ${row('question', inp('question', it.question || '', 'what the agent asked'))}
+      ${row('question format', chips('questionFormat', ['plain', 'markdown'], it.questionFormat || 'plain'))}
       ${
         it.decision
           ? `<div class="answer">✓ @${esc(it.decision.actor)} chose ${esc(chosen?.label ?? it.decision.optionId)}${it.decision.note ? ` — ${esc(it.decision.note)}` : ''}</div><div class="btns"><button class="btn" data-act="reopen">re-open</button><button class="btn danger" data-act="clear-options">clear options</button></div>`
           : `<div class="hint">choose one — the ticket moves to that option's status and the asking agent is woken</div>${it.options
               .map(
                 (o) =>
-                  `<div class="row"><label>${esc(o.id)}</label><div>${esc(o.label)}${o.detail ? ` <span class="dim">${esc(o.detail)}</span>` : ''} <button class="btn" data-act="decide" data-opt="${esc(o.id)}">choose${o.status ? ` →${esc(o.status)}` : ''}</button></div></div>`,
+                  `<div class="row"><label>${esc(o.id)}</label><div>${esc(o.label)}${o.detail ? ` <span class="dim">${esc(o.detail)}</span>` : ''} <button class="btn" data-act="decide" data-opt="${esc(o.id)}" data-decision-version="${esc(it.decisionVersion ?? '')}">choose${o.status ? ` →${esc(o.status)}` : ''}</button></div></div>`,
               )
               .join('')}<div class="btns"><button class="btn danger" data-act="clear-options">clear options</button></div>`
       }</div>`
@@ -1487,6 +2605,7 @@ function drawerHTML(it) {
       ? `<div class="crumb">${up.map((a) => `<span class="go" data-go="${esc(a.id)}">${esc(identOf(a))} ${esc(a.title)}</span>`).join(' <span class="sep">›</span> ')} <span class="sep">›</span> <b>${esc(identOf(it))}</b></div>`
       : '';
     const subline = kids.length ? `<div class="subline">${kids.length} sub-ticket${kids.length > 1 ? 's' : ''}, ${kidDone} done · ${kids.map((k) => `<span class="go" data-go="${esc(k.id)}">${esc(identOf(k))}</span>`).join(', ')}</div>` : '';
+    const runField = (it.tags || []).includes('run') ? row('summary monitor', inp('summaryMonitor', it.summaryMonitor || '', 'linked monitor id', 'list="monlist"')) : '';
     return `${head}<div class="sec">${crumb}
       ${row('title', inp('title', it.title, 'what needs doing', 'class="ttl-in"'))}
       ${row('status', chips('status', STATUSES, it.status))}
@@ -1501,10 +2620,11 @@ function drawerHTML(it) {
       ${row('related', inp('refs', (it.refs || []).map(nameOf).join(', '), 'KEY-12, comma separated'))}
       ${row('branch', inp('branch', it.branch || '', 'git branch — type regen to rebuild it'))}
       ${row('monitors', inp('monitors', (it.monitors || []).join(', '), 'linked monitor ids', 'list="monlist"') + `<datalist id="monlist">${boardItems().filter((m) => m.type === 'monitor').map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</datalist>`)}
+      ${runField}
       ${it.monitors?.length ? row('auto', chips('autoStatus', ['off', 'on'], it.autoStatus ? 'on' : 'off', { on: 'on: all done → done, error → blocked', off: 'off' })) : ''}
       </div>${subline}${decision}<div class="sec"><h4>description</h4><textarea data-k="body" placeholder="markdown">${esc(it.body)}</textarea></div>
       <div class="sec"><h4>comments ${it.comments?.length || ''}</h4>${comments}
-      <div class="row"><label>&gt;</label><input id="comment-in" placeholder="add a comment, ⏎ to send"></div></div>
+      <div class="format-row"><select data-comment-format><option value="plain">plain</option><option value="markdown">markdown</option></select><input id="comment-in" placeholder="add a comment, ⏎ to send"></div></div>
       <div class="sec"><h4>activity</h4><div id="itact" class="hist">${itemActHTML(it.id)}</div></div>${meta}`;
   }
   if (it.type === 'monitor') {
@@ -1526,12 +2646,13 @@ function drawerHTML(it) {
       ${groupRow}
       ${row('wake', inp('notify', (it.notify || []).join(', '), 'session names to wake on alerts'))}
       </div>
-      <div class="sec" id="live">${liveHTML(it)}</div>
       <div class="sec"><h4>set reading</h4>
       <div class="row2">${row('value', `<input data-r="value" value="${esc(fmtRaw(it.value))}">`)}${row('unit', inp('unit', it.unit, 'ms, %, …'))}</div>
       ${row('state', chips('r-state', MSTATES, it.state))}
       ${row('label', `<input data-r="label" value="${esc(it.label ?? '')}" placeholder="text shown instead of value">`)}
       ${row('message', `<input data-r="message" value="${esc(it.message ?? '')}">`)}
+      ${row('message format', chips('messageFormat', ['plain', 'markdown'], it.messageFormat || 'plain'))}
+      ${row('details', `<textarea data-k="details" class="report-details" placeholder="optional Markdown report details (20KB max)">${esc(it.details ?? '')}</textarea>`)}
       ${row('progress', `<input data-r="progress" value="${esc(it.progress ?? '')}" placeholder="0-100">`)}
       <div class="btns"><button class="btn" data-act="push">push reading ⏎</button></div></div>
       <div class="sec"><h4>source</h4>
@@ -1595,6 +2716,94 @@ function drawerHTML(it) {
   }
   return `${head}<div class="sec"><div class="hint">no editor for "${esc(it.type)}" items</div></div>${meta}`;
 }
+
+function drawerHeaderHTML(it) {
+  const expanded = S.drawerWide;
+  return `<div class="phd"><b>${esc(it.type)}</b><span title="${esc(it.uuid || it.id)}">${esc(identOf(it))}</span>${it.type === 'ticket' ? copyTicketButton(it) : ''}<span id="drawer-save-state" class="drawer-save-state" aria-live="polite"></span><span class="sp"></span><button data-act="focus" title="center on canvas">◎</button><button data-act="expand" aria-expanded="${expanded}" title="${expanded ? 'shrink' : 'expand'} details">${expanded ? '⛶' : '⤢'}</button><button data-act="close" title="close (esc)">×</button></div>`;
+}
+function drawerSettingsBody(it) {
+  const html = drawerSettingsHTML(it);
+  const marker = '<div class="sec">';
+  const at = html.indexOf(marker);
+  return at >= 0 ? html.slice(at) : html;
+}
+function drawerTabsHTML() {
+  return `<nav class="drawer-tabs" aria-label="details sections"><button class="drawer-tab ${S.drawerTab === 'overview' ? 'on' : ''}" data-dtab="overview">overview</button><button class="drawer-tab ${S.drawerTab === 'history' ? 'on' : ''}" data-dtab="history">history</button><button class="drawer-tab ${S.drawerTab === 'settings' ? 'on' : ''}" data-dtab="settings">settings</button></nav>`;
+}
+function commentsOverviewHTML(it) {
+  const comments = (it.comments || []).slice(-30);
+  return `<div class="sec"><h4>comments ${comments.length || ''}</h4>${comments.map((c) => `<div class="comment" data-cid="${esc(c.id)}"><div class="who">@${esc(c.actor)} · ${localDT(c.t)}${c.format ? ` · ${esc(c.format)}` : ''}</div><div class="txt">${reportHTML(c.text, c.format || 'plain', { readonly: true })}</div></div>`).join('') || '<div class="faint">no comments</div>'}<div class="format-row"><select data-comment-format><option value="plain">plain</option><option value="markdown">markdown</option></select></div><textarea id="comment-in" data-comment-draft placeholder="write a comment; Enter for newline · Ctrl/Cmd+Enter to send"></textarea><div class="btns"><button class="btn" data-act="comment-send">send comment</button></div><div class="report-preview" id="comment-preview"></div></div>`;
+}
+function decisionOverviewHTML(it) {
+  if (it.type !== 'ticket' || !it.options?.length) return '';
+  const chosen = it.options.find((o) => o.id === it.decision?.optionId);
+  const question = it.question ? `<div class="decision-question">${reportHTML(it.question, it.questionFormat || 'plain', { readonly: true })}</div>` : '';
+  const options = it.decision ? `<div class="decision-option chosen"><span class="option-id">✓ ${esc(it.decision.optionId)}</span><span>${esc(chosen?.label || it.decision.optionId)}</span></div>` : it.options.map((o) => `<button class="decision-option" data-overview-decide="${esc(o.id)}" data-decision-version="${esc(it.decisionVersion ?? '')}" data-label="${esc(o.label)}"><span class="option-id">▸ ${esc(o.id)}</span><span>${esc(o.label)}</span>${o.detail ? `<span class="option-detail">${reportHTML(o.detail, o.format || it.questionFormat || 'plain', { readonly: true })}</span>` : ''}</button>`).join('');
+  return `<div class="sec"><h4>decision</h4><div class="decision-panel">${question}${options}${it.decision ? `<div class="meta">decided by @${esc(it.decision.actor || '—')}${it.decision.note ? ` · ${esc(it.decision.note)}` : ''}</div>` : '<div class="hint">choose an option; this records the decision and wakes the asking agent</div>'}</div></div>`;
+}
+function runForItem(id) {
+  return (S.runs.items || []).find((r) => r.id === id || r.uuid === id || (r.tickets || []).some((x) => (typeof x === 'string' ? x : x.id) === id) || (r.monitors || []).some((x) => (typeof x === 'string' ? x : x.id) === id));
+}
+function runSummaryHTML(it) {
+  const run = runForItem(it.id);
+  if (!run) return '';
+  const progress = run.progress == null ? '' : `${Math.round(run.progress)}%`;
+  let related = '';
+  if (run.id === it.id) {
+    const rows = (items) => items.map((x) => {
+      const item = typeof x === 'string' ? itemFor(x) : itemFor(x.id) || x;
+      if (!item) return '';
+      const value = item.type === 'monitor' ? (item.label || `${fmtVal(item.value)}${item.unit ? ` ${item.unit}` : ''}` || item.state || 'unknown') : item.status;
+      return `<button data-run-summary-open="${esc(item.id)}"><span>${esc(item.title || item.id)}</span><span>${esc(value)}</span></button>`;
+    }).join('');
+    const tickets = run.tickets || [], completed = tickets.filter((t) => runDone(t)), active = tickets.filter((t) => !runDone(t));
+    related = `<h4>key readings</h4><div class="run-related">${rows(run.monitors || []) || '<span class="faint">No linked monitors.</span>'}</div><h4>related work</h4><div class="run-related">${rows(active) || '<span class="faint">No open child tickets.</span>'}</div>${completed.length ? `<details><summary class="dim">${completed.length} completed</summary><div class="run-related">${rows(completed)}</div></details>` : ''}`;
+  }
+  return `<div class="sec"><h4>run</h4><div class="drawer-report"><div><button class="run-summary-link" data-run-summary-open="${esc(run.id || run.uuid)}">${esc(run.title || run.ident || run.id)}</button> <span class="dim">${esc(run.status || '')}</span></div><div class="meta">${progress}${run.eta ? ` · ETA ${esc(localDT(Date.parse(run.eta)))}` : ''}${run.issues ? ` · ${run.issues} issue${run.issues === 1 ? '' : 's'}` : ''}</div>${related}</div></div>`;
+}
+function followupHTML(it) {
+  if (!['ticket', 'monitor'].includes(it.type)) return '';
+  return `<div class="sec"><h4>follow up</h4><div class="followup-box"><div class="hint">Create a linked ticket for the next response. This is recorded; agent response pending.</div>${row('title', `<input data-followup="title" placeholder="follow-up title">`)}${row('assignee', `<input data-followup="assignee" placeholder="explicit assignee (optional)">`)}${row('parent', `<input data-followup="parent" placeholder="parent ticket id or ident (optional)">`)}${row('refs', `<input data-followup="refs" placeholder="related ids or idents, comma separated">`)}<div class="btns"><button class="btn" data-act="followup">create ticket</button></div></div></div>`;
+}
+function monitorCurrentHTML(it) {
+  const reading = monitorReadout(it);
+  const state = monitorState(it);
+  const label = reading.label != null ? reading.label : it.label != null && it.label !== '' ? it.label : fmtVal(Object.hasOwn(reading, 'value') ? reading.value : it.value);
+  const value = label || state;
+  const fresh = it.lastUpdate ? `${ago(it.lastUpdate)} ago · ${localDT(it.lastUpdate)}` : 'awaiting first report';
+  const meta = monitorMetadata(it);
+  const stateLabel = !S.connected ? 'hud disconnected — showing last received data' : isStale(it) && it.source?.kind === 'heartbeat' ? 'reporter stale — job outcome unconfirmed' : state === 'error' ? 'reported error' : isStale(it) ? 'reporter stale' : state;
+  const hasProgress = it.progress != null && (String(value).includes(`${Math.round(it.progress)}%`) || (!it.label && it.unit === '%' && Number(it.value) === it.progress));
+  return `<div class="drawer-report monitor-current"><div class="report-label">current reading</div><div class="monitor-current-value"><span class="g">${MGLYPH[state] || '○'}</span> <b>${esc(value)}</b>${(it.metric?.unit || it.unit) && !it.label ? ` <span class="dim">${esc(it.metric?.unit || it.unit)}</span>` : ''}${it.progress != null && !hasProgress ? ` <span class="dim">· ${Math.round(it.progress)}%</span>` : ''}</div><div class="meta">${esc(stateLabel)} · ${esc(fresh)}${it.updatedBy ? ` · @${esc(it.updatedBy)}` : ''}</div><div class="meta">source ${esc(meta.source)} · evidence ${esc(meta.evidence)} · age ${esc(meta.age)} · coverage ${esc(meta.coverage)}</div><div class="meta">${esc(meta.definition)}${it.freshness?.mode === 'static' ? ` · static: ${esc(it.freshness.reason || '')}` : ''}</div></div>`;
+}
+function drawerOverviewHTML(it) {
+  let report = '';
+  if (it.type === 'monitor') {
+    report = `<h3 class="detail-title">${esc(it.title || it.id)}</h3>` + monitorCurrentHTML(it);
+    if (it.message) report += `<div class="drawer-report"><h4>report</h4>${reportHTML(it.message, it.messageFormat || 'plain')}</div>`;
+    if (it.details) report += `<div class="drawer-report"><h4>details</h4>${reportHTML(it.details, 'markdown')}</div>`;
+  } else {
+    const body = it.type === 'ticket' || it.type === 'project' ? it.body : it.text;
+    report = `<h3 class="detail-title">${esc(it.title || it.id)}</h3>${it.type === 'ticket' ? `<div class="meta">${esc(it.status || 'todo')} · ${esc(it.assignee || it.createdBy || 'unassigned')}</div>` : ''}<div class="drawer-report">${body ? reportHTML(body, 'markdown') : '<span class="faint">No description yet.</span>'}</div>`;
+  }
+  const url = location.origin + location.pathname + '#item=' + encodeURIComponent(it.uuid || it.id);
+  return `<div class="sec"><div class="meta">${esc(boardName(it.board))} · updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy || it.createdBy || '—')}</div>${report}</div>${decisionOverviewHTML(it)}${runSummaryHTML(it)}${commentsOverviewHTML(it)}${followupHTML(it)}<div class="sec"><h4>identity</h4><div class="meta">${esc(it.id)}${it.uuid ? `<br>uuid ${esc(it.uuid)}` : ''}</div><button class="btn" data-act="copy" data-text="${esc(url)}">copy link</button></div>`;
+}
+function historyHTML(it) {
+  if (it.type === 'monitor') {
+    const reports = (it.reportHistory || []).slice().reverse().map((r) => `<div class="history-record"><span class="time">${esc(localDT(r.t))}</span><span class="state">@${esc(r.actor || '—')}</span>${r.message ? `<div>${reportHTML(r.message, r.messageFormat || 'plain', { readonly: true })}</div>` : ''}${r.details ? `<div class="meta">${reportHTML(r.details, 'markdown', { readonly: true })}</div>` : ''}</div>`).join('');
+    const readings = (it.history || []).filter(Boolean).slice().reverse().map((h) => `<div class="history-record"><span class="time">${esc(localDT(h.t))}</span><span class="state">${MGLYPH[h.s] || '·'} ${esc(fmtVal(h.v ?? ''))}${h.p != null ? ` · ${Math.round(h.p)}%` : ''}</span>${h.m ? `<div>${esc(h.m)}</div>` : ''}</div>`).join('');
+    return `<div class="sec"><h4>trend</h4>${chips('range', ['1h', '6h', '24h'], S.chartRange)}<div id="chart"></div><h4>report history</h4>${reports || '<div class="faint">no reports recorded</div>'}<h4>readings</h4>${readings || '<div class="faint">no readings recorded</div>'}<h4>log</h4><div class="hist">${(it.log || []).slice().reverse().map((l) => `${esc(localDT(l.t))}  ${MGLYPH[l.s] || '·'}  ${esc(l.m)}`).join('\n') || '—'}</div></div>`;
+  }
+  const comments = (it.comments || []).slice().reverse().map((c) => `<div class="history-record"><span class="time">${esc(localDT(c.t))}</span><span class="state">@${esc(c.actor || '—')}</span><div>${reportHTML(c.text, c.format || 'plain', { readonly: true })}</div></div>`).join('');
+  const activity = (S.itact.get(it.id) || []).slice().reverse().map((a) => `<div class="history-record"><span class="time">${esc(localDT(a.t))}</span><span class="state">@${esc(a.actor || '—')}</span> ${esc(a.text || '')}</div>`).join('');
+  return `<div class="sec"><h4>comments & records</h4>${comments || '<div class="faint">no comments</div>'}${activity ? `<h4>activity</h4>${activity}` : ''}</div>`;
+}
+function drawerHTML(it) {
+  const tab = S.drawerTab || 'overview';
+  const body = tab === 'settings' ? drawerSettingsBody(it) : tab === 'history' ? historyHTML(it) : drawerOverviewHTML(it);
+  return `${drawerHeaderHTML(it)}${drawerTabsHTML()}${body}`;
+}
 const fmtRaw = (v) => (v === null || v === undefined ? '' : String(v));
 
 /**
@@ -1656,6 +2865,7 @@ function itemActHTML(id) {
   return a.slice(-40).reverse().map((x) => `${hhmmss(x.t)}  @${esc(x.actor)} ${esc(x.text)}`).join('\n') || '<span class="faint">—</span>';
 }
 async function fetchItemActivity(id) {
+  if (CAPTURE_READONLY) return;
   try {
     S.itact.set(id, await api('GET', `/api/items/${encodeURIComponent(id)}/activity?limit=40`));
     const el = $('#itact');
@@ -1663,8 +2873,11 @@ async function fetchItemActivity(id) {
   } catch {}
 }
 async function fetchTrend(id) {
+  if (CAPTURE_READONLY) return;
   try {
     const full = await api('GET', `/api/items/${encodeURIComponent(id)}`);
+    S.items.set(id, lite(full));
+    S.detail.set(id, { reportHistory: full.reportHistory, trend: full.trend, uptime: full.uptime, graph: full.graph });
     S.trend.set(id, full.trend || []);
     if (full.uptime) S.uptime.set(id, full.uptime);
     if (S.drawer === id) {
@@ -1673,14 +2886,24 @@ async function fetchTrend(id) {
     }
   } catch {}
 }
-setInterval(() => {
-  const it = S.drawer && S.items.get(S.drawer);
+async function fetchDetail(id) {
+  if (CAPTURE_READONLY) return;
+  try {
+    const full = await api('GET', `/api/items/${encodeURIComponent(id)}`);
+    S.items.set(id, lite(full));
+    S.detail.set(id, { reportHistory: full.reportHistory, trend: full.trend, uptime: full.uptime, graph: full.graph });
+    if (S.drawer === id) renderDrawer();
+  } catch {}
+}
+const refreshDetailLater = debounce((id) => fetchDetail(id), 350);
+if (!CAPTURE_READONLY) setInterval(() => {
+  const it = S.drawer && itemFor(S.drawer);
   if (it?.type === 'monitor') fetchTrend(it.id);
 }, 60000);
 
 function renderChart() {
   const el = $('#chart');
-  const it = S.items.get(S.drawer);
+  const it = itemFor(S.drawer);
   if (!el || !it) return;
   $$('#drawer [data-chips="range"] .chip').forEach((c) => c.classList.toggle('on', c.dataset.v === S.chartRange));
   const span = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3 }[S.chartRange];
@@ -1726,7 +2949,7 @@ function renderChart() {
 }
 
 function renderDrawerLive() {
-  const it = S.items.get(S.drawer);
+  const it = itemFor(S.drawer);
   const live = $('#live');
   if (it && live) {
     live.innerHTML = liveHTML(it);
@@ -1736,7 +2959,7 @@ function renderDrawerLive() {
 
 function renderDrawer() {
   const d = $('#drawer');
-  const it = S.items.get(S.drawer);
+  const it = itemFor(S.drawer);
   if (!it) return closeDrawer();
   S.pendingKind = null;
   if (d.contains(document.activeElement) && document.activeElement !== d && document.activeElement.tagName !== 'BUTTON') {
@@ -1746,6 +2969,11 @@ function renderDrawer() {
   }
   const scroll = d.scrollTop;
   d.innerHTML = drawerHTML(it);
+  applyReadonlyControls(d);
+  for (const [selector, value] of S.drafts.get(it.id) || []) {
+    const input = d.querySelector(selector);
+    if (input) input.value = value;
+  }
   d.scrollTop = scroll;
   if (it.type === 'monitor') renderChart();
   S.drawerDirty = false;
@@ -1753,19 +2981,50 @@ function renderDrawer() {
 
 const saveText = debounce((id, k, v) => patchItem(id, { [k]: v }).catch(() => {}), 600);
 
+function rememberDraft(e) {
+  const t = e.target;
+  if (!S.drawer || !t.matches('input,textarea,select')) return;
+  let selector = t.id === 'comment-in' ? '#comment-in' : '';
+  for (const key of ['k', 'r', 's', 'followup']) if (t.dataset[key] != null) selector = `[data-${key}="${t.dataset[key]}"]`;
+  if (t.hasAttribute('data-comment-format')) selector = '[data-comment-format]';
+  if (!selector) return;
+  if (!S.drafts.has(S.drawer)) S.drafts.set(S.drawer, new Map());
+  S.drafts.get(S.drawer).set(selector, t.value);
+}
+$('#drawer').addEventListener('input', rememberDraft, true);
+$('#drawer').addEventListener('change', rememberDraft, true);
+
 const saveUtilLater = debounce((id, key, v) => saveUtil(id, key, v), 350);
 
 $('#drawer').addEventListener('input', (e) => {
   const t = e.target;
   if (!S.drawer) return;
+  if (t.id === 'comment-in') {
+    const preview = $('#comment-preview');
+    if (preview) preview.innerHTML = t.value ? reportHTML(t.value, $('#drawer [data-comment-format]')?.value || 'plain', { readonly: true }) : '';
+    return;
+  }
   // live-edit a utility's number fields (timer minutes, counter target, sheet size, calculator…)
   if (t.dataset.u) return saveUtilLater(S.drawer, t.dataset.u, t.value);
   const k = t.dataset.k;
-  if (k === 'title' || k === 'body' || k === 'text') saveText(S.drawer, k, t.value);
+  if (k === 'details' && new TextEncoder().encode(t.value).length > 20_000) {
+    t.classList.add('invalid');
+    setSaveState('failed');
+    toast('details must be at most 20KB (UTF-8)');
+    return;
+  }
+  if (k === 'details') t.classList.remove('invalid');
+  if (k === 'title' || k === 'body' || k === 'text' || k === 'details') setSaveState('pending');
+  if (k === 'title' || k === 'body' || k === 'text' || k === 'details') saveText(S.drawer, k, t.value);
 });
 $('#drawer').addEventListener('change', (e) => {
   const t = e.target;
   if (!S.drawer) return;
+  if (t.dataset.commentFormat !== undefined) {
+    const box = $('#comment-in'), preview = $('#comment-preview');
+    if (box && preview) preview.innerHTML = box.value ? reportHTML(box.value, t.value, { readonly: true }) : '';
+    return;
+  }
   if (t.dataset.p) return savePlot(S.drawer, t.dataset.p, t.value)?.catch(() => {});
   if (t.dataset.u) return saveUtil(S.drawer, t.dataset.u, t.value)?.catch(() => {});
   const k = t.dataset.k;
@@ -1833,20 +3092,42 @@ function saveUtil(id, key, raw) {
   }
   return patchItem(id, { util });
 }
+async function sendComment() {
+  const id = S.drawer;
+  const box = $('#drawer #comment-in');
+  if (!id || !box || !box.value.trim()) return;
+  const text = box.value.trim();
+  const format = $('#drawer [data-comment-format]')?.value || 'plain';
+  box.disabled = true;
+  setSaveState('saving');
+  try {
+    await api('POST', `/api/items/${encodeURIComponent(id)}/comments`, { text, format });
+    S.drafts.get(id)?.delete('#comment-in');
+    box.value = '';
+    box.disabled = false;
+    box.blur();
+    await fetchDetail(id);
+    toast('recorded; agent response pending');
+    renderDrawer();
+    setSaveState('saved');
+  } catch {
+    setSaveState('failed');
+    box.disabled = false;
+  }
+}
 $('#drawer').addEventListener('focusout', () => {
   setTimeout(() => {
     if (S.drawerDirty && !$('#drawer').contains(document.activeElement)) renderDrawer();
   }, 0);
 });
 $('#drawer').addEventListener('keydown', (e) => {
-  if (e.target.id === 'comment-in' && e.key === 'Enter' && e.target.value.trim()) {
-    const text = e.target.value.trim();
-    const box = e.target;
-    box.value = '';
-    api('POST', `/api/items/${encodeURIComponent(S.drawer)}/comments`, { text }).then(
-      () => box.focus(),
-      () => (box.value = text), // keep what was typed when the send failed
-    );
+  if (e.target.id === 'comment-in' && e.target.tagName === 'INPUT' && e.key === 'Enter' && e.target.value.trim()) {
+    e.preventDefault();
+    sendComment();
+  }
+  if (e.target.id === 'comment-in' && e.target.tagName === 'TEXTAREA' && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    sendComment();
   }
   if (e.target.dataset.r !== undefined && e.key === 'Enter') pushReading();
   if (e.target.tagName === 'INPUT' && e.target.dataset.k && e.key === 'Enter') e.target.blur();
@@ -1865,8 +3146,15 @@ function pushReading(stateOverride) {
   if (prog !== fmtRaw(it.progress)) r.progress = numOrNull(prog);
   if (stateOverride) r.state = stateOverride;
   if (!Object.keys(r).length) r.value = parseVal(val);
+  const drafts = new Map($$('#drawer [data-r]').map((el) => [`[data-r="${el.dataset.r}"]`, el.value]));
   document.activeElement?.blur();
-  return api('POST', `/api/monitors/${encodeURIComponent(it.id)}/push`, r).then(() => renderDrawer()).catch(() => {});
+  setSaveState('saving');
+  return api('POST', `/api/monitors/${encodeURIComponent(it.id)}/push`, r).then((updated) => {
+    S.items.set(updated.id, lite(updated));
+    for (const [selector, value] of drafts) if (S.drafts.get(it.id)?.get(selector) === value) S.drafts.get(it.id).delete(selector);
+    renderDrawer();
+    setSaveState('saved');
+  }).catch(() => setSaveState('failed'));
 }
 
 /** the chip click only stages a kind (S.pendingKind) until its required fields exist; "apply source" saves it */
@@ -1899,6 +3187,7 @@ function applySource(kind) {
   document.activeElement?.blur();
   return patchItem(it.id, { source: src }).then(() => {
     S.pendingKind = null;
+    for (const selector of S.drafts.get(it.id)?.keys() || []) if (selector.startsWith('[data-s=')) S.drafts.get(it.id).delete(selector);
     renderDrawer();
     toast(`source → ${src.kind}`);
   }).catch(() => {});
@@ -1910,8 +3199,26 @@ function renderDrawerWith(fake) {
 }
 
 $('#drawer').addEventListener('click', (e) => {
-  const it = S.items.get(S.drawer);
+  const it = itemFor(S.drawer);
   if (!it) return;
+  const tab = e.target.closest('[data-dtab]');
+  if (tab) {
+    S.drawerTab = tab.dataset.dtab;
+    return renderDrawer();
+  }
+  if (e.target.closest('[data-report-more]')) {
+    e.stopPropagation();
+    return e.target.closest('[data-report-more]').previousElementSibling?.classList.toggle('expanded');
+  }
+  if (e.target.closest('[data-overview-decide]')) {
+    const b = e.target.closest('[data-overview-decide]');
+    return decide(it.id, b.dataset.overviewDecide, b.dataset.label, b.dataset.decisionVersion);
+  }
+  if (e.target.closest('[data-run-summary-open]')) {
+    return openItemDeepLink(e.target.closest('[data-run-summary-open]').dataset.runSummaryOpen);
+  }
+  if (e.target.closest('[data-act="followup"]')) return createFollowup(it);
+  if (e.target.closest('[data-act="comment-send"]')) return sendComment();
   const chip = e.target.closest('.chip');
   if (chip) {
     const key = chip.parentElement.dataset.chips;
@@ -1932,6 +3239,11 @@ $('#drawer').addEventListener('click', (e) => {
   if (go) return focusItem(go.dataset.go);
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'close') closeDrawer();
+  if (act === 'expand') {
+    S.drawerWide = !S.drawerWide;
+    document.body.classList.toggle('drawer-wide', S.drawerWide);
+    return renderDrawer();
+  }
   if (act === 'focus') focusItem(it.id);
   if (act === 'delete') deleteItems([it.id]);
   if (act === 'copy') {
@@ -1945,9 +3257,9 @@ $('#drawer').addEventListener('click', (e) => {
   if (act === 'arrange') api('POST', '/api/arrange', { frame: it.id }).catch(() => {});
   if (act === 'organize') organize();
   if (act === 'fit-frame') fit([it]);
-  if (act === 'decide') decide(it.id, e.target.closest('[data-opt]').dataset.opt);
+  if (act === 'decide') { const b = e.target.closest('[data-opt]'); decide(it.id, b.dataset.opt, b.textContent, b.dataset.decisionVersion); }
   if (act === 'clear-options') patchItem(it.id, { options: [] }).then(() => renderDrawer(), () => {});
-  if (act === 'reopen') patchItem(it.id, { decision: null }).then(() => renderDrawer(), () => {});
+  if (act === 'reopen') patchItem(it.id, { options: it.options, question: it.question }).then(() => renderDrawer(), () => {});
 });
 
 function commentAct(it, act, box) {
@@ -1958,23 +3270,44 @@ function commentAct(it, act, box) {
   if (act === 'cdel') {
     if (!confirm('delete this comment?')) return;
     return api('DELETE', url).then(() => {
-      it.comments = (it.comments || []).filter((x) => x.id !== cid);
+      const base = S.items.get(it.id);
+      if (base) base.comments = (base.comments || []).filter((x) => x.id !== cid);
       renderDrawer();
-      renderItem(it);
+      renderItem(base || it);
     }, () => {});
   }
   if (act === 'cedit') {
-    box.querySelector('.txt').innerHTML = `<textarea>${esc(c?.text ?? '')}</textarea><div class="btns"><button class="btn" data-act="csave">save</button><button class="btn" data-act="ccancel">cancel</button></div>`;
+    box.querySelector('.txt').innerHTML = `<textarea>${esc(c?.text ?? '')}</textarea><div class="format-row"><select data-comment-edit-format><option value="plain">plain</option><option value="markdown">markdown</option></select></div><div class="btns"><button class="btn" data-act="csave">save</button><button class="btn" data-act="ccancel">cancel</button></div>`;
+    const select = box.querySelector('[data-comment-edit-format]');
+    if (select) select.value = c?.format || 'plain';
     return box.querySelector('textarea').focus();
   }
   if (act === 'ccancel') return renderDrawer();
   const text = box.querySelector('textarea').value.trim();
   if (!text) return;
-  api('PATCH', url, { text }).then((u) => {
+  const format = box.querySelector('[data-comment-edit-format]')?.value || c?.format || 'plain';
+  api('PATCH', url, { text, format }).then((u) => {
     if (c) Object.assign(c, u);
     document.activeElement?.blur();
     renderDrawer();
   }, () => {});
+}
+
+async function createFollowup(it) {
+  const title = $('#drawer [data-followup="title"]')?.value.trim();
+  if (!title) return toast('follow-up title is required');
+  const assignee = $('#drawer [data-followup="assignee"]')?.value.trim();
+  const parent = $('#drawer [data-followup="parent"]')?.value.trim();
+  const refs = ($('#drawer [data-followup="refs"]')?.value || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const payload = { type: 'ticket', board: it.board, title, status: 'todo', ...(assignee ? { assignee } : {}), ...(parent ? { parent } : {}), ...(refs.length ? { refs } : {}) };
+  try {
+    const follow = lite(await api('POST', '/api/items', payload));
+    S.items.set(follow.id, follow);
+    if (follow.board !== S.board) { rememberBoard(follow.board); switchBoard(follow.board); toastBoardCreated(follow); }
+    updateChrome();
+    toast('recorded; agent response pending');
+    openDrawer(follow.id);
+  } catch {}
 }
 
 // ---------------------------------------------------------------- delete / undo
@@ -2084,7 +3417,7 @@ $('#trash').addEventListener('click', async (e) => {
 // ---------------------------------------------------------------- organize / alerts
 async function organize() {
   const r = await api('POST', '/api/organize', { board: S.board }).catch(() => null);
-  if (r) toast(`organized · ${r.groups.length} groups · ${r.moved} moved`);
+  if (r) { fit(); toast(`organized · ${r.groups.length} groups · ${r.moved} moved`); }
 }
 async function toggleAuto(on) {
   const b = S.boards.find((x) => x.id === S.board);
@@ -2097,9 +3430,19 @@ async function toggleAuto(on) {
 function renderBoardButtons() {
   const b = S.boards.find((x) => x.id === S.board);
   $('#btn-auto').classList.toggle('on', !!b?.autoOrganize);
+  $('#btn-auto').textContent = b?.autoOrganize ? 'layout: auto' : 'layout: manual';
+  const board = $('#btn-board');
+  if (board) board.textContent = b ? `board: ${b.name}` : 'board';
 }
 $('#btn-organize').addEventListener('click', () => organize());
 $('#btn-auto').addEventListener('click', () => toggleAuto());
+$('#btn-fit').addEventListener('click', () => fit());
+for (const [id, factor] of [['zoom-in', 1.2], ['zoom-out', 1 / 1.2]]) {
+  $('#' + id).addEventListener('click', () => {
+    const r = canvas.getBoundingClientRect(), v = viewport();
+    zoomAt(r.left + v.w / 2, r.top + v.h / 2, S.view.z * factor);
+  });
+}
 function renderAlerts() {
   const open = S.alerts.filter((a) => !a.acked);
   const el = $('#btn-alerts');
@@ -2133,9 +3476,7 @@ function toggleActivity(on) {
   on = on ?? !p.classList.contains('open');
   p.classList.toggle('open', on);
   $('#btn-activity').classList.toggle('on', on);
-  try {
-    localStorage.setItem('hud.activity', on ? '1' : '0');
-  } catch {}
+  if (!CAPTURE_READONLY) try { localStorage.setItem('hud.activity', on ? '1' : '0'); } catch {}
   renderActivity();
 }
 $('#btn-activity').addEventListener('click', () => toggleActivity());
@@ -2150,10 +3491,12 @@ function renderWho() {
 const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
 
 <b>canvas</b>
+  fixed 1600 × 900 board · fit is the zoom-out limit · 300% zoom-in limit
+  layout: auto fills the board · switch to manual for deliberate placement
   drag empty space        pan          scroll / two-finger    pan
   ⌘/ctrl + scroll, pinch  zoom         + / - / 0              zoom in / out / 100%
-  .                       fit all      shift + drag           select box
-  double-click empty      add here     double-click item      expand in place
+  .                       fit board    shift + drag           select box
+  double-click empty      add here     double-click item      scrollable details
   drag item               move (frames carry their contents; alt = no snap)
   corner handle           resize       space + drag           pan
 
@@ -2173,7 +3516,7 @@ const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
   new &lt;type&gt; [title]      t|m|n|f|u &lt;title&gt;   board &lt;name&gt;   (switch or create)
   rename &lt;name&gt;          board rm &lt;id&gt;       go &lt;id&gt;        fit    zoom &lt;pct&gt;
   organize                group into frames + tidy    auto [on|off]   keep board organized
-  group &lt;name&gt;            set group of selected       arrange   simple flow layout
+  group &lt;name&gt;            set group of selected       arrange   fit board layout
   rm                      delete selected
   push &lt;id&gt; &lt;value&gt;       status &lt;s&gt;  (selected tickets)
 
@@ -2302,8 +3645,10 @@ function setMode(m) {
   setModeHint();
   document.body.classList.toggle('list', S.mode === 'list');
   const b = $('#btn-view');
-  b.textContent = S.mode === 'list' ? 'canvas' : 'list';
   b.classList.toggle('on', S.mode === 'list');
+  $('#btn-dashboard').classList.toggle('on', S.mode === 'canvas');
+  if (!CAPTURE_READONLY) try { localStorage.setItem('hud.mode.' + S.board, S.mode); } catch {}
+  if (S.page === 'board') { ensureBoardProgramHost(); updateChrome(); queueProgramsMount(); }
   if (S.mode === 'list') renderList();
   else setModeCanvas();
 }
@@ -2322,7 +3667,7 @@ function scheduleList() {
   });
 }
 
-const LF_DEFAULT = { q: '', status: '', assignee: '', project: '', priority: '', tag: '', overdue: false, sort: 'status' };
+const LF_DEFAULT = { q: '', status: '', assignee: '', project: '', priority: '', tag: '', overdue: false, completed: false, sort: 'status' };
 const lfKey = () => `hud.lf.${S.board}`;
 function lfGet() {
   if (S.lf?.board === S.board) return S.lf.f;
@@ -2335,14 +3680,13 @@ function lfGet() {
 }
 function lfSet(patch) {
   const f = Object.assign(lfGet(), patch);
-  try {
-    localStorage.setItem(lfKey(), JSON.stringify(f));
-  } catch {}
+  if (!CAPTURE_READONLY) try { localStorage.setItem(lfKey(), JSON.stringify(f)); } catch {}
   renderList();
 }
 const lfActive = (f) => !!(f.q || f.status || f.assignee || f.project || f.priority || f.tag || f.overdue);
 const PRIO_RANK = { urgent: 4, high: 3, med: 2, low: 1 };
 function lfMatch(t, f, projectsById) {
+  if (!f.completed && !f.status && !f.q && ['done', 'canceled'].includes(t.status)) return false;
   if (f.status && (t.status || 'todo') !== f.status) return false;
   if (f.assignee && (t.assignee || '') !== (f.assignee === '-' ? '' : f.assignee)) return false;
   if (f.project && (t.project && projectsById.has(t.project) ? t.project : '-') !== f.project) return false;
@@ -2350,7 +3694,7 @@ function lfMatch(t, f, projectsById) {
   if (f.tag && !(t.tags || []).includes(f.tag)) return false;
   if (f.overdue && !isOverdue(t)) return false;
   if (f.q) {
-    const hay = `${identOf(t)} ${t.title || ''} ${t.body || ''} ${t.assignee || ''} ${(t.tags || []).join(' ')}`.toLowerCase();
+    const hay = `${t.id} ${t.uuid || ''} ${identOf(t)} ${t.title || ''} ${t.body || ''} ${t.assignee || ''} ${(t.tags || []).join(' ')}`.toLowerCase();
     if (!f.q.toLowerCase().split(/\s+/).every((w) => hay.includes(w))) return false;
   }
   return true;
@@ -2377,6 +3721,7 @@ function renderFilterBar(all, projects) {
     sel('priority', 'priority', [['urgent', 'urgent'], ['high', 'high'], ['med', 'med'], ['low', 'low'], ['-', '(none)']]),
     sel('tag', 'tag', uniq(all.flatMap((t) => t.tags || [])).map((a) => [a, '#' + a])),
     `<label data-f-overdue title="only overdue tickets">‼ overdue</label>`,
+    `<button class="btn sm" data-f-completed title="include done and canceled tickets">completed ${all.filter(t => ['done', 'canceled'].includes(t.status)).length}</button>`,
     `<select data-f="sort" title="sort"><option value="status">sort: status</option><option value="priority">sort: priority</option><option value="updated">sort: updated</option><option value="target">sort: target</option></select>`,
     `<button class="btn sm" data-f-clear>clear</button>`,
   ].join('');
@@ -2389,6 +3734,8 @@ function renderFilterBar(all, projects) {
   }
   for (const c of $$('[data-f]', bar)) if (c.value !== (f[c.dataset.f] ?? '')) c.value = f[c.dataset.f] ?? '';
   $('[data-f-overdue]', bar).classList.toggle('on', f.overdue);
+  $('[data-f-completed]', bar).classList.toggle('on', f.completed);
+  $('[data-f-completed]', bar).setAttribute('aria-pressed', String(f.completed));
   $('[data-f-clear]', bar).style.display = lfActive(f) || f.sort !== 'status' ? '' : 'none';
 }
 
@@ -2418,6 +3765,7 @@ function renderList() {
     const folded = S.open.has(t.id);
     const bits = [
       t.priority && `<span class="prio-${esc(t.priority)}">!${esc(t.priority)}</span>`,
+      t.group && `<span class="tag" title="group">${esc(t.group)}</span>`,
       t.assignee && `<span class="dim">→${esc(t.assignee)}</span>`,
       targetHTML(t),
       t.blockedBy?.length && `<span class="dep">⊘ ${t.blockedBy.map((b) => esc(nameOf(b))).join(', ')}</span>`,
@@ -2425,9 +3773,9 @@ function renderList() {
       t.monitors?.length && `<span class="dim">⇢ ${t.monitors.map((m) => esc(m)).join(', ')}</span>`,
       t.comments?.length && `<span class="dim">${t.comments.length}c</span>`,
     ].filter(Boolean).join(' ');
-    return `<div class="trow s-${esc(t.status || 'todo')}${needsDecision(t) ? ' needs-decision' : ''}" data-open="${esc(t.id)}" style="--d:${depth}">
+    return `<div class="trow s-${esc(t.status || 'todo')}${needsDecision(t) ? ' needs-decision' : ''}" data-open="${esc(t.id)}" tabindex="0" style="--d:${depth}">
       <span class="tg" data-cycle="${esc(t.id)}" title="cycle status">${STATUS_GLYPH[t.status] || '[·]'}</span>
-      <span class="tid">${esc(identOf(t))}</span>
+      <span class="tid">${esc(identOf(t))}${copyTicketButton(t)}</span>
       <span class="tcar"${kids.length ? ` data-fold="${esc(t.id)}" title="${folded ? 'expand' : 'collapse'} sub-tickets"` : ''}>${kids.length ? (folded ? '▸' : '▾') : ''}</span>
       <span class="ttt">${esc(t.title) || '<span class="faint">untitled</span>'}</span>
       <span class="tbits">${bits}</span>
@@ -2437,7 +3785,7 @@ function renderList() {
   const tree = (t, depth) => rowHTML(t, depth) + (S.open.has(t.id) ? '' : kidsOf(t.id).map((c) => tree(c, depth + 1)).join(''));
 
   const groupHTML = (project, list) => {
-    const label = project ? `${esc(project.key || '—')} <span class="pn">${esc(project.title)}</span>` : '<span class="pn">no project</span>';
+    const label = project ? `${esc(project.key || '—')} <span class="pn">${esc(project.title)}</span>` : `<span class="pn">${projects.length ? 'no project' : 'All tickets'}</span>`;
     const meta = project ? [project.target && `→ ${esc(project.target)}`, project.lead && `@${esc(project.lead)}`].filter(Boolean).join(' ') : '';
     const head = `<div class="tproj"${project ? ` data-proj="${esc(project.id)}"` : ''}>
       <span class="pk">${label}</span><span class="pm">${meta}</span>
@@ -2468,14 +3816,15 @@ function renderList() {
   const html = groups.map((g) => groupHTML(g.project, g.list));
   if (loose.length) html.push(groupHTML(null, loose));
   if (active && !tickets.length) html.push('<div class="tnone">no tickets match — <span class="go" data-f-clear>clear filters</span></div>');
-  else if (!projects.length && !loose.length) html.push('<div class="tnone">no tickets yet — add a project, or press <b>t</b> on the canvas</div>');
+  else if (!projects.length && !loose.length) html.push(`<div class="tnone">${allTickets.length ? 'No active tickets. Use completed above to see finished work.' : 'No tickets yet — add a ticket or project.'}</div>`);
   const out = `<div class="lwrap">
-    <div class="lhead"><span>tickets</span><span class="dim">${active ? `${tickets.length} of ${allTickets.length}` : `${tickets.length} total`}</span><button class="btn sm" data-new-project="1">＋ project</button></div>
+    <div class="lhead"><span>tickets</span><span class="dim">${tickets.length} shown · ${allTickets.length} total</span><button class="btn sm" data-new="|todo">＋ ticket</button><button class="btn sm" data-new-project="1">＋ project</button></div>
     ${html.join('')}
   </div>`;
   if (host.dataset.sig === out) return;
   host.dataset.sig = out;
   host.innerHTML = out;
+  applyReadonlyControls(host);
 }
 
 /** inline "new ticket" row — title, ⏎ to create, esc to cancel. No canvas coordinates involved. */
@@ -2507,6 +3856,7 @@ function newTicketInline(anchor, projectId, status) {
       const it = lite(await api('POST', '/api/items', { type: 'ticket', title, status, board: S.board, ...(projectId ? { project: projectId } : {}) }));
       S.items.set(it.id, it);
       wrap.remove();
+      if (it.board !== S.board) { rememberBoard(it.board); switchBoard(it.board); toastBoardCreated(it); return; }
       renderList();
       updateChrome();
     } catch {
@@ -2538,6 +3888,7 @@ function newProjectInline() {
       const p = lite(await api('POST', '/api/items', { type: 'project', title, board: S.board }));
       S.items.set(p.id, p);
       input.remove();
+      if (p.board !== S.board) { rememberBoard(p.board); switchBoard(p.board); toastBoardCreated(p); return; }
       renderList();
       updateChrome();
       toast(`project ${p.key} created`);
@@ -2558,11 +3909,19 @@ async function cycleStatus(id) {
 $('#list').addEventListener('input', (e) => {
   if (e.target.dataset.f === 'q') lfSet({ q: e.target.value });
 });
+$('#list').addEventListener('keydown', e => {
+  if (e.target.matches('.trow') && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    e.stopPropagation();
+    openDrawer(e.target.dataset.open);
+  }
+});
 $('#list').addEventListener('change', (e) => {
   const k = e.target.dataset.f;
   if (k && k !== 'q') lfSet({ [k]: e.target.value });
 });
 $('#list').addEventListener('click', (e) => {
+  if (e.target.closest('[data-f-completed]')) return lfSet({ completed: !lfGet().completed });
   if (e.target.closest('[data-f-overdue]')) return lfSet({ overdue: !lfGet().overdue });
   if (e.target.closest('[data-f-clear]')) return lfSet({ ...LF_DEFAULT });
   const cyc = e.target.closest('[data-cycle]');
@@ -2588,7 +3947,8 @@ $('#list').addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]');
   if (open) return openDrawer(open.dataset.open);
 });
-$('#btn-view').addEventListener('click', () => setMode(S.mode === 'list' ? 'canvas' : 'list'));
+$('#btn-view').addEventListener('click', () => setMode('list'));
+$('#btn-dashboard').addEventListener('click', () => setMode('canvas'));
 
 // ---------------------------------------------------------------- keyboard
 const typing = () => {
@@ -2596,6 +3956,23 @@ const typing = () => {
   return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable);
 };
 window.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    return S.searchOpen ? closeSearch() : openSearch();
+  }
+  if (e.key === 'Escape' && S.searchOpen) {
+    e.preventDefault();
+    closeSearch();
+    return;
+  }
+  if (CAPTURE_READONLY) {
+    if (e.key === 'Escape') {
+      if ($('#drawer').classList.contains('open')) closeDrawer();
+      else if (!$('#program-inspector').hidden) { $('#program-inspector').hidden = true; $('#btn-source').classList.remove('on'); }
+      else if ($('#help').classList.contains('open')) toggleHelp(false);
+    }
+    return;
+  }
   if (e.key === ' ' && !typing()) {
     spaceDown = true;
     canvas.classList.add('space');
@@ -2613,16 +3990,19 @@ window.addEventListener('keydown', (e) => {
   }
   if (typing()) return;
   const mod = e.metaKey || e.ctrlKey;
-  if (mod && e.key === 'a' && S.mode === 'canvas') {
+  if (mod && e.key === 'a' && S.page === 'board' && S.mode === 'canvas') {
     e.preventDefault();
-    return select(boardItems().map((i) => i.id));
+    return select(canvasItems().map((i) => i.id));
   }
   if (mod && e.key === 'z') {
     e.preventDefault();
     return undoDelete();
   }
   if (mod || e.altKey) return;
+  if (e.key === 'A') return setPage('attention');
+  if (e.key === 'R') return setPage('runs');
   if (e.key === 'l') return setMode(S.mode === 'list' ? 'canvas' : 'list');
+  if (S.page !== 'board' && !['?', 'a', 'T', ':', ';'].includes(e.key)) return;
   const r = canvas.getBoundingClientRect();
   const k = e.key;
   // the canvas shortcuts act on a canvas selection and a canvas cursor, neither of which exists in the list
@@ -2668,7 +4048,7 @@ window.addEventListener('keydown', (e) => {
     const ids = new Set(S.sel);
     for (const sid of S.sel) {
       const s = S.items.get(sid);
-      if (s?.type === 'frame') for (const c of membersOf(s)) ids.add(c.id);
+      if (s?.type === 'frame') for (const c of membersOf(s)) if (c.type !== 'ticket' && c.type !== 'project') ids.add(c.id);
     }
     const patch = [];
     for (const id of ids) {
@@ -2701,13 +4081,25 @@ window.addEventListener('keyup', (e) => {
 });
 
 // ---------------------------------------------------------------- tickers
-setInterval(() => {
+if (!CAPTURE_READONLY) setInterval(() => {
   // relative times + staleness
   for (const it of boardItems()) if (!(drag && drag.ids?.has(it.id))) renderItem(it, true);
   renderWho();
+  renderConnection();
+  renderMonitorAttentionStrip();
+  renderProgramInspector();
+  loadReadout();
 }, 5000);
+if (!CAPTURE_READONLY) setInterval(() => {
+  if (S.page !== 'attention') return;
+  const now = Date.now();
+  if (snoozedAttention(now).length || activeAttention(S.attention.now).length !== activeAttention(now).length) {
+    S.attention.now = now;
+    renderAttention();
+  }
+}, 15000);
 let spinI = 0;
-setInterval(() => {
+if (!CAPTURE_READONLY) setInterval(() => {
   spinI = (spinI + 1) % SPIN.length;
   for (const el of $$('.spin')) el.textContent = SPIN[spinI];
   // clocks, running timers and stopwatches need a faster beat than the 5s tick; their signature embeds the
@@ -2717,22 +4109,36 @@ setInterval(() => {
     if (it && ((it.type === 'util' && isLive(it)) || isAnimated(it))) renderItem(it, true);
   }
 }, 100);
-window.addEventListener('resize', applyView);
+window.addEventListener('resize', () => { setDrawerWidth(S.drawerWidth, false); fit(); });
 
 // ---------------------------------------------------------------- boot
-try {
+if (!CAPTURE_READONLY) try {
   if (localStorage.getItem('hud.activity') === '1') toggleActivity(true);
+  S.lastVisit = Number(localStorage.getItem(localKey('lastvisit')) || 0) || 0;
+  S.runs.showCompleted = localStorage.getItem(localKey('show-completed-runs')) === 'true';
 } catch {}
+
+// Keep a checkpoint for the next launch while retaining the immutable "since this visit" baseline.
+if (!CAPTURE_READONLY) setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  try { localStorage.setItem(localKey('lastvisit'), String(Date.now())); } catch {}
+}, 60e3);
 
 /** open the stream first so nothing emitted during the snapshot fetch is lost, then load and replay */
 async function boot() {
-  connect();
+  if (!CAPTURE_READONLY) connect();
+  else renderConnection();
   for (;;) {
     try {
       await load();
       break;
     } catch (e) {
       // api() already toasted a network/server error; a render bug is isolated per item and cannot land here
+      if (CAPTURE_READONLY) {
+        S.captureErrors.push(String(e?.message || e));
+        window.__hudCapture = { ready: false, errors: [...S.captureErrors], customReady: false };
+        return;
+      }
       toast(`could not load the board: ${e.message} — retrying`, 3000);
       await new Promise((r) => setTimeout(r, 3000));
     }
@@ -2746,9 +4152,21 @@ async function boot() {
     }
   }
   renderWho();
+  if (CAPTURE_READONLY) {
+    const report = await mountProgramsNow(true);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const errors = [...new Set([...S.captureErrors, ...(report.errors || [])])];
+    const hasCustom = !!document.querySelector('.hud-program');
+    window.__hudCapture = { ready: true, errors, customReady: !hasCustom || errors.length === 0 };
+    applyReadonlyControls();
+  } else if (S.page === 'attention') { loadAttention(); loadChanges(); }
+  else if (S.page === 'runs') loadRuns();
 }
 boot();
 window.addEventListener('hashchange', () => {
-  const id = hashId();
-  if (id && id !== S.board && S.boards.some((b) => b.id === id)) switchBoard(id);
+  const hs = hashState();
+  if (hs.page === 'attention' || hs.page === 'runs') return setPage(hs.page, { hash: false });
+  if (hs.page === 'item' && hs.item) return openItemDeepLink(hs.item);
+  const id = hs.board;
+  if (id && S.boards.some((b) => b.id === id)) return id === S.board ? setPage('board', { hash: false }) : switchBoard(id, { hash: false });
 });

@@ -9,5 +9,6 @@
     "name": "hud",
     "email": "hud@localhost"
   },
-  "homepage": "https://localhost/hud"
+  "homepage": "https://github.com/CodeKnight314/hud",
+  "license": "MIT"
 }

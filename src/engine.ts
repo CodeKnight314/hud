@@ -90,12 +90,12 @@ export class Engine {
   private emit(id: string, r: MonitorResult) {
     if (!this.store.state.items[id]) return;
     try {
-      this.store.push(id, r, ACTOR);
+      this.store.collect(id, r);
     } catch (e) {
       console.error(`[hud] monitor ${id}:`, errMsg(e));
       // a rejected reading must still be visible on the monitor
       try {
-        this.store.push(id, { state: 'error', message: `invalid reading: ${errMsg(e)}`.slice(0, 500) }, ACTOR);
+        this.store.collect(id, { state: 'error', message: `invalid reading: ${errMsg(e)}`.slice(0, 500) });
       } catch {}
     }
   }
@@ -154,7 +154,7 @@ export class Engine {
       } finally {
         ac.signal.removeEventListener('abort', onAbort);
         const it = this.store.state.items[id];
-        if (it && !ac.signal.aborted) it.lastRun = Date.now();
+        if (it && !ac.signal.aborted) this.store.recordAttempt(it.id);
       }
     };
 
@@ -243,7 +243,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, ac?: AbortController, prefix 
   });
 }
 
-const RESULT_KEYS = ['value', 'state', 'message', 'progress', 'unit', 'label', 'monitors'];
+const RESULT_KEYS = ['value', 'state', 'message', 'progress', 'unit', 'label', 'monitors', 'data', 'observedAt', 'availability', 'coverage'];
 
 function asResult(text: string): any | null {
   try {

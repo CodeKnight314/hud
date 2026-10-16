@@ -6,6 +6,7 @@
 appId: local.hud.dashboard
 productName: hud
 copyright: hud
+artifactName: hud-${version}-${os}-${arch}.${ext}
 
 directories:
   output: dist
@@ -20,6 +21,8 @@ extraResources:
     to: app/package.json
   - from: bundle/hud.mjs
     to: hud/bin/hud.mjs
+  - from: electron/render.mjs
+    to: hud/electron/render.mjs
   - from: web
     to: hud/web
   - from: probes
@@ -28,6 +31,8 @@ extraResources:
     to: hud/views
   - from: GUIDE.md
     to: hud/GUIDE.md
+  - from: STYLE.md
+    to: hud/STYLE.md
   - from: package.json
     to: hud/package.json
   - from: build/trayTemplate.png

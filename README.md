@@ -21,13 +21,16 @@ From the repo, prefix with `node bin/hud.js`, or `npm link` to put `hud` on PATH
 entry and backs the config up first. To have monitor alerts wake a Claude Code session, start it with
 `claude --dangerously-load-development-channels server:hud`, then have the agent `hud_watch` the monitors it owns.
 
-Agents get `hud_overview`, `hud_tickets`, `hud_create`, `hud_update`, `hud_push`, `hud_comment`, … (full list in
-`GUIDE.md`, also served at `GET /api/guide` and by `hud guide`). The MCP server and CLI start the hud server on demand.
-Anything with a shell can use the `hud` CLI or plain HTTP.
+Agents can use the full MCP, CLI and HTTP surfaces. See [GUIDE.md](GUIDE.md), `hud guide`, `hud://guide` or
+`GET /api/guide` for current tools, command syntax, schemas and examples. The MCP server and CLI start hud on demand.
+
+The cross-board **Attention** landing collects decisions, blocked work, warnings, errors and stale monitors. **Runs**
+shows each tagged run ticket with its explicit progress/ETA monitor and linked work; review is separate from alert
+acknowledgement.
 
 ## Tickets (local Linear)
-- A **project** owns a `KEY` (`EGO`) that gives its tickets idents (`EGO-3`) and git branch names. Anything that takes
-  an id takes an ident.
+- A **project** owns a `KEY` (`EGO`) that gives its tickets idents (`EGO-3`) and git branch names. Tickets also have
+  copyable immutable UUIDs; ticket references accept either form.
 - `parent` makes sub-tickets, `blockedBy` is the dependency edge (a ticket waiting on open blockers blocks itself and
   clears itself), `refs` are loose links; cycles are rejected.
 - Statuses `backlog todo doing review blocked done canceled`, priorities `low med high urgent` (case-insensitive,
@@ -39,8 +42,15 @@ Anything with a shell can use the `hud` CLI or plain HTTP.
 Value, state, message, progress. Fed by hand, by pushes from outside processes, polled by hud via a shell `command`,
 an `http` check or a TypeScript **probe** (built in: `tcp`, `tls`, `dns`, `disk`, `file-age`; examples: `git`,
 `process`, `tail`), or reported by a cron job through a **heartbeat** URL. Thresholds, staleness, 24 h history with
-uptime, and alerts. There are 19 views (number, progress, line, bar, pie, histogram, heatmap, 3-D, …), and `auto` picks
-from the data shape; press `v` to cycle by hand, or write your own renderer in `views/`.
+uptime, and alerts. Built-in views cover scalar and progress readings, time series, distributions, categories, matrices,
+structured tables and pipelines; `auto` picks from the data shape. Press `v` to cycle by hand, use an installed
+`view:<name>` renderer, or preview a board-bound program.
+
+Metrics can also carry a definition, scope, unit, source, observation time, evidence and coverage. Native displays
+include composite, capacity, breakdown, table, grid and pipeline; chart targets and event markers add context to the
+history. `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare` and `hud_lint` help agents inspect,
+compose and verify a board. `hud_graph` and `hud_canvas` create isolated custom programs for a graph or a complete
+surface. See [GUIDE.md](GUIDE.md) for the schemas and workflow, and [STYLE.md](STYLE.md) for the visual contract.
 
 ```sh
 curl -fsS localhost:7317/ping/nightly-backup?period=86400      # heartbeat: no ping in period+grace is an error
@@ -51,25 +61,31 @@ hud push etl --progress 40 --message "batch 4/10"                # creates the m
 import { Hud } from './src/client.ts';
 await new Hud({ actor: 'etl' }).push('etl', { progress: 40, message: 'batch 4/10' });
 ```
-Notes are markdown with `- [ ]` checkboxes, frames are labelled regions that carry what is inside, utilities are
-on-canvas tools (timer, calculator, sheet, …). Boards are separate canvases (the tabs at the top).
+Notes are markdown with `- [ ]` checkboxes, frames are labelled regions that carry what is inside, and utilities are
+on-canvas tools (timer, calculator, sheet, …). Boards are separate canvases. **Clear canvas** moves its items to Trash
+while keeping the board and settings; **Delete board** removes the board, and `main` cannot be deleted.
 
 ## CLI cheatsheet
 ```sh
 hud ls [board] · hud ls tickets [--status s,s --assignee a --project KEY --tag t --overdue]
 hud find <text> · hud show <id> · hud log <id>
 hud add ticket "title" --project EGO --blockedBy EGO-2 · hud set <id> --status doing · hud link <id> parent=EGO-1
-hud comment <id> <text> · hud ask <id> --option A --option B · hud decide <id> <optionId>
+hud comment <id> <text> · hud ask <id> --option A --option B · hud decide <id> <optionId> --version <decisionVersion>
 hud push <id> 42 · hud ping <id> [start|fail|<code>] · hud run <id> · hud finish
+hud readout [board] · hud snapshot [board] --format auto|png|text [--out path]
+hud dashboard [board] --file <json> [--dry-run] · hud annotate <board> <epoch-ms> <text...>
+hud compare <board> <left> <equal|lte|gte> <right> · hud lint [board]
+hud graph <monitor> --action get|preview|apply|disable|delete --file <json> · hud canvas [board] --action get|preview|apply|disable|delete --code-file <path>
+hud board clear <id> · hud board rm <id>
 hud rm <id> · hud trash · hud restore <id> · hud purge <id>|--all
 hud backup [--list] · hud export [file] · hud import <file> [--merge]
 hud status · hud start|stop|open · hud guide
 ```
-Every command takes `--help` and `--json`. Nothing is deleted outright: `rm` moves to the trash, state is backed up
+Every command takes `--help` and `--json`. Deletes move to Trash by default; `purge` is permanent. State is backed up
 hourly and before risky operations, and a corrupt state file is recovered from the newest backup.
 
 ## Keys
-Press `?` in the app. In short: **double-click a card to expand it in place**, double-click empty space to add, drag to
+Press `?` in the app. In short: **double-click a card to open scrollable details**, double-click empty space to add, drag to
 pan, ⌘/ctrl+scroll to zoom, `t m n f w` to create (ticket, monitor, note, frame, widget), `⏎` to open the drawer, `l` for
 the list view, `v` to cycle a monitor's view, `⌫` to delete, `u` or ⌘/ctrl+Z to undo, `:` for the command line, `a`
 for the activity feed.
@@ -78,6 +94,10 @@ for the activity feed.
 
 A real desktop window (Electron), one build per OS, no Node install needed to run it. The app binary is also the CLI
 and the MCP server, so `hud mcp install` and the CLI shim point at the same file.
+
+Download the 0.1.0 installers from [GitHub Releases](https://github.com/CodeKnight314/hud/releases/tag/v0.1.0):
+macOS arm64/x64 DMGs, Windows x64 installer, or Linux x64 AppImage/deb. These releases are unsigned and may prompt
+an operating-system warning on first launch.
 
 ```sh
 npm install
@@ -92,18 +112,12 @@ on macOS, `%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere), seeds the
 run, and closes to the tray with the server still up so agents keep working. `Help → Install "hud" command…` puts
 `hud` on your PATH. There is no auto-updater: install a new build to update.
 
-Builds are not signed or notarized (no Developer ID, no entitlements file). macOS Gatekeeper will warn on first launch;
-right-click → Open, or sign the build yourself. Command monitors and the alert hook need a POSIX shell, so those are
+Builds are not Developer ID signed or notarized. macOS Gatekeeper may warn on first launch; right-click → Open, or sign
+the build yourself. Command monitors and the alert hook need a POSIX shell, so those are
 macOS/Linux features; the `tail` and `process` probes are POSIX only too.
 
-## Files
-`src/server.ts` HTTP + SSE + static · `src/store.ts` state, persistence, backups, trash · `src/lock.ts` one server per
-data dir · `src/engine.ts` monitor runner · `src/mcp.ts` MCP stdio server · `src/mcpinstall.ts` agent wiring ·
-`src/cli.ts` CLI · `src/cliinstall.ts` the `hud` command shim · `src/client.ts` TS client · `src/summary.ts` text
-overview · `src/types.ts` data model · `src/config.ts`, `src/assets.ts`, `src/electron-runtime.ts` paths and entry
-points · `electron/main.ts` the desktop shell · `web/` UI (`app.js`, `views.js` charts, `utils.js`) · `views/` renderer
-modules · `probes/` probe modules · `scripts/` build, dev and icon scripts · your data lives in the per-user dir (`~/Library/Application Support/hud` on macOS): `state.json`,
-`backups/`, `server.log`.
+For the source layout and development conventions, see [AGENTS.md](AGENTS.md). Your board and backups live in hud's
+per-user data directory.
 
 Env: the port (7317) and data dir (per-user) are fixed: one board, one server. `HUD_PORT`, `HUD_DATA`,
 `HUD_PROBES`, `HUD_VIEWS` and `HUD_URL` are ignored unless `HUD_SCRATCH=1` (throwaway test instances only). `HUD_ACTOR` (name shown on changes), `HUD_SESSION` (alert session name), `HUD_TIMEOUT` / `HUD_MCP_TIMEOUT` (ms), `HUD_ALERT_CMD` (shell hook; alert JSON on stdin), `HUD_BIN_DIR` (where

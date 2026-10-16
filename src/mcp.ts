@@ -9,7 +9,7 @@ import { Hud } from './client.ts';
 import { line } from './summary.ts';
 import type { Item } from './types.ts';
 
-const hud = new Hud({ actor: process.env.HUD_ACTOR ?? 'agent' });
+const baseHud = new Hud({ actor: process.env.HUD_ACTOR ?? 'agent' });
 
 const ITEM_FIELDS = {
   title: { type: 'string' },
@@ -40,19 +40,31 @@ const ITEM_FIELDS = {
   display: {
     type: 'string',
     description:
-      'monitor view: auto (default), value, progress, status, text, log, spark, line, area, bars, gauge, histogram, scatter, pie, donut, heatmap, box, ridgeline, scatter3d, surface3d, or "view:<name>" (hud_views)',
+      'monitor view: auto (default), value, progress, status, text, log, spark, line, area, bars, gauge, histogram, scatter, pie, donut, heatmap, box, ridgeline, scatter3d, surface3d, composite, capacity, breakdown, table, grid, pipeline, custom, or "view:<name>" (hud_views)',
   },
   plot: {
     type: 'object',
     description:
-      'chart options: {series} dot path into meta; {bins}, {points}, {stacked}, {tilt, spin}, {yMin, yMax, auto}, {animate}. See hud_guide',
+      'chart options: {series} dot path into meta; {targets}, {events}, {metrics} for metric overlays; {bins}, {points}, {stacked}, {tilt, spin}, {yMin, yMax, auto}, {animate}. See hud_guide',
   },
+  metric: { type: 'object', description: 'metric identity and meaning: kind, key, scope, unit, definition, windowSeconds, target, denominator, source, sourceId' },
+  observedAt: { type: 'number', description: 'source observation time in epoch milliseconds; distinct from receive time' },
+  evidence: { type: 'string', enum: ['reported', 'estimate'], description: 'evidence basis for this value; do not describe estimates as measured' },
+  coverage: { type: 'object', description: '{responding,total} population covered by the observation' },
+  availability: { type: 'string', enum: ['available', 'partial', 'unavailable'] },
+  data: { type: 'object', description: 'table data: {columns:[{key,label?,unit?,type?}],rows:[...]}' },
+  pipeline: { type: 'object', description: 'pipeline stage bindings: {stages:[{key,label,throughput?,queued?,inFlight?,oldestAge?,retries?,rejected?}]}' },
+  freshness: { type: 'object', description: '{mode:"live"|"static",reason?}; state why a reading is static when applicable' },
   value: { description: 'monitor: current value. Prefer a number (thresholds, charts, ETA need one) and put display text in label' },
   label: { type: 'string', description: 'monitor: text shown instead of the value, e.g. value 2 → label "2/4 busy"' },
+  messageFormat: { type: 'string', enum: ['plain', 'markdown'], description: 'monitor: format of the short message headline (default plain)' },
+  details: { type: 'string', description: 'monitor: longer Markdown report, at most 20 KB; keep message short' },
   notify: { type: 'array', items: { type: 'string' }, description: 'sessions to wake on this item\'s events: a monitor\'s warn/error/stale/done, a ticket\'s decision ("*" = every watching session)' },
   monitors: { type: 'array', items: { type: 'string' }, description: 'ticket: linked monitor ids, shown live on the ticket' },
   autoStatus: { type: 'boolean', description: 'ticket: all linked monitors done → done; any in error → blocked (back to doing on recovery)' },
   question: { type: 'string', description: 'ticket: the question that goes with proposed options' },
+  questionFormat: { type: 'string', enum: ['plain', 'markdown'], description: 'ticket: format of question and option details (default plain)' },
+  summaryMonitor: { type: 'string', description: 'ticket tagged run: explicit linked monitor id used for run progress and ETA' },
   options: {
     type: 'array',
     description: 'ticket: [{label, detail?, status?}]. Prefer hud_ask',
@@ -211,8 +223,18 @@ const TOOLS = [
       properties: {
         id: { type: 'string' },
         value: ITEM_FIELDS.value,
+        metric: ITEM_FIELDS.metric,
+        observedAt: ITEM_FIELDS.observedAt,
+        evidence: ITEM_FIELDS.evidence,
+        availability: ITEM_FIELDS.availability,
+        coverage: ITEM_FIELDS.coverage,
+        data: ITEM_FIELDS.data,
+        pipeline: ITEM_FIELDS.pipeline,
+        freshness: ITEM_FIELDS.freshness,
         state: ITEM_FIELDS.state,
         message: { type: 'string' },
+        messageFormat: ITEM_FIELDS.messageFormat,
+        details: ITEM_FIELDS.details,
         progress: ITEM_FIELDS.progress,
         unit: { type: 'string' },
         label: ITEM_FIELDS.label,
@@ -247,12 +269,76 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { ack: { type: 'boolean' }, all: { type: 'boolean' }, mine: { type: 'boolean', description: 'only alerts addressed to this session' } } },
   },
   {
+    name: 'hud_attention',
+    description: 'Human-attention queue, separate from agent alert acknowledgement. action=list reads open items; review/unreview/snooze require the current revision from the list. Snooze requires until (epoch milliseconds). Reviewing does not acknowledge old agent alerts.',
+    inputSchema: {
+      type: 'object',
+      required: ['action'],
+      properties: {
+        action: { type: 'string', enum: ['list', 'review', 'unreview', 'snooze'] },
+        id: { type: 'string' },
+        revision: { type: 'string', description: 'current attention revision from hud_attention list' },
+        until: { type: 'number', description: 'snooze deadline as epoch milliseconds' },
+      },
+    },
+  },
+  {
+    name: 'hud_runs',
+    description: 'List run summaries: progress and ETA from the tagged summary monitor, plus linked monitors and tickets. Numeric readings and progress remain available in the structured data.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'hud_changes',
+    description: 'Read an incremental change window after a timestamp. Use the returned now as the next since value; complete is false when the requested window was truncated.',
+    inputSchema: { type: 'object', required: ['since'], properties: { since: { type: 'number', description: 'epoch milliseconds' } } },
+  },
+  {
+    name: 'hud_readout',
+    description: 'Read current metrics and monitor evidence for one board or all boards. Start here before designing a dashboard; use hud_lint to check the result and hud_guide for field meanings.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string', description: 'board id; omit for all boards' } } },
+  },
+  {
+    name: 'hud_snapshot',
+    description: 'Capture the current board as text and, when available, a real PNG image. Keep captures as evidence; consult hud_guide for metric and availability meanings.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' }, format: { type: 'string', enum: ['auto', 'png', 'text'] } } },
+  },
+  {
+    name: 'hud_dashboard',
+    description: 'Read or set a declarative dashboard spec. Use hud_readout to choose metrics, preview with dryRun before applying, then run hud_lint. Keep panels legible in hud’s monochrome terminal style; see hud_guide.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['get', 'set'] }, spec: { type: 'object' }, dryRun: { type: 'boolean' }, expectedRevision: { type: 'string' } } },
+  },
+  {
+    name: 'hud_annotate',
+    description: 'List, add, or remove a timestamped board annotation. Add uses time in epoch milliseconds and concise text; annotations appear on the metric timeline. See hud_guide.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['list', 'add', 'delete'] }, time: { type: 'number' }, text: { type: 'string' }, id: { type: 'string' } } },
+  },
+  {
+    name: 'hud_compare',
+    description: 'List, add, or remove a comparison between metric identifiers. Rules use equal/lte/gte and optional tolerance, holdFor, and maxSkew; inspect hud_readout first. See hud_guide.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['list', 'add', 'delete'] }, id: { type: 'string' }, left: { type: 'string' }, right: { type: 'string' }, relation: { type: 'string', enum: ['equal', 'lte', 'gte'] }, tolerance: { type: 'number' }, holdFor: { type: 'number' }, maxSkew: { type: 'number' } } },
+  },
+  {
+    name: 'hud_lint',
+    description: 'Check a board’s dashboard, references, metrics, annotations, and comparisons for issues. Run after editing; use hud_readout for current observations and hud_guide for conventions.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' } } },
+  },
+  {
+    name: 'hud_graph',
+    description: 'Read, preview, apply, disable, or delete an item renderer program. Always preview before apply; bindings and capabilities must match the intended data and scope. Use the hud_guide resource for the API and monochrome rendering style.',
+    inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, action: { type: 'string', enum: ['get', 'preview', 'apply', 'disable', 'delete'] }, program: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', enum: ['html', 'javascript', 'svg'] }, description: { type: 'string' }, bindings: { type: 'array', items: { type: 'string' } }, capabilities: { type: 'array', items: { type: 'object', properties: { operation: { type: 'string' }, scope: { type: 'string' } } } } } }, expectedRevision: { type: 'string' } } },
+  },
+  {
+    name: 'hud_canvas',
+    description: 'Read, preview, apply, disable, or delete a board canvas renderer program. Always preview before apply; keep charts readable in hud’s black, white, and gray style, with red/green reserved for stated status. See hud_guide.',
+    inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['get', 'preview', 'apply', 'disable', 'delete'] }, program: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', enum: ['html', 'javascript', 'svg'] }, description: { type: 'string' }, bindings: { type: 'array', items: { type: 'string' } }, capabilities: { type: 'array', items: { type: 'object', properties: { operation: { type: 'string' }, scope: { type: 'string' } } } } } }, expectedRevision: { type: 'string' } } },
+  },
+  {
     name: 'hud_comment',
     description: 'Append a comment to an item. With cid: edit it (text) or delete it (delete:true).',
     inputSchema: {
       type: 'object',
       required: ['id'],
-      properties: { id: { type: 'string' }, text: { type: 'string' }, cid: { type: 'string', description: 'comment id to edit/delete' }, delete: { type: 'boolean' } },
+      properties: { id: { type: 'string' }, text: { type: 'string' }, format: { type: 'string', enum: ['plain', 'markdown'] }, cid: { type: 'string', description: 'comment id to edit/delete' }, delete: { type: 'boolean' } },
     },
   },
   {
@@ -266,23 +352,28 @@ const TOOLS = [
     inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
   },
   {
+    name: 'hud_clear_canvas',
+    description: 'Clear a board’s canvas while keeping the board and its settings. Items move to trash; dashboard draft, annotations, comparisons, and canvas program are cleared or disabled. Use this to reset content without deleting the board. See hud_guide.',
+    inputSchema: { type: 'object', required: ['board'], properties: { board: { type: 'string', description: 'board id to clear; the board itself is retained' } } },
+  },
+  {
     name: 'hud_board',
-    description: 'Boards. action: list | create (name) | rename (id, name) | delete (id; items go to trash; "main" cannot be deleted).',
+    description: 'Boards. action: list | create (name) | rename (id, name) | clear (id; keep the board/settings and move items to trash) | delete (id; delete the board; "main" cannot be deleted). Use hud_clear_canvas for an explicit canvas reset.',
     inputSchema: {
       type: 'object',
       required: ['action'],
-      properties: { action: { type: 'string', enum: ['list', 'create', 'rename', 'delete'] }, id: { type: 'string' }, name: { type: 'string' } },
+      properties: { action: { type: 'string', enum: ['list', 'create', 'rename', 'clear', 'delete'] }, id: { type: 'string' }, name: { type: 'string' } },
     },
   },
   {
     name: 'hud_organize',
     description:
-      'Clean up a board: every group becomes a frame, members are sorted (monitors, then tickets by status/priority, then utils, then notes) and packed inside, then frames and ungrouped items are packed into rows. auto=true keeps the board organized automatically whenever items are added, removed or regrouped; auto=false turns that off.',
+      'Fit cards and group frames into the fixed 1600×900 dashboard. Few cards are centered at readable sizes; larger collections fill the board. Creation order is stable across readings. Auto layout is on by default; auto=true enables structural reflow, auto=false allows deliberate manual x/y/w/h placement within bounds. Call after a batch. Split crowded dashboards into separate boards.',
     inputSchema: { type: 'object', properties: { board: { type: 'string' }, auto: { type: 'boolean' } } },
   },
   {
     name: 'hud_arrange',
-    description: 'Tidy layout: flow items left-to-right in rows. With frame: arranges that frame\'s contents (frame resizes to fit). Without: arranges top-level items of a board (frames move with their contents). ids sets explicit order.',
+    description: 'Fit the whole fixed board, including group contents. frame selects its board; ids are validated on the selected board. Legacy width is accepted but the surface stays 1600×900. Prefer hud_organize; use auto=false and hud_update coordinates for a custom layout.',
     inputSchema: {
       type: 'object',
       properties: { board: { type: 'string' }, frame: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, width: { type: 'number' } },
@@ -309,6 +400,7 @@ const TOOLS = [
       properties: {
         id: { type: 'string' },
         question: { type: 'string', description: 'what you need decided' },
+        questionFormat: { type: 'string', enum: ['plain', 'markdown'], description: 'format of question and option details (default plain)' },
         options: {
           type: 'array',
           description: 'at least one choice. Each: {label, detail?, status?} — status is where the ticket goes when chosen (default doing).',
@@ -322,8 +414,8 @@ const TOOLS = [
     description: 'Pick one of a ticket\'s proposed options yourself (headless use). Normally the human clicks it on the canvas.',
     inputSchema: {
       type: 'object',
-      required: ['id', 'optionId'],
-      properties: { id: { type: 'string' }, optionId: { type: 'string' }, note: { type: 'string' } },
+      required: ['id', 'optionId', 'decisionVersion'],
+      properties: { id: { type: 'string' }, optionId: { type: 'string' }, decisionVersion: { type: 'string', description: 'current ticket decisionVersion from hud_get/hud_ask; stale versions are rejected' }, note: { type: 'string' } },
     },
   },
   {
@@ -342,8 +434,8 @@ const TOOLS = [
   },
 ];
 
-const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views']);
-const DESTRUCTIVE = new Set(['hud_delete', 'hud_finish', 'hud_trash', 'hud_board']);
+const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint']);
+const DESTRUCTIVE = new Set(['hud_delete', 'hud_finish', 'hud_trash', 'hud_board', 'hud_clear_canvas']);
 const OPEN_WORLD = new Set(['hud_create', 'hud_update', 'hud_run']); // can start shell-command / http monitors
 const listed = TOOLS.map((t) => ({
   ...t,
@@ -376,9 +468,9 @@ function cap(text: string) {
   return text.length > MAX_OUT ? `${text.slice(0, MAX_OUT)}\n… truncated (${text.length} chars); narrow it with filters (board, status, limit, hud_search)` : text;
 }
 
-async function needBoard(board?: string) {
+async function needBoard(board?: string, client: Hud = baseHud) {
   if (!board) return;
-  const boards = await hud.boards();
+  const boards = await client.boards();
   if (!boards.some((b) => b.id === board)) throw new Error(`unknown board "${board}" (have: ${boards.map((b) => b.id).join(', ')})`);
 }
 
@@ -399,6 +491,11 @@ function brief(it: Item | (Item & { ident?: string; graph?: any })) {
   return line(it, { ident: () => (it as any).ident, name: (id: string) => names.get(id) ?? id });
 }
 
+function briefReport(it: Item | (Item & { ident?: string; graph?: any })) {
+  const headline = brief(it);
+  return (it as any).details ? `${headline}\n\n${String((it as any).details).replace(/\r/g, '').trim()}` : headline;
+}
+
 function trimItem(it: Item) {
   const { history, log, trend, ...rest } = it;
   const lt = (t?: number) => (t ? localTime(t) : undefined);
@@ -415,13 +512,74 @@ function trimItem(it: Item) {
   };
 }
 
-async function call(name: string, a: any): Promise<string> {
+const mdCell = (v: unknown) => String(v ?? '—').replace(/[|\r\n]+/g, ' ').trim() || '—';
+function attentionMarkdown(r: any): string {
+  const items = Array.isArray(r?.items) ? r.items : [];
+  if (!items.length) return `## Human attention\n\nNo open human-attention items.\n\n_checked ${localTime(Number(r?.now) || Date.now())}_`;
+  const rows = items.map((a: any) => `| ${mdCell(a.kind)} | ${mdCell(a.itemId)} | ${mdCell(a.title)} | ${mdCell(a.owner)} | ${mdCell(a.priority)} | ${a.reviewedAt ? 'yes' : 'no'} | ${a.snoozedUntil ? mdCell(a.snoozedUntil) : '—'} | ${mdCell(a.runTitle ?? a.runId)} | ${mdCell(a.revision)} | ${mdCell(a.message)} |`);
+  return [`## Human attention`, ``, `Reviewing this queue does not acknowledge old agent alerts.`, ``, `| Kind | Item | Title | Owner | Priority | Reviewed | Snoozed until | Run | Revision | Message |`, `|---|---|---|---|---:|---|---:|---|---|---|`, ...rows, ``, `_updated ${localTime(Number(r?.now) || Date.now())}_`].join('\n');
+}
+
+function attentionRecordMarkdown(record: any): string {
+  return [`## Human attention`, ``, `- item: ${mdCell(record?.itemId)}`, `- kind: ${mdCell(record?.kind)}`, `- revision: ${mdCell(record?.revision)}`, `- reviewed: ${record?.reviewedAt ? 'yes' : 'no'}`, `- snoozed until: ${record?.snoozedUntil ? mdCell(record.snoozedUntil) : '—'}`, ``, `Reviewing this queue does not acknowledge old agent alerts.`].join('\n');
+}
+
+function runsMarkdown(r: any): string {
+  const items = Array.isArray(r?.items) ? r.items : [];
+  if (!items.length) return '## Runs\n\nNo runs found.';
+  const rows = items.map((run: any) => {
+    const progress = run.progress === null || run.progress === undefined ? '—' : `${run.progress}%`;
+    return `| ${mdCell(run.ident || run.id)} | ${mdCell(run.title)} | ${mdCell(run.status)} | ${mdCell(progress)} | ${mdCell(run.eta)} | ${mdCell(run.issues)} | ${mdCell(run.summaryMonitor)} |`;
+  });
+  const out = [`## Runs`, ``, `| Run | Title | Status | Progress | ETA | Issues | Summary monitor |`, `|---|---|---|---:|---|---:|---|`, ...rows];
+  for (const run of items) {
+    if (Array.isArray(run.monitors) && run.monitors.length) {
+      out.push('', `### ${mdCell(run.ident || run.id)} monitors`, '', '| Monitor | State | Value | Unit | Progress | Headline |', '|---|---|---:|---|---:|---|');
+      for (const m of run.monitors) {
+        out.push(`| ${mdCell(m.id)} | ${mdCell(m.state)} | ${mdCell(m.value)} | ${mdCell(m.unit)} | ${m.progress == null ? '—' : `${mdCell(m.progress)}%`} | ${mdCell(m.message)} |`);
+        if (m.details) out.push('', String(m.details).replace(/\r/g, '').trim());
+      }
+    }
+    if (Array.isArray(run.tickets) && run.tickets.length) {
+      out.push('', `### ${mdCell(run.ident || run.id)} tickets`);
+      for (const t of run.tickets) out.push(`- ${mdCell(t.id)} [${mdCell(t.status)}] ${mdCell(t.title)}`);
+    }
+  }
+  return out.join('\n');
+}
+
+function changesMarkdown(r: any): string {
+  const events: any[] = Array.isArray(r?.events) ? r.events : [];
+  const lines = [`## Changes`, ``, `- since: ${mdCell(r?.since)}`, `- now: ${mdCell(r?.now)}`, `- complete: ${mdCell(r?.complete)}`, ``];
+  if (!events.length) return lines.concat(['No changes.']).join('\n');
+  lines.push('| Time | Action | Item | Board | Actor | Change |', '|---|---|---|---|---|---|');
+  for (const e of events) {
+    if (e.action !== undefined) {
+      lines.push(`| ${mdCell(e.t ? localTime(e.t) : undefined)} | ${mdCell(e.action)} | ${mdCell(e.itemId)} | ${mdCell(e.board)} | ${mdCell(e.actor)} | ${mdCell(e.text)} |`);
+      continue;
+    }
+    const it = e.item;
+    const value = it?.value === undefined || it?.value === null ? '—' : `${mdCell(it.value)}${it?.progress == null ? '' : ` (${mdCell(it.progress)}%)`}`;
+    lines.push(`| ${mdCell(e.t ? localTime(e.t) : undefined)} | ${mdCell(e.kind)} | ${mdCell(it?.id ?? e.itemId ?? e.alert?.itemId)} | ${mdCell(it?.board ?? e.board)} | ${mdCell(e.actor ?? e.activity?.actor ?? e.alert?.title)} | ${mdCell(it?.message ?? e.alert?.message ?? e.activity?.text)}${value === '—' ? '' : ` [${value}]`} |`);
+    if (it?.details) lines.push(`|  |  |  |  |  | ${String(it.details).replace(/\r/g, '').trim()} |`);
+  }
+  return lines.join('\n');
+}
+
+type ToolContent = { type: 'text'; text: string } | { type: 'image'; mimeType: string; data: string };
+type RichToolResult = { content: ToolContent[]; structuredContent?: Record<string, unknown> };
+const richResult = (value: Record<string, unknown>, text: string, image?: { mimeType: string; data: string }): RichToolResult => ({
+  content: [{ type: 'text', text }, ...(image ? [{ type: 'image' as const, mimeType: image.mimeType, data: image.data }] : [])],
+  structuredContent: image ? { ...value, image: { mimeType: image.mimeType, bytes: Math.floor(image.data.length * 3 / 4) } } : value,
+});
+
+async function call(name: string, a: any): Promise<string | RichToolResult> {
   validate(name, a);
   const { actor, ...args } = a ?? {};
-  hud.actor = actor ? String(actor) : baseActor;
+  const hud = baseHud.forActor(actor ? String(actor) : baseActor);
   switch (name) {
     case 'hud_overview': {
-      await needBoard(args.board);
+      await needBoard(args.board, hud);
       const alerts: any[] = await hud.request('GET', '/api/alerts');
       const al = alerts.length ? `\n\nunacknowledged alerts (${alerts.length}):\n${alerts.slice(-10).map(alertText).join('\n')}` : '';
       return cap(`${await hud.summary(args.board)}${al}\n\nlive canvas: ${hud.url}`);
@@ -429,7 +587,7 @@ async function call(name: string, a: any): Promise<string> {
     case 'hud_guide':
       return hud.guide();
     case 'hud_search': {
-      await needBoard(args.board);
+      await needBoard(args.board, hud);
       const q = filters(args);
       if (!q.has('limit')) q.set('limit', '50');
       const items: Item[] = await hud.request('GET', `/api/items?${q}`);
@@ -437,14 +595,14 @@ async function call(name: string, a: any): Promise<string> {
     }
     case 'hud_tickets': {
       const board = args.board ?? 'main';
-      await needBoard(board);
+      await needBoard(board, hud);
       const q = filters({ ...args, board });
       if (args.format === 'json') return cap(JSON.stringify((await hud.request('GET', `/api/tickets?${q}`)).groups, null, 2));
       q.set('format', 'text');
       return cap(await hud.request('GET', `/api/tickets?${q}`));
     }
     case 'hud_project': {
-      await needBoard(args.board);
+      await needBoard(args.board, hud);
       if ((args.action ?? 'list') === 'list') {
         const list = await hud.projects(args.board);
         if (!list.length) return `no projects on board ${args.board ?? 'main'}. Create one: hud_project {action:"create", name:"..."}`;
@@ -483,7 +641,7 @@ async function call(name: string, a: any): Promise<string> {
     }
     case 'hud_push': {
       const { id, ...r } = args;
-      return brief(await hud.push(id, r));
+      return briefReport(await hud.push(id, r));
     }
     case 'hud_comment': {
       const path = `/api/items/${encodeURIComponent(args.id)}/comments`;
@@ -493,10 +651,10 @@ async function call(name: string, a: any): Promise<string> {
       }
       if (args.text === undefined || args.text === '') throw new Error('missing required argument "text" for hud_comment');
       if (args.cid) {
-        await hud.request('PATCH', `${path}/${encodeURIComponent(args.cid)}`, { text: args.text });
+        await hud.editComment(args.id, args.cid, args.text, args.format);
         return `edited comment ${args.cid} on ${args.id}`;
       }
-      await hud.comment(args.id, args.text);
+      await hud.comment(args.id, args.text, args.format);
       return `commented on ${args.id}`;
     }
     case 'hud_get': {
@@ -525,8 +683,13 @@ async function call(name: string, a: any): Promise<string> {
       const list: any[] = await hud.request('GET', '/api/backups');
       return list.length ? list.map((b) => `${b.name}  ${localTime(b.t)}  ${b.bytes}b`).join('\n') : 'no backups';
     }
+    case 'hud_clear_canvas': {
+      await needBoard(args.board, hud);
+      const result = await hud.clearBoard(args.board);
+      return `cleared canvas ${args.board}: ${result.cleared} items moved to trash; board settings retained`;
+    }
     case 'hud_board':
-      if (args.action === 'list') return (await hud.boards()).map((b) => `${b.id}  "${b.name}"${b.autoOrganize ? '  (auto-organize)' : ''}`).join('\n');
+      if (args.action === 'list') return (await hud.boards()).map((b) => `${b.id}  "${b.name}"  ${b.width}×${b.height}  (${b.autoOrganize ? 'auto' : 'manual'} layout)`).join('\n');
       if (args.action === 'create') {
         if (!args.name) throw new Error('missing required argument "name" for create');
         const b = await hud.createBoard(args.name);
@@ -537,16 +700,21 @@ async function call(name: string, a: any): Promise<string> {
         const b = await hud.request('PATCH', `/api/boards/${encodeURIComponent(args.id)}`, { name: args.name });
         return `board ${b.id} "${b.name}"`;
       }
+      if (args.action === 'clear') {
+        if (!args.id) throw new Error('clear needs id');
+        const result = await hud.clearBoard(args.id);
+        return `cleared canvas ${args.id}: ${result.cleared} items moved to trash; board settings retained`;
+      }
       if (args.action === 'delete') {
         if (!args.id) throw new Error('missing required argument "id" for delete');
         await hud.request('DELETE', `/api/boards/${encodeURIComponent(args.id)}`);
         return `deleted board ${args.id} (its items are in the trash)`;
       }
-      throw new Error('action must be list|create|rename|delete');
+      throw new Error('action must be list|create|rename|clear|delete');
     case 'hud_organize': {
       await needBoard(args.board);
       const r = await hud.organize(args.board, args.auto);
-      return `organized ${args.board ?? 'main'}: ${r.groups.length} groups (${r.groups.join(', ') || 'none'}), ${r.moved} items moved${args.auto !== undefined ? `; auto-organize ${args.auto ? 'on' : 'off'}` : ''}`;
+      return `organized ${args.board ?? 'main'}: ${r.canvas.width}×${r.canvas.height}, ${r.items} dashboard cards, ${r.tickets} tickets in list, ${r.groups.length} groups (${r.groups.join(', ') || 'none'}), ${r.moved} items moved${args.auto !== undefined ? `; auto-organize ${args.auto ? 'on' : 'off'}` : ''}. Tickets open in the sidebar; completed tickets are tucked away in the list. If dashboard cards are crowded, split runs across boards.`;
     }
     case 'hud_arrange': {
       await needBoard(args.board);
@@ -568,6 +736,116 @@ async function call(name: string, a: any): Promise<string> {
       if (args.ack && list.length) await hud.request('POST', '/api/alerts/ack', { ids: list.map((a) => a.id) });
       return list.length ? cap(list.map(alertText).join('\n') + (args.ack ? `\n(acknowledged ${list.length})` : '')) : 'no alerts';
     }
+    case 'hud_attention': {
+      const action = args.action ?? 'list';
+      if (action === 'list') return cap(attentionMarkdown(await hud.attention()));
+      if (action !== 'review' && action !== 'unreview' && action !== 'snooze') throw new Error('action must be list|review|unreview|snooze');
+      if (!args.id) throw new Error(`missing required argument "id" for ${action}`);
+      if (!args.revision) throw new Error('revision is required; call hud_attention {action:"list"} first');
+      if (action === 'snooze' && args.until === undefined) throw new Error('until is required for snooze');
+      return cap(attentionRecordMarkdown(await hud.reviewAttention(args.id, { action, revision: String(args.revision), ...(args.until === undefined ? {} : { until: Number(args.until) }) })));
+    }
+    case 'hud_runs':
+      return cap(runsMarkdown(await hud.runs()));
+    case 'hud_changes': {
+      const since = Number(args.since);
+      if (!Number.isFinite(since) || since < 0) throw new Error('since must be a non-negative timestamp');
+      return cap(changesMarkdown(await hud.changes(since)));
+    }
+    case 'hud_readout': {
+      await needBoard(args.board, hud);
+      const r = await hud.readout(args.board);
+      return richResult({ ...r }, typeof r.text === 'string' ? r.text : JSON.stringify(r, null, 2));
+    }
+    case 'hud_snapshot': {
+      await needBoard(args.board, hud);
+      const r = await hud.snapshot({ board: args.board, format: args.format });
+      const warnings = [...(r.warnings ?? []), ...(r.imageUnavailable ? [r.imageUnavailable] : [])];
+      const text = `${r.text}${warnings.length ? `\n\n${warnings.join('\n')}` : ''}`;
+      return richResult({ ...r }, text, r.image);
+    }
+    case 'hud_dashboard': {
+      const board = args.board ?? 'main';
+      const action = args.action ?? (args.spec ? 'set' : 'get');
+      await needBoard(board, hud);
+      if (action === 'get') {
+        const dashboard = await hud.dashboard(board);
+        const value = { board, dashboard };
+        return richResult(value, dashboard ? JSON.stringify(value, null, 2) : `no dashboard spec on ${board}`);
+      }
+      if (action !== 'set') throw new Error('action must be get|set');
+      if (!args.spec || typeof args.spec !== 'object' || Array.isArray(args.spec)) throw new Error('spec must be an object for set');
+      const result = await hud.updateDashboard(board, { spec: args.spec, dryRun: args.dryRun, expectedRevision: args.expectedRevision });
+      return richResult({ ...result }, JSON.stringify(result, null, 2));
+    }
+    case 'hud_annotate': {
+      const board = args.board ?? 'main';
+      const action = args.action ?? (args.time !== undefined || args.text !== undefined ? 'add' : 'list');
+      await needBoard(board, hud);
+      if (action === 'list') {
+        const annotations = await hud.annotations(board);
+        return richResult({ board, annotations }, annotations.length ? annotations.map((a) => `${a.id}  ${new Date(a.time).toISOString()}  ${a.text}`).join('\n') : `no annotations on ${board}`);
+      }
+      if (action === 'add') {
+        if (args.time === undefined || typeof args.text !== 'string') throw new Error('add requires time and text');
+        const annotation = await hud.addAnnotation(board, { time: args.time, text: args.text });
+        return richResult({ board, annotation }, `added annotation ${annotation.id} on ${board}`);
+      }
+      if (action === 'delete') {
+        if (!args.id) throw new Error('delete requires id');
+        const result = await hud.deleteAnnotation(board, args.id);
+        return richResult({ board, ...result }, `deleted annotation ${result.id} on ${board}`);
+      }
+      throw new Error('action must be list|add|delete');
+    }
+    case 'hud_compare': {
+      const board = args.board ?? 'main';
+      const action = args.action ?? (args.left !== undefined || args.right !== undefined ? 'add' : 'list');
+      await needBoard(board, hud);
+      if (action === 'list') {
+        const comparisons = await hud.comparisons(board);
+        return richResult({ board, comparisons }, comparisons.length ? comparisons.map((r) => `${r.id}  ${r.left} ${r.relation} ${r.right}${r.tolerance === undefined ? '' : ` ±${r.tolerance}`}${r.holdFor === undefined ? '' : ` hold=${r.holdFor}s`}${r.maxSkew === undefined ? '' : ` maxSkew=${r.maxSkew}s`}`).join('\n') : `no comparisons on ${board}`);
+      }
+      if (action === 'add') {
+        if (!args.left || !args.right || !args.relation) throw new Error('add requires left, right, and relation');
+        const rule = await hud.addComparison(board, { id: args.id, left: args.left, right: args.right, relation: args.relation, tolerance: args.tolerance, holdFor: args.holdFor, maxSkew: args.maxSkew });
+        return richResult({ board, rule }, `added comparison ${rule.id}: ${rule.left} ${rule.relation} ${rule.right}`);
+      }
+      if (action === 'delete') {
+        if (!args.id) throw new Error('delete requires id');
+        const result = await hud.deleteComparison(board, args.id);
+        return richResult({ board, ...result }, `deleted comparison ${result.id} on ${board}`);
+      }
+      throw new Error('action must be list|add|delete');
+    }
+    case 'hud_lint': {
+      const board = args.board ?? 'main';
+      await needBoard(board, hud);
+      const report = await hud.lint(board);
+      const text = report.findings.length ? report.findings.map((f) => `${f.severity.toUpperCase()} ${f.code} ${f.id}: ${f.message}`).join('\n') : `no lint findings on ${board}`;
+      return richResult({ ...report }, text);
+    }
+    case 'hud_graph':
+    case 'hud_canvas': {
+      const isCanvas = name === 'hud_canvas';
+      const target = isCanvas ? args.board ?? 'main' : args.id;
+      const action = args.action ?? (args.program ? 'preview' : 'get');
+      if (isCanvas) await needBoard(target, hud);
+      if (action === 'get') {
+        const result = isCanvas ? await hud.boardProgram(target) : await hud.itemProgram(target);
+        return richResult({ ...(isCanvas ? { board: target } : { id: target }), ...result }, result.program ? JSON.stringify(result.program, null, 2) : `no ${isCanvas ? 'canvas' : 'item'} program on ${target}`);
+      }
+      if (action === 'delete') {
+        const result = isCanvas ? await hud.deleteBoardProgram(target, args.expectedRevision) : await hud.deleteItemProgram(target, args.expectedRevision);
+        return richResult({ ...(isCanvas ? { board: target } : { id: target }), ...result }, `deleted ${isCanvas ? 'canvas' : 'item'} program on ${target}`);
+      }
+      if (!['preview', 'apply', 'disable'].includes(action)) throw new Error('action must be get|preview|apply|disable|delete');
+      const request = { action, program: args.program, expectedRevision: args.expectedRevision } as any;
+      const result = isCanvas ? await hud.boardProgramAction(target, request) : await hud.itemProgramAction(target, request);
+      const image = 'image' in result ? result.image : undefined;
+      const textResult = image ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'image')) : result;
+      return richResult({ ...(isCanvas ? { board: target } : { id: target }), ...result }, JSON.stringify(textResult, null, 2), image);
+    }
     case 'hud_views': {
       const { dir, views } = await hud.views();
       return views.length
@@ -575,11 +853,11 @@ async function call(name: string, a: any): Promise<string> {
         : `no renderer modules in ${dir} — drop an ES module there exporting render(ctx) and reference it as display: "view:<name>". See hud_guide.`;
     }
     case 'hud_run':
-      return brief(await hud.run(args.id));
+      return briefReport(await hud.run(args.id));
     case 'hud_ask': {
       if (!Array.isArray(args.options) || !args.options.length) throw new Error('options must be a non-empty array');
       if (args.options.some((o: any) => !o || typeof o.label !== 'string' || !o.label)) throw new Error('every option needs a label');
-      let tk = await hud.ask(args.id, args.options, args.question);
+      let tk = await hud.ask(args.id, args.options, args.question, args.questionFormat);
       // wake THIS session when answered
       const me = sessionName();
       const notify: string[] = (tk as any).notify ?? [];
@@ -587,10 +865,10 @@ async function call(name: string, a: any): Promise<string> {
       startAlertStream();
       const opts = (tk.options ?? []).map((o) => `  ${o.id}  ${o.label}${o.detail ? ` — ${o.detail}` : ''}${o.status ? ` [→${o.status}]` : ''}`).join('\n');
       const id = (tk as any).ident ?? tk.id;
-      return `${id} needs a decision${tk.question ? `: ${tk.question}` : ''}\n${opts}\nthe human picks it on the canvas (or hud_decide ${id} <optionId>). Read the answer with hud_get ${id} → decision.`;
+      return `${id} needs a decision${tk.question ? `: ${tk.question}` : ''}\n${opts}\nrevision: ${(tk as any).decisionVersion ?? '—'}\nthe human picks it on the canvas (or hud_decide ${id} <optionId> with decisionVersion). Read the answer with hud_get ${id} → decision.`;
     }
     case 'hud_decide': {
-      const tk = await hud.decide(args.id, args.optionId, args.note);
+      const tk = await hud.decide(args.id, args.optionId, args.note, args.decisionVersion);
       const opt = tk.options?.find((o) => o.id === tk.decision?.optionId);
       return `decided ${(tk as any).ident ?? tk.id}: ${opt?.label ?? args.optionId} → ${tk.status}`;
     }
@@ -614,7 +892,7 @@ function alertText(a: any) {
 
 // ---------- alerts → this conversation (Claude Code channels) ----------
 const session: { name?: string } = {};
-let baseActor = hud.actor;
+let baseActor = baseHud.actor;
 let streaming = false;
 let lastAlert = -1;
 /** unique per session so alerts don't cross-deliver: HUD_SESSION, else <actor>-<parent pid> */
@@ -640,11 +918,11 @@ async function startAlertStream() {
   streaming = true;
   for (;;) {
     try {
-      await hud.ensureServer();
-      const res = await fetch(hud.url + '/api/events');
+      await baseHud.ensureServer();
+      const res = await fetch(baseHud.url + '/api/events');
       if (!res.ok || !res.body) throw new Error('events ' + res.status);
       // catch up on alerts raised while we were disconnected (first connect only skips history)
-      const missed: any[] = await hud.request('GET', `/api/alerts?all=1${lastAlert >= 0 ? `&since=${lastAlert}` : ''}`).catch(() => []);
+      const missed: any[] = await baseHud.request('GET', `/api/alerts?all=1${lastAlert >= 0 ? `&since=${lastAlert}` : ''}`).catch(() => []);
       if (lastAlert < 0) lastAlert = missed.reduce((m, a) => Math.max(m, a.id ?? 0), 0);
       else for (const al of missed) deliver(al);
       const reader = res.body.getReader();
@@ -696,7 +974,13 @@ const withTimeout = <T>(p: Promise<T>, ms: number, what: string) =>
 
 const INSTRUCTIONS =
   'hud is a live local dashboard shared with the human: tickets, monitors, on-canvas utilities and notes. ' +
-  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes projects, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Use hud_push for progress, hud_comment for notes. Deletes go to the trash (hud_trash restores). ' +
+  'For monitoring work, start with hud_readout, then use hud_dashboard, hud_annotate, and hud_compare as needed; run hud_lint after changes and hud_snapshot to retain a view. For custom renderers, inspect with hud_graph/hud_canvas, preview before apply, and bind only the required metric data. Read the hud://guide resource or call hud_guide for schemas and examples. ' +
+  'To reset a board while keeping its identity and settings, use hud_clear_canvas or hud_board {action:"clear",id}; hud_board {action:"delete",id} deletes the board. ' +
+  'Visual style: use a monochrome terminal palette of black, white, and gray; reserve red for stated blocked/error/attention conditions and green for stated done/ok conditions. Every status color must have a readable label or glyph, and panels should stay concise and legible. ' +
+  'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); use hud_runs for run summaries and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
+  'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view opens rows in a scrollable sidebar and tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. ' +
+  'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
+  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes projects, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 
@@ -742,12 +1026,12 @@ async function handleOne(msg: any): Promise<void> {
   try {
     switch (method) {
       case 'initialize': {
-        if (!process.env.HUD_ACTOR) hud.actor = baseActor = actorFromClient(params?.clientInfo?.name) ?? baseActor;
+        if (!process.env.HUD_ACTOR) baseHud.actor = baseActor = actorFromClient(params?.clientInfo?.name) ?? baseActor;
         // start streaming once the session has any watches (or HUD_SESSION is set); hud_watch/hud_ask also start it
         setTimeout(async () => {
           try {
-            const boards: any[] = await hud.boards();
-            const items: any[] = await hud.items({ type: 'monitor' });
+            const boards: any[] = await baseHud.boards();
+            const items: any[] = await baseHud.items({ type: 'monitor' });
             const me = sessionName();
             if (process.env.HUD_SESSION || boards.some((b) => b.notify?.includes(me)) || items.some((m) => m.notify?.includes(me))) startAlertStream();
           } catch {}
@@ -756,7 +1040,7 @@ async function handleOne(msg: any): Promise<void> {
         return void reply({
           // channel servers must use the pre-2026 handshake
           protocolVersion: want > '2025-06-18' ? '2025-06-18' : want,
-          capabilities: { tools: { listChanged: false }, experimental: { 'claude/channel': {} } },
+          capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false }, experimental: { 'claude/channel': {} } },
           serverInfo: { name: 'hud', version: '0.1.0' },
           instructions: INSTRUCTIONS,
         });
@@ -767,13 +1051,18 @@ async function handleOne(msg: any): Promise<void> {
         return void reply({ tools: listed });
       case 'tools/call':
         try {
-          const text = await withTimeout(call(params?.name, params?.arguments), CALL_TIMEOUT, String(params?.name));
-          return void reply({ content: [{ type: 'text', text }] });
+          const result = await withTimeout(call(params?.name, params?.arguments), CALL_TIMEOUT, String(params?.name));
+          return void reply(typeof result === 'string' ? { content: [{ type: 'text', text: result }] } : result);
         } catch (e) {
           return void reply({ content: [{ type: 'text', text: `error: ${(e as Error).message}` }], isError: true });
         }
       case 'resources/list':
-        return void reply({ resources: [] });
+        return void reply({ resources: [{ uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide, metric fields, dashboard schemas, and rendering conventions.', mimeType: 'text/markdown' }] });
+      case 'resources/read': {
+        if (params?.uri !== 'hud://guide') throw new Error(`unknown resource ${String(params?.uri ?? '')}`);
+        const text = await baseHud.guide();
+        return void reply({ contents: [{ uri: 'hud://guide', mimeType: 'text/markdown', text }] });
+      }
       case 'prompts/list':
         return void reply({ prompts: [] });
       default:

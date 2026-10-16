@@ -1,16 +1,39 @@
 import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, screen, shell } from 'electron';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { SOURCE_ROOT } from '../src/assets.ts';
 import { isElectronNodeMode, primeLoginEnv } from '../src/electron-runtime.ts';
 import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
 
+const renderHelperMode = process.argv.includes('--hud-render-helper');
+
+if (renderHelperMode) {
+  const profile = mkdtempSync(join(tmpdir(), 'hud-render-profile-'));
+  app.setPath('userData', profile);
+  app.on('will-quit', () => { try { rmSync(profile, { recursive: true, force: true }); } catch {} });
+  app.whenReady().then(async () => {
+    try {
+      const helperUrl = pathToFileURL(join(SOURCE_ROOT, 'electron', 'render.mjs')).href;
+      const { runRenderHelper } = await import(helperUrl);
+      await runRenderHelper();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[hud render helper] ${message}\n`);
+      process.stdout.write(`${JSON.stringify({ image: { mimeType: 'image/png', data: '' }, errors: [message] })}\n`, () => app.exit(1));
+    }
+  });
+}
+
 // The app binary is also the CLI (node mode). If that env leaked in, do not open a window.
-if (isElectronNodeMode()) {
+if (!renderHelperMode && isElectronNodeMode()) {
   console.error('hud: refusing to start the GUI in node mode');
   app.exit(1);
 }
 
+if (!renderHelperMode) {
 let cfg: ReturnType<typeof config>;
 try {
   cfg = config();
@@ -311,4 +334,5 @@ if (!app.requestSingleInstanceLock()) {
     await connect();
     console.log(`[hud] app ready — ${url} (data: ${dataDir})`);
   });
+}
 }

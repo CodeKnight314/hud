@@ -1,5 +1,50 @@
 export type ItemType = 'ticket' | 'monitor' | 'note' | 'frame' | 'util' | 'project';
 export type MonState = 'ok' | 'warn' | 'error' | 'unknown' | 'running' | 'done';
+export type TextFormat = 'plain' | 'markdown';
+
+export interface MetricSpec {
+  kind?: 'scalar' | 'capacity' | 'rate' | 'counter' | 'breakdown' | 'table' | 'grid';
+  key?: string;
+  scope?: string;
+  unit?: string;
+  definition?: string;
+  windowSeconds?: number;
+  target?: number;
+  denominator?: number;
+  source?: string;
+  sourceId?: string;
+}
+export interface Observation {
+  observedAt: number | null;
+  receivedAt: number;
+  actor: string;
+  evidence: 'measured' | 'reported' | 'estimate' | 'unknown';
+  availability: 'available' | 'partial' | 'unavailable';
+  coverage?: { responding: number; total: number };
+}
+export interface TableData {
+  columns: { key: string; label?: string; unit?: string; type?: 'number' | 'string' | 'boolean' }[];
+  rows: Record<string, unknown>[];
+}
+export interface PipelineSpec {
+  stages: { key: string; label: string; throughput?: string; queued?: string; inFlight?: string; oldestAge?: string; retries?: string; rejected?: string }[];
+}
+export interface Annotation { id: string; time: number; text: string; actor: string; deletedAt?: number }
+export interface ComparisonRule { id: string; left: string; right: string; relation: 'equal' | 'lte' | 'gte'; tolerance?: number; holdFor?: number; maxSkew?: number; since?: number; deletedAt?: number }
+export interface ProgramSpec {
+  code: string;
+  language: 'html' | 'javascript' | 'svg';
+  description: string;
+  bindings: string[];
+  capabilities: { operation: string; scope: string }[];
+}
+export interface CanvasProgram extends ProgramSpec { revision: string; actor: string; validatedAt: number; disabled?: boolean; previous?: CanvasProgram }
+export interface ProgramDraft { program: ProgramSpec; actor: string; createdAt: number; errors: string[] }
+export interface DashboardSpec {
+  rows: { key: string; height?: number; cards: { key: string; span?: number; id?: string; item: Partial<Item> & { type: ItemType } }[] }[];
+  annotations?: { time: number; text: string }[];
+  comparisons?: Omit<ComparisonRule, 'id'>[];
+}
 
 /** the canonical ticket workflow, in the order a board reads (Linear's set plus review/blocked) */
 export const TICKET_STATUSES = ['backlog', 'todo', 'doing', 'review', 'blocked', 'done', 'canceled'] as const;
@@ -9,7 +54,8 @@ export const TICKET_PRIORITIES = ['low', 'med', 'high', 'urgent'] as const;
 export type DisplayKind =
   | 'auto' | 'value' | 'progress' | 'status' | 'text' | 'log' | 'spark'
   | 'line' | 'area' | 'bars' | 'gauge' | 'histogram' | 'scatter' | 'pie' | 'donut'
-  | 'heatmap' | 'box' | 'ridgeline' | 'scatter3d' | 'surface3d';
+  | 'heatmap' | 'box' | 'ridgeline' | 'scatter3d' | 'surface3d'
+  | 'composite' | 'capacity' | 'breakdown' | 'table' | 'grid' | 'pipeline' | 'custom';
 
 /**
  * Options for a chart display. Where the numbers come from, how to draw them, and how to frame them.
@@ -17,6 +63,9 @@ export type DisplayKind =
  * an array of [x,y(,z)] gives points (scatter/scatter3d), an array of arrays gives a grid (surface3d).
  */
 export interface PlotSpec {
+  targets?: { value: number; label?: string }[];
+  events?: { id?: string; time: number; text: string }[];
+  metrics?: string[];
   /** dot path into meta, e.g. "gpu" or "runs.0.cells" */
   series?: string;
   /** bins for histogram/ridgeline, inner radius % for donut */
@@ -42,9 +91,16 @@ export interface PlotSpec {
 }
 
 export interface Board {
+  dashboard?: { revision: string; spec: DashboardSpec; keys: Record<string, string> };
+  annotations?: Annotation[];
+  comparisons?: ComparisonRule[];
+  program?: CanvasProgram;
+  programDraft?: ProgramDraft;
   id: string;
   name: string;
   createdAt: number;
+  width: number;
+  height: number;
   /** re-run organize automatically whenever items are added, removed, regrouped or resized */
   autoOrganize?: boolean;
   /** sessions woken by alerts from any monitor on this board */
@@ -56,6 +112,7 @@ export interface Comment {
   t: number;
   actor: string;
   text: string;
+  format?: TextFormat;
   /** set when the text was edited after posting */
   edited?: number;
 }
@@ -112,9 +169,18 @@ export interface MonitorSource {
 }
 
 export interface MonitorResult {
+  metric?: MetricSpec;
+  observedAt?: number;
+  evidence?: 'reported' | 'estimate';
+  availability?: Observation['availability'];
+  coverage?: Observation['coverage'];
+  data?: TableData;
   value?: string | number | boolean | null;
   state?: MonState;
   message?: string;
+  messageFormat?: TextFormat;
+  /** Longer Markdown report. Numeric readings remain separate. */
+  details?: string;
   /** percent, 0-100 */
   progress?: number | null;
   unit?: string;
@@ -126,6 +192,8 @@ export interface MonitorResult {
 
 export interface Item {
   id: string;
+  /** Stable copy/paste reference for tickets, including tickets with legacy ids. */
+  uuid?: string;
   type: ItemType;
   board: string;
   title: string;
@@ -159,6 +227,10 @@ export interface Item {
   options?: DecisionOption[];
   /** the question that goes with those options */
   question?: string;
+  questionFormat?: TextFormat;
+  decisionVersion?: string;
+  /** Explicit progress source for a ticket tagged run; must be in monitors. */
+  summaryMonitor?: string;
   /** the chosen option, once a human (or agent) has decided */
   decision?: Decision;
 
@@ -185,6 +257,19 @@ export interface Item {
   key?: string;
 
   // monitor
+  metric?: MetricSpec;
+  observedAt?: number;
+  evidence?: 'reported' | 'estimate';
+  availability?: Observation['availability'];
+  coverage?: Observation['coverage'];
+  observation?: Observation;
+  lastAttempt?: number;
+  lastGood?: { value?: Item['value']; progress?: number | null; data?: TableData; observation: Observation };
+  freshness?: { mode: 'live' | 'static'; reason?: string };
+  data?: TableData;
+  pipeline?: PipelineSpec;
+  program?: CanvasProgram;
+  programDraft?: ProgramDraft;
   source?: MonitorSource;
   /**
    * Monitor view. 'auto' adapts to the data; the fixed kinds are drawn by web/views.js;
@@ -197,6 +282,9 @@ export interface Item {
   unit?: string;
   state?: MonState;
   message?: string;
+  messageFormat?: TextFormat;
+  details?: string;
+  reportHistory?: { t: number; actor: string; message?: string; messageFormat?: TextFormat; details?: string }[];
   progress?: number | null;
   max?: number;
   staleAfter?: number;
@@ -209,12 +297,12 @@ export interface Item {
   notify?: string[];
   /** currently stale (no update within staleAfter) */
   stale?: boolean;
-  history?: { t: number; v: number | null; s: MonState; p?: number | null }[];
+  history?: { t: number; v: number | null; s: MonState; p?: number | null; e?: Observation['evidence']; receivedAt?: number }[];
   /**
    * per-minute buckets for the last 24h (not sent over the live stream; GET /api/items/:id):
    * `n` numeric readings averaged into `v`, `w` the worst severity seen (0 ok/other, 1 warn, 2 error)
    */
-  trend?: { t: number; v: number | null; p?: number | null; n: number; w?: number }[];
+  trend?: { t: number; v: number | null; p?: number | null; n: number; w?: number; e?: Observation['evidence'] }[];
   /** percent of recorded minutes that were not error; only on GET /api/items/:id */
   uptime?: { h1: number | null; h24: number | null };
   log?: { t: number; s: MonState; m: string }[];
@@ -287,9 +375,57 @@ export interface State {
   activity: Activity[];
   alerts: Alert[];
   trash: TrashEntry[];
+  attention: Record<string, AttentionRecord>;
+}
+
+export interface AttentionRecord {
+  id: string;
+  itemId: string;
+  kind: 'decision' | 'error' | 'stale' | 'warn' | 'blocked';
+  priority: number;
+  openedAt: number;
+  revision: string;
+  /** A decision replacement also starts a new episode. */
+  signature: string;
+  resolvedAt?: number;
+  reviewedAt?: number;
+  reviewedBy?: string;
+  snoozedUntil?: number;
+  snoozedBy?: string;
+}
+
+export interface AttentionItem extends AttentionRecord {
+  board: string;
+  title: string;
+  owner: string;
+  lastUpdate?: number;
+  message?: string;
+  messageFormat?: TextFormat;
+  runId?: string;
+  runTitle?: string;
+}
+
+export interface RunOverview {
+  id: string;
+  uuid?: string;
+  ident: string;
+  title: string;
+  board: string;
+  status: string;
+  owner: string;
+  summaryMonitor?: string;
+  progress: number | null;
+  eta: string | null;
+  lastUpdate: number | null;
+  issues: number;
+  monitors: Item[];
+  tickets: Item[];
+  updatedAt: number;
 }
 
 export type HudEvent =
+  | { kind: 'heartbeat'; now: number }
+  | { kind: 'attention'; itemId: string }
   | { kind: 'item'; item: Item; actor: string; created?: boolean }
   | { kind: 'item.deleted'; id: string; board: string; actor: string }
   | { kind: 'board'; board: Board }

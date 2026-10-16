@@ -11,7 +11,7 @@ import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
-import type { Board, DecisionOption, Item, MonitorResult } from './types.ts';
+import type { Activity, Annotation, AttentionItem, AttentionRecord, Board, CanvasProgram, ComparisonRule, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, RunOverview, TextFormat } from './types.ts';
 
 export interface HudOptions {
   url?: string;
@@ -101,6 +101,101 @@ export interface HealthInfo {
   [k: string]: unknown;
 }
 
+export interface AttentionResponse {
+  items: AttentionItem[];
+  now: number;
+}
+
+export interface RunsResponse {
+  items: RunOverview[];
+}
+
+export interface ChangesResponse {
+  since: number;
+  now: number;
+  complete: boolean;
+  events: Activity[];
+}
+
+export interface SnapshotResponse {
+  board: string;
+  capturedAt: number;
+  text: string;
+  image?: { mimeType: 'image/png'; data: string };
+  warnings?: string[];
+  imageUnavailable?: string;
+}
+
+export interface MetricReading {
+  id: string;
+  board: string;
+  title: string;
+  type: Item['type'];
+  value: Item['value'] | null;
+  label?: string | null;
+  unit: string;
+  state: string;
+  stale: boolean;
+  ageSeconds: number;
+  observedAt: number | null;
+  receivedAt: number | null;
+  source: string;
+  sourceId?: string;
+  evidence: Observation['evidence'];
+  definition: string;
+  metric?: MetricSpec;
+  availability: Observation['availability'];
+  coverage?: Observation['coverage'];
+  expirySeconds: number | null;
+  progress?: number | null;
+  max?: number;
+  pipelineView?: unknown;
+}
+
+export interface ReadoutResponse {
+  now: number;
+  boards: { id: string; name: string; revision?: string; annotations: Annotation[]; comparisons: unknown[] }[];
+  items: MetricReading[];
+  text?: string;
+}
+
+export interface DashboardUpdate {
+  spec: DashboardSpec;
+  dryRun?: boolean;
+  expectedRevision?: string;
+}
+
+export interface BoardLint {
+  board: string;
+  findings: { code: string; severity: 'warning' | 'error'; id: string; message: string }[];
+  errors: number;
+  warnings: number;
+}
+
+export interface ClearBoardResponse {
+  board: string;
+  cleared: number;
+  removed: string[];
+}
+
+export type ProgramAction =
+  | { action: 'preview' | 'apply'; program?: Partial<ProgramSpec> & Pick<ProgramSpec, 'code' | 'description'>; expectedRevision?: string }
+  | { action: 'disable'; expectedRevision?: string };
+
+export interface ProgramPreview {
+  valid: boolean;
+  image?: { mimeType: 'image/png'; data: string };
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ProgramResult {
+  program: Omit<CanvasProgram, 'code' | 'previous'> | null;
+  board: string;
+  id?: string;
+  revision?: string;
+}
+
 const qs = (q: Record<string, unknown>) => {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '' && v !== false) p.set(k, v === true ? '1' : String(v));
@@ -120,9 +215,7 @@ export class Hud {
   actor: string;
   autostart: boolean;
   timeout: number;
-  private verified = false;
-  private starting: Promise<void> | null = null;
-  private warned = false;
+  private runtime: { verified: boolean; starting: Promise<void> | null; warned: boolean };
 
   constructor(opts: HudOptions = {}) {
     this.url = (opts.url ?? (scratch ? process.env.HUD_URL : undefined) ?? `http://localhost:${config().port}`).replace(/\/$/, '');
@@ -130,6 +223,7 @@ export class Hud {
     this.autostart = opts.autostart ?? true;
     const t = Number(process.env.HUD_TIMEOUT);
     this.timeout = t > 0 ? t : 15000;
+    this.runtime = { verified: false, starting: null, warned: false };
   }
 
   /** raw /api/health of whatever is listening: the hud payload, 'foreign' for a non-hud answer, null when nothing answers */
@@ -157,10 +251,10 @@ export class Hud {
   }
 
   private checkOwnership(info: HealthInfo): void {
-    if (this.warned || !info.dataDir || this.url !== `http://localhost:${config().port}`) return;
+    if (this.runtime.warned || !info.dataDir || this.url !== `http://localhost:${config().port}`) return;
     const mine = config().dataDir;
     if (resolve(info.dataDir) !== resolve(mine)) {
-      this.warned = true;
+      this.runtime.warned = true;
       console.error(`hud: warning: the server at ${this.url} uses data dir ${info.dataDir}, not ${mine} (HUD_DATA); talking to it anyway`);
     }
   }
@@ -176,13 +270,13 @@ export class Hud {
 
   /** Check the server is up (and start it detached if allowed). Never caches a success for good: a failed request re-runs it. */
   ensureServer(): Promise<void> {
-    if (this.verified) return Promise.resolve();
-    return (this.starting ??= (async () => {
+    if (this.runtime.verified) return Promise.resolve();
+    return (this.runtime.starting ??= (async () => {
       let h = await this.probe();
       if (h === 'foreign') throw new HudRequestError(0, `something that is not hud answers at ${this.url}; free the port or set HUD_PORT / HUD_URL`);
       if (h) {
         this.checkOwnership(h);
-        this.verified = true;
+        this.runtime.verified = true;
         return;
       }
       if (!this.autostart) throw new HudRequestError(0, `hud is not running at ${this.url}`);
@@ -202,7 +296,7 @@ export class Hud {
         if (h === 'foreign') throw new HudRequestError(0, `something that is not hud answers at ${this.url}`);
         if (h) {
           this.checkOwnership(h);
-          this.verified = true;
+          this.runtime.verified = true;
           return;
         }
         // a server that lost the single-instance race exits early; keep waiting only while the child lives
@@ -210,7 +304,7 @@ export class Hud {
       }
       throw new HudRequestError(0, `hud did not start at ${this.url}; see ${join(dataDir, 'server.log')}${this.lastLog()}`);
     })().finally(() => {
-      this.starting = null;
+      this.runtime.starting = null;
     }));
   }
 
@@ -229,12 +323,12 @@ export class Hud {
     } catch (e) {
       if (!isConnError(e)) throw new HudRequestError(0, `request ${method} ${path} timed out after ${this.timeout}ms (HUD_TIMEOUT)`);
       // the server went away since we last looked: re-check (and re-autostart once), then retry
-      this.verified = false;
+      this.runtime.verified = false;
       await this.ensureServer();
       try {
         res = await send();
       } catch (e2) {
-        this.verified = false;
+        this.runtime.verified = false;
         throw new HudRequestError(0, `cannot reach hud at ${this.url}: ${(e2 as Error).message}`);
       }
     }
@@ -256,6 +350,14 @@ export class Hud {
     } catch {
       return text as T;
     }
+  }
+
+  /** Make an invocation-specific client so concurrent calls cannot change each other's actor header. */
+  forActor(actor: string): Hud {
+    const client = new Hud({ url: this.url, actor, autostart: this.autostart });
+    client.timeout = this.timeout;
+    client.runtime = this.runtime;
+    return client;
   }
 
   summary(board?: string): Promise<string> {
@@ -293,6 +395,10 @@ export class Hud {
   createBoard(name: string): Promise<Board> {
     return this.request('POST', '/api/boards', { name });
   }
+  /** Clear a board's canvas while retaining the board and its settings. */
+  clearBoard(board: string): Promise<ClearBoardResponse> {
+    return this.request('POST', `/api/boards/${enc(board)}/clear`);
+  }
   items(q: SearchQuery = {}): Promise<Item[]> {
     return this.request('GET', '/api/items' + qs(q));
   }
@@ -311,16 +417,16 @@ export class Hud {
   remove(id: string): Promise<Item> {
     return this.request('DELETE', `/api/items/${encodeURIComponent(id)}`);
   }
-  comment(id: string, text: string) {
-    return this.request('POST', `/api/items/${encodeURIComponent(id)}/comments`, { text });
+  comment(id: string, text: string, format?: TextFormat) {
+    return this.request('POST', `/api/items/${encodeURIComponent(id)}/comments`, { text, format });
   }
   /** Propose options on a ticket and block it until one is picked. */
-  ask(id: string, options: (Partial<DecisionOption> & { label: string })[], question?: string): Promise<Item> {
-    return this.request('POST', `/api/items/${encodeURIComponent(id)}/ask`, { options, question });
+  ask(id: string, options: (Partial<DecisionOption> & { label: string })[], question?: string, questionFormat?: TextFormat): Promise<Item> {
+    return this.request('POST', `/api/items/${encodeURIComponent(id)}/ask`, { options, question, questionFormat });
   }
   /** Pick one of a ticket's proposed options. */
-  decide(id: string, optionId: string, note?: string): Promise<Item> {
-    return this.request('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId, note });
+  decide(id: string, optionId: string, note?: string, decisionVersion?: string): Promise<Item> {
+    return this.request('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId, note, decisionVersion });
   }
   /** Signal that work is finished: complete the board's items (or the named ones) and tidy up. */
   finish(opts: { board?: string; ids?: string[]; note?: string; organize?: boolean } = {}): Promise<{ board: string; done: string[] }> {
@@ -334,7 +440,7 @@ export class Hud {
     return this.request('POST', `/api/monitors/${encodeURIComponent(id)}/run`);
   }
   /** Tidy a board by group; `auto` turns continuous auto-organize on/off for that board. */
-  organize(board?: string, auto?: boolean): Promise<{ groups: string[]; moved: number }> {
+  organize(board?: string, auto?: boolean): Promise<{ groups: string[]; moved: number; canvas: { width: number; height: number }; items: number; tickets: number }> {
     return this.request('POST', '/api/organize', { board, auto });
   }
   arrange(opts: { board?: string; frame?: string; ids?: string[]; width?: number }) {
@@ -343,8 +449,8 @@ export class Hud {
   activityOf(id: string, limit?: number): Promise<any[]> {
     return this.request('GET', `/api/items/${enc(id)}/activity` + qs({ limit }));
   }
-  editComment(id: string, cid: string, text: string) {
-    return this.request('PATCH', `/api/items/${enc(id)}/comments/${enc(cid)}`, { text });
+  editComment(id: string, cid: string, text: string, format?: TextFormat) {
+    return this.request('PATCH', `/api/items/${enc(id)}/comments/${enc(cid)}`, { text, format });
   }
   deleteComment(id: string, cid: string): Promise<{ ok: boolean }> {
     return this.request('DELETE', `/api/items/${enc(id)}/comments/${enc(cid)}`);
@@ -373,5 +479,68 @@ export class Hud {
   /** heartbeat ping for a cron-style monitor: kind is 'start', 'fail' or an exit code */
   ping(id: string, kind?: string | number): Promise<string> {
     return this.request('POST', `/ping/${enc(id)}` + (kind === undefined || kind === '' ? '' : `/${enc(String(kind))}`));
+  }
+  attention(): Promise<AttentionResponse> {
+    return this.request('GET', '/api/attention');
+  }
+  reviewAttention(id: string, opts: { action: 'review' | 'unreview' | 'snooze'; revision: string; until?: number }): Promise<AttentionRecord> {
+    return this.request('POST', `/api/attention/${enc(id)}`, opts);
+  }
+  runs(): Promise<RunsResponse> {
+    return this.request('GET', '/api/runs');
+  }
+  changes(since: number): Promise<ChangesResponse> {
+    return this.request('GET', '/api/changes' + qs({ since }));
+  }
+  readout(board?: string): Promise<ReadoutResponse> {
+    return this.request('GET', '/api/readout' + qs({ board }));
+  }
+  snapshot(opts: { board?: string; format?: 'auto' | 'png' | 'text' } = {}): Promise<SnapshotResponse> {
+    return this.request('POST', '/api/snapshot', { board: opts.board, format: opts.format ?? 'auto' });
+  }
+  dashboard(board: string): Promise<{ revision: string; spec: DashboardSpec; keys: Record<string, string> } | null> {
+    return this.request('GET', `/api/boards/${enc(board)}/dashboard`);
+  }
+  updateDashboard(board: string, update: DashboardUpdate): Promise<Record<string, unknown>> {
+    return this.request('PUT', `/api/boards/${enc(board)}/dashboard`, update);
+  }
+  annotations(board: string): Promise<Annotation[]> {
+    return this.request('GET', `/api/boards/${enc(board)}/annotations`);
+  }
+  addAnnotation(board: string, annotation: { time: number; text: string }): Promise<Annotation> {
+    return this.request('POST', `/api/boards/${enc(board)}/annotations`, annotation);
+  }
+  deleteAnnotation(board: string, id: string): Promise<{ id: string; deleted: boolean }> {
+    return this.request('DELETE', `/api/boards/${enc(board)}/annotations`, { id });
+  }
+  comparisons(board: string): Promise<ComparisonRule[]> {
+    return this.request('GET', `/api/boards/${enc(board)}/comparisons`);
+  }
+  addComparison(board: string, rule: Omit<ComparisonRule, 'id' | 'since' | 'deletedAt'> & { id?: string }): Promise<ComparisonRule> {
+    return this.request('POST', `/api/boards/${enc(board)}/comparisons`, rule);
+  }
+  deleteComparison(board: string, id: string): Promise<{ id: string; deleted: boolean }> {
+    return this.request('DELETE', `/api/boards/${enc(board)}/comparisons`, { id });
+  }
+  lint(board: string): Promise<BoardLint> {
+    return this.request('GET', `/api/boards/${enc(board)}/lint`);
+  }
+  itemProgram(id: string): Promise<{ program: CanvasProgram | null; draft: ProgramDraft | null }> {
+    return this.request('GET', `/api/items/${enc(id)}/program`);
+  }
+  boardProgram(board: string): Promise<{ program: CanvasProgram | null; draft: ProgramDraft | null }> {
+    return this.request('GET', `/api/boards/${enc(board)}/program`);
+  }
+  itemProgramAction(id: string, action: ProgramAction): Promise<ProgramPreview | ProgramResult> {
+    return this.request('POST', `/api/items/${enc(id)}/program`, action);
+  }
+  boardProgramAction(board: string, action: ProgramAction): Promise<ProgramPreview | ProgramResult> {
+    return this.request('POST', `/api/boards/${enc(board)}/program`, action);
+  }
+  deleteItemProgram(id: string, expectedRevision?: string): Promise<ProgramResult> {
+    return this.request('DELETE', `/api/items/${enc(id)}/program`, expectedRevision ? { expectedRevision } : undefined);
+  }
+  deleteBoardProgram(board: string, expectedRevision?: string): Promise<ProgramResult> {
+    return this.request('DELETE', `/api/boards/${enc(board)}/program`, expectedRevision ? { expectedRevision } : undefined);
   }
 }

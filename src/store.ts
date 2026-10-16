@@ -1,8 +1,11 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { Activity, Alert, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry } from './types.ts';
+import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec } from './types.ts';
 import { TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
+import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
+import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
 
 export class HudError extends Error {
   status: number;
@@ -13,7 +16,7 @@ export class HudError extends Error {
 }
 
 /** bump with a migration in the Store constructor whenever the meaning of stored data changes */
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 9;
 
 const TYPES: ItemType[] = ['ticket', 'monitor', 'note', 'frame', 'util', 'project'];
 const PREFIX: Record<ItemType, string> = { ticket: 't', monitor: 'm', note: 'n', frame: 'f', util: 'u', project: 'p' };
@@ -26,6 +29,7 @@ const SIZE: Record<ItemType, [number, number]> = {
   project: [360, 200],
 };
 const ID_RE = /^[a-zA-Z0-9][\w.-]{0,63}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** names every plain object inherits (`__proto__`, `constructor`, `toString`, …): never valid ids */
 const RESERVED_IDS = new Set([...Object.getOwnPropertyNames(Object.prototype), 'prototype']);
 const GRID = 20;
@@ -42,6 +46,7 @@ const DISPLAYS = [
   'auto', 'value', 'progress', 'status', 'text', 'log', 'spark',
   'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut',
   'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d',
+  'composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'custom',
 ] as const;
 /** utility kinds the canvas knows how to draw (web/utils.js) */
 const UTIL_KINDS = ['timer', 'stopwatch', 'clock', 'counter', 'calculator', 'sheet', 'markdown', 'dice'] as const;
@@ -54,9 +59,9 @@ const OPTIONS_MAX = 8;
 /** status a decided option moves the ticket to when the option doesn't name one */
 const DECIDE_STATUS = 'doing';
 /** monitor fields a push may also set (so a monitor created by pushing can be fully configured) */
-const PUSH_CONFIG = ['max', 'display', 'plot', 'staleAfter', 'warnAbove', 'errorAbove', 'warnBelow', 'errorBelow', 'notify', 'group'] as const;
+const PUSH_CONFIG = ['max', 'display', 'plot', 'staleAfter', 'warnAbove', 'errorAbove', 'warnBelow', 'errorBelow', 'notify', 'group', 'messageFormat', 'details', 'metric', 'freshness', 'pipeline'] as const;
 /** a PATCH carrying one of these is a monitor reading, even when it re-asserts the current value */
-const READING_KEYS = ['value', 'state', 'message', 'progress'];
+const READING_KEYS = ['value', 'state', 'message', 'messageFormat', 'details', 'progress', 'data'];
 
 // field limits (400 when exceeded, except `message` which is truncated)
 const LIMIT = { title: 300, body: 200_000, comment: 20_000, message: 2048, value: 10_000, label: 200, unit: 32, person: 80, tags: 50, tag: 50, json: 256_000, depth: 20 };
@@ -66,13 +71,14 @@ const FANOUT_DEPTH = 4;
 const COMMON_KEYS = ['title', 'board', 'x', 'y', 'w', 'h', 'meta', 'group'];
 const TYPE_KEYS: Record<ItemType, string[]> = {
   ticket: [
-    'body', 'status', 'priority', 'assignee', 'tags', 'monitors', 'autoStatus', 'options', 'question', 'decision', 'notify',
+    'body', 'status', 'priority', 'assignee', 'tags', 'monitors', 'autoStatus', 'options', 'question', 'questionFormat', 'summaryMonitor', 'notify',
     // Linear-style structure
     'project', 'parent', 'blockedBy', 'refs', 'branch', 'target',
   ],
   monitor: [
-    'source', 'display', 'plot', 'value', 'unit', 'state', 'message', 'progress', 'max', 'label', 'notify',
+    'source', 'display', 'plot', 'value', 'unit', 'state', 'message', 'messageFormat', 'details', 'progress', 'max', 'label', 'notify',
     'staleAfter', 'warnAbove', 'errorAbove', 'warnBelow', 'errorBelow',
+    'metric', 'observedAt', 'evidence', 'availability', 'coverage', 'freshness', 'data', 'pipeline',
   ],
   note: ['text'],
   frame: [],
@@ -285,12 +291,13 @@ export class Store extends EventEmitter {
   private saveTimer: NodeJS.Timeout | null = null;
   private idx: TicketIndex | null = null;
   private backupTimer: NodeJS.Timeout | null = null;
+  private transactionEvents: HudEvent[] | null = null;
 
   constructor(file: string) {
     super();
     this.file = file;
     this.dir = dirname(file);
-    this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [] };
+    this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [], attention: dict() };
     let fileText: string | undefined;
     let raw: Record<string, any> | undefined;
     this.cleanTmp();
@@ -319,10 +326,13 @@ export class Store extends EventEmitter {
     if (raw && fileText !== undefined) this.backupRaw(fileText, version < STATE_VERSION ? `premigrate-v${version}` : 'start');
     if (raw) this.adopt(raw);
     this.state.version = raw ? version : STATE_VERSION;
-    if (!this.state.boards.some((b) => b.id === 'main')) this.state.boards.unshift({ id: 'main', name: 'main', createdAt: now() });
+    if (!this.state.boards.some((b) => b.id === 'main')) this.state.boards.unshift({ id: 'main', name: 'main', createdAt: now(), width: BOARD_WIDTH, height: BOARD_HEIGHT, autoOrganize: true });
     this.migrate();
     if (this.repair()) this.save();
     this.pruneTrash();
+    let attentionChanged = false;
+    for (const id of new Set([...Object.keys(this.state.items), ...Object.keys(this.state.attention)])) if (this.syncAttention(id, false)) attentionChanged = true;
+    if (attentionChanged) this.save();
   }
 
   /** the loaded document, or a throw naming what is wrong with it */
@@ -349,6 +359,13 @@ export class Store extends EventEmitter {
     }
     if (Array.isArray(raw.activity)) s.activity = raw.activity.filter(isObj) as Activity[];
     if (Array.isArray(raw.alerts)) s.alerts = raw.alerts.filter((a) => isObj(a) && Array.isArray(a.notify)) as Alert[];
+    if (isObj(raw.attention)) for (const [id, a] of Object.entries(raw.attention)) {
+      if (isObj(a) && a.id === id && a.itemId === id && typeof a.revision === 'string' && typeof a.signature === 'string' && Number.isFinite(a.openedAt) && a.openedAt >= 0
+        && ['decision', 'error', 'stale', 'warn', 'blocked'].indexOf(a.kind) === a.priority && a.priority >= 0
+        && ['resolvedAt', 'reviewedAt', 'snoozedUntil'].every(k => a[k] === undefined || (Number.isFinite(a[k]) && a[k] >= 0))
+        && ['reviewedBy', 'snoozedBy'].every(k => a[k] === undefined || typeof a[k] === 'string'))
+        s.attention[id] = a as AttentionRecord;
+    }
     if (Array.isArray(raw.trash)) s.trash = raw.trash.filter((e) => isObj(e) && isObj(e.item) && typeof e.item.id === 'string');
   }
 
@@ -400,6 +417,38 @@ export class Store extends EventEmitter {
       s.trash ??= [];
       s.version = 5;
     }
+    if (s.version < 6) {
+      this.repair();
+      // v6 replaces unbounded coordinates with a fixed dashboard; startup already backed up v5.
+      for (const b of s.boards) {
+        b.autoOrganize = true;
+        const items = Object.values(s.items).filter(i => i.board === b.id);
+        for (const [id, rect] of layout(items)) Object.assign(s.items[id]!, rect);
+      }
+      s.version = 6;
+    }
+    if (s.version < 7) {
+      // Tickets retain identities and links, but only visual objects occupy the dashboard.
+      for (const b of s.boards) if (b.autoOrganize)
+        for (const [id, rect] of layout(Object.values(s.items).filter(i => i.board === b.id))) Object.assign(s.items[id]!, rect);
+      s.version = 7;
+    }
+    if (s.version < 8) {
+      s.attention ??= dict();
+      for (const it of Object.values(s.items)) if (it.type === 'ticket' && it.options?.length) it.decisionVersion = randomUUID();
+      s.version = 8;
+    }
+    if (s.version < 9) {
+      for (const it of Object.values(s.items)) if (it.type === 'monitor' && !it.observation) {
+        it.observation = { observedAt: null, receivedAt: it.lastUpdate ?? it.createdAt, actor: it.updatedBy ?? 'unknown', evidence: 'unknown', availability: it.value === undefined && it.progress == null ? 'unavailable' : 'available' };
+        it.freshness ??= { mode: 'live' };
+      }
+      s.version = 9;
+    }
+    for (const b of s.boards) { b.width = BOARD_WIDTH; b.height = BOARD_HEIGHT; }
+    for (const it of Object.values(s.items)) Object.assign(it, bounded(it));
+    for (const it of [...Object.values(s.items), ...s.trash.map(e => e.item)])
+      if (it.type === 'ticket' && !UUID_RE.test(it.uuid ?? '')) it.uuid = UUID_RE.test(it.id) ? it.id : randomUUID();
     if (s.version !== from) this.save();
   }
 
@@ -425,18 +474,22 @@ export class Store extends EventEmitter {
       fix(typeof it.board !== 'string' || !boards.has(it.board), () => (it.board = 'main'));
       for (const k of ['createdAt', 'updatedAt'] as const) fix(!Number.isFinite(it[k]), () => (it[k] = now()));
       for (const k of ['createdBy', 'updatedBy'] as const) fix(typeof it[k] !== 'string', () => (it[k] = 'hud'));
-      for (const k of ['message', 'text', 'body', 'label', 'unit', 'status', 'priority', 'assignee'] as const) {
+      for (const k of ['message', 'details', 'text', 'body', 'label', 'unit', 'status', 'priority', 'assignee'] as const) {
         const v = it[k] as unknown;
         fix(v != null && typeof v !== 'string', () => ((it as unknown as Record<string, unknown>)[k] = str(v)));
       }
-      for (const k of ['tags', 'comments', 'monitors', 'blockedBy', 'refs', 'notify', 'history', 'log'] as const)
+      for (const k of ['tags', 'comments', 'monitors', 'blockedBy', 'refs', 'notify', 'history', 'log', 'reportHistory'] as const)
         fix(it[k] !== undefined && !Array.isArray(it[k]), () => delete it[k]);
       if (it.comments) fix(it.comments.some((c) => !isObj(c)), () => (it.comments = it.comments!.filter(isObj) as Comment[]));
+      if (it.reportHistory) fix(it.reportHistory.some(r => !isObj(r)), () => (it.reportHistory = it.reportHistory!.filter(isObj)));
+      for (const k of ['messageFormat', 'questionFormat'] as const) fix(it[k] != null && !['plain', 'markdown'].includes(it[k]!), () => (it[k] = 'plain'));
       for (const k of ['meta', 'util', 'source', 'plot'] as const) fix(it[k] !== undefined && !isObj(it[k]), () => delete it[k]);
     }
     const tickets = Object.values(items).filter((i) => i.type === 'ticket');
     const same = (id: unknown, it: Item) => typeof id === 'string' && items[id]?.type === 'ticket' && items[id].board === it.board && id !== it.id;
     for (const it of tickets) {
+      fix(!!it.options?.length && !it.decisionVersion, () => (it.decisionVersion = randomUUID()));
+      fix(!!it.summaryMonitor && (!it.monitors?.includes(it.summaryMonitor) || items[it.summaryMonitor]?.type !== 'monitor' || items[it.summaryMonitor]?.board !== it.board), () => delete it.summaryMonitor);
       fix(!!it.project && (items[it.project]?.type !== 'project' || items[it.project].board !== it.board), () => this.leaveProject(it, 'project is gone'));
       fix(!!it.parent && !same(it.parent, it), () => delete it.parent);
       for (const k of TICKET_REFS) {
@@ -491,15 +544,27 @@ export class Store extends EventEmitter {
 
   /** item as sent to clients: the 24h trend only goes out with GET /api/items/:id */
   static lite(it: Item): Item {
-    if (!it.trend) return it;
-    const { trend: _t, ...rest } = it;
+    const { trend: _t, reportHistory: _r, lastGood: _g, programDraft: _draft, program, source, ...rest } = it;
+    if (source) (rest as Item).source = { kind: source.kind, ...(source.interval === undefined ? {} : { interval: source.interval }), ...(source.timeout === undefined ? {} : { timeout: source.timeout }), ...(source.period === undefined ? {} : { period: source.period }), ...(source.grace === undefined ? {} : { grace: source.grace }), ...(source.probe === undefined ? {} : { probe: source.probe }) };
+    if (program) (rest as Item).program = Store.programSummary(program) as CanvasProgram;
     return rest as Item;
+  }
+
+  static programSummary(program: CanvasProgram) {
+    const { code: _code, previous: _previous, ...summary } = program;
+    return summary;
+  }
+
+  static boardLite(board: Board): Board {
+    const { programDraft: _draft, ...rest } = board;
+    return { ...rest, ...(board.program ? { program: Store.programSummary(board.program) as CanvasProgram } : {}), ...(board.dashboard ? { dashboard: { ...board.dashboard, spec: undefined } as any } : {}) };
   }
 
   // ---------- persistence ----------
   /** debounced write; a failed write is retried every 2 s until it lands */
   private save() {
     this.idx = null;
+    if (this.transactionEvents) return;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 500);
   }
@@ -614,7 +679,154 @@ export class Store extends EventEmitter {
 
   private emitEvent(e: HudEvent) {
     this.idx = null;
+    if (this.transactionEvents) { this.transactionEvents.push(e); return; }
+    if (e.kind === 'item') this.syncAttention(e.item.id);
+    else if (e.kind === 'item.deleted') this.syncAttention(e.id);
     this.emit('event', e);
+  }
+
+  private touchDashboard(item: Item) {
+    if (this.transactionEvents) return;
+    const board = this.state.boards.find(b => b.id === item.board);
+    if (board?.dashboard && Object.values(board.dashboard.keys).includes(item.id)) {
+      board.dashboard.revision = randomUUID();
+      this.emitEvent({ kind: 'board', board });
+    }
+  }
+
+  private textFormat(value: unknown): TextFormat {
+    if (value == null || value === 'plain') return 'plain';
+    if (value === 'markdown') return value;
+    throw new HudError(400, 'format must be plain or markdown');
+  }
+
+  private validateSummary(ticket: Item) {
+    if (!ticket.summaryMonitor) return;
+    const m = this.state.items[ticket.summaryMonitor];
+    if (!ticket.monitors?.includes(ticket.summaryMonitor) || m?.type !== 'monitor' || m.board !== ticket.board)
+      throw new HudError(400, 'summaryMonitor must be a linked monitor on the same board');
+  }
+
+  private attentionKind(it?: Item): AttentionRecord['kind'] | undefined {
+    if (!it) return;
+    if (it.type === 'ticket') {
+      if (this.isFinished(it)) return;
+      if (it.options?.length && !it.decision) return 'decision';
+      if (it.status === 'blocked') return 'blocked';
+    }
+    if (it.type !== 'monitor' || it.state === 'done') return;
+    // Missing heartbeat is evidence of silence, not an explicit job failure.
+    if (it.stale && it.source?.kind === 'heartbeat') return 'stale';
+    if (it.state === 'error') return 'error';
+    if (it.stale) return 'stale';
+    if (it.state === 'warn') return 'warn';
+  }
+
+  private syncAttention(id: string, emit = true) {
+    const records = this.state.attention ??= dict();
+    const it = this.state.items[id], kind = this.attentionKind(it), old = records[id];
+    const t = now();
+    if (!kind) {
+      if (!old || old.resolvedAt) return;
+      old.resolvedAt = t;
+      old.revision = randomUUID();
+    } else {
+      const signature = kind + (kind === 'decision' ? ':' + (it?.decisionVersion ?? '') : '');
+      if (old && !old.resolvedAt && old.signature === signature) return;
+      const priority = ['decision', 'error', 'stale', 'warn', 'blocked'].indexOf(kind);
+      const deescalated = old && !old.resolvedAt && priority > old.priority;
+      records[id] = {
+        id, itemId: id, kind, priority, signature, revision: randomUUID(), openedAt: deescalated ? old.openedAt : t,
+        ...(deescalated ? { reviewedAt: old.reviewedAt, reviewedBy: old.reviewedBy, snoozedUntil: old.snoozedUntil, snoozedBy: old.snoozedBy } : {}),
+      };
+    }
+    if (emit) this.emit('event', { kind: 'attention', itemId: id } satisfies HudEvent);
+    return true;
+  }
+
+  private runTickets(): Item[] {
+    return Object.values(this.state.items).filter(i => i.type === 'ticket' && i.tags?.some(t => t.toLowerCase() === 'run'))
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  private runChildren(run: Item): Item[] {
+    const result: Item[] = [], pending = [run.id], seen = new Set(pending);
+    while (pending.length) {
+      for (const child of this.childrenOf(pending.shift()!)) if (!seen.has(child.id)) {
+        seen.add(child.id); result.push(child); pending.push(child.id);
+      }
+    }
+    return result;
+  }
+
+  private runFor(id: string): Item | undefined {
+    return this.runTickets().find(r => r.id === id || r.monitors?.includes(id) || this.runChildren(r).some(t => t.id === id || t.monitors?.includes(id)));
+  }
+
+  attention(): { items: AttentionItem[]; now: number } {
+    const result: AttentionItem[] = [];
+    for (const record of Object.values(this.state.attention)) {
+      const it = this.state.items[record.itemId];
+      if (record.resolvedAt || !it) continue;
+      const run = this.runFor(it.id);
+      result.push({ ...record, board: it.board, title: it.title || it.id, owner: it.assignee || it.createdBy,
+        lastUpdate: it.lastUpdate ?? it.updatedAt, message: record.kind === 'decision' ? it.question : it.message,
+        messageFormat: record.kind === 'decision' ? it.questionFormat : it.messageFormat,
+        runId: run?.id, runTitle: run?.title });
+    }
+    return { items: result.sort((a, b) => a.priority - b.priority || a.openedAt - b.openedAt || a.id.localeCompare(b.id)), now: now() };
+  }
+
+  reviewAttention(id: string, input: { action: string; revision?: string; until?: number }, actor: string): AttentionRecord {
+    const record = this.state.attention[id];
+    if (!record || record.resolvedAt) throw new HudError(409, 'this issue is no longer active; refresh Attention');
+    if (input.revision !== record.revision) throw new HudError(409, 'this issue has changed; refresh Attention before reviewing');
+    if (!['review', 'unreview', 'snooze'].includes(input.action)) throw new HudError(400, 'action must be review, unreview or snooze');
+    const t = now();
+    if (input.action === 'snooze') {
+      if (!Number.isFinite(input.until) || input.until! <= t || input.until! > t + 7 * 86400_000) throw new HudError(400, 'until must be a future timestamp within seven days');
+      record.snoozedUntil = input.until; record.snoozedBy = actor;
+    } else {
+      delete record.snoozedUntil; delete record.snoozedBy;
+      if (input.action === 'review') { record.reviewedAt = t; record.reviewedBy = actor; }
+      else { delete record.reviewedAt; delete record.reviewedBy; }
+    }
+    record.revision = randomUUID();
+    this.log(actor, 'attention.' + input.action, `${input.action} ${id}`, this.state.items[id]);
+    this.emitEvent({ kind: 'attention', itemId: id });
+    this.save();
+    return { ...record };
+  }
+
+  runs(): { items: RunOverview[] } {
+    const attention = this.attention().items;
+    return { items: this.runTickets().map(run => {
+      const tickets = this.runChildren(run);
+      const monitorIds = new Set([...(run.monitors ?? []), ...tickets.flatMap(t => t.monitors ?? [])]);
+      const monitors = [...monitorIds].map(id => this.state.items[id]).filter((i): i is Item => !!i && i.type === 'monitor' && i.board === run.board);
+      const summary = monitors.find(m => m.id === run.summaryMonitor);
+      const progress = typeof summary?.progress === 'number' ? summary.progress : null;
+      let eta: string | null = null;
+      const points = summary?.history?.filter(p => p.p != null && p.t >= (summary.lastUpdate ?? 0) - 3600_000) ?? [];
+      const first = points[0], last = points[points.length - 1];
+      if (!summary?.stale && progress != null && progress < 100 && first && last && last.t - first.t >= 60_000 && last.p! > first.p!) {
+        const finish = last.t + (100 - last.p!) * (last.t - first.t) / (last.p! - first.p!);
+        if (Number.isFinite(finish) && finish >= now() && finish < now() + 365 * 86400_000) eta = new Date(finish).toISOString();
+      }
+      const reports = monitors.map(m => m.lastUpdate).filter((v): v is number => v != null);
+      return { id: run.id, uuid: run.uuid, ident: this.ident(run), title: run.title, board: run.board, status: run.status ?? 'todo',
+        owner: run.assignee || run.createdBy, summaryMonitor: run.summaryMonitor, progress, eta,
+        lastUpdate: reports.length ? Math.max(...reports) : null, issues: attention.filter(a => a.runId === run.id).length,
+        monitors: monitors.map(Store.lite), tickets: tickets.map(Store.lite), updatedAt: run.updatedAt };
+    }) };
+  }
+
+  changesSince(since: number) {
+    if (!Number.isFinite(since) || since < 0 || since > now()) throw new HudError(400, 'since must be a past timestamp in milliseconds');
+    const all = this.state.activity;
+    const meaningful = new Set(['created', 'deleted', 'restored', 'status', 'state', 'stale', 'ask', 'decide', 'comment', 'updated', 'link', 'attention.review', 'attention.unreview', 'attention.snooze', 'board.deleted', 'board.renamed']);
+    const events = all.filter(a => a.t > since && meaningful.has(a.action));
+    return { since, now: now(), complete: !(all.length && all[0]!.id > 1 && since < all[0]!.t) && events.length <= 500, events: events.slice(-500) };
   }
 
   private log(actor: string, action: string, text: string, item?: Item) {
@@ -655,7 +867,7 @@ export class Store extends EventEmitter {
     if (existing) return existing;
     let bid = id && ID_RE.test(id) ? id : slugify(name);
     while (this.board(bid)) bid += '-' + Math.random().toString(36).slice(2, 5);
-    const b: Board = { id: bid, name, createdAt: now() };
+    const b: Board = { id: bid, name, createdAt: now(), width: BOARD_WIDTH, height: BOARD_HEIGHT, autoOrganize: true };
     this.state.boards.push(b);
     this.emitEvent({ kind: 'board', board: b });
     this.log(actor, 'board.created', `created board "${name}"`);
@@ -680,6 +892,34 @@ export class Store extends EventEmitter {
     return b;
   }
 
+  clearBoard(id: string, actor: string) {
+    const existing = this.requireBoard(id);
+    this.backup(`preclear-${existing.id}`);
+    return this.atomic(() => {
+      const board = this.requireBoard(existing.id), t = now();
+      const snapshot = structuredClone(board);
+      const removed: string[] = [];
+      for (const item of Object.values(this.state.items)) {
+        if (item.board !== board.id) continue;
+        this.state.trash.push({ item, t, actor, board: snapshot });
+        delete this.state.items[item.id];
+        this.syncAttention(item.id);
+        removed.push(item.id);
+        this.emitEvent({ kind: 'item.deleted', id: item.id, board: board.id, actor });
+      }
+      delete board.dashboard;
+      delete board.programDraft;
+      if (board.program) board.program = { ...board.program, disabled: true, revision: randomUUID() };
+      for (const record of [...(board.annotations ?? []), ...(board.comparisons ?? [])]) if (!record.deletedAt) record.deletedAt = t;
+      clearTimeout(this.organizeTimers.get(board.id));
+      this.organizeTimers.delete(board.id);
+      this.pruneTrash();
+      this.emitEvent({ kind: 'board', board });
+      this.log(actor, 'board.cleared', `cleared canvas "${board.name}" (${removed.length} items moved to trash)`);
+      return { board: board.id, cleared: removed.length, removed };
+    });
+  }
+
   /** Delete a board: its items go to the trash with a snapshot of the board, after a backup. */
   deleteBoard(id: string, actor: string) {
     const b = this.requireBoard(id);
@@ -691,6 +931,7 @@ export class Store extends EventEmitter {
       if (it.board !== b.id) continue;
       this.state.trash.push({ item: it, t, actor, board: snapshot });
       delete this.state.items[it.id];
+      this.syncAttention(it.id);
     }
     this.state.boards = this.state.boards.filter((x) => x.id !== b.id);
     clearTimeout(this.organizeTimers.get(b.id));
@@ -751,7 +992,7 @@ export class Store extends EventEmitter {
       if (parent !== undefined && it.parent !== parent) return false;
       if (overdue && !(it.type === 'ticket' && it.target && it.target < today && !this.isFinished(it))) return false;
       if (textQ) {
-        const hay = [it.id, it.title, it.body, it.text, it.key, it.type === 'ticket' ? this.ident(it) : '', ...(it.comments ?? []).map((c) => c.text)];
+        const hay = [it.id, it.uuid, it.title, it.body, it.text, it.message, it.details, it.group, it.key, it.type === 'ticket' ? this.ident(it) : '', ...(it.comments ?? []).map((c) => c.text)];
         if (!hay.some((h) => typeof h === 'string' && h.toLowerCase().includes(textQ))) return false;
       }
       return true;
@@ -765,6 +1006,7 @@ export class Store extends EventEmitter {
   }
 
   private nextId(type: ItemType) {
+    if (type === 'ticket') return randomUUID();
     const p = PREFIX[type];
     let id: string;
     do id = p + (this.state.seq[p] = (this.state.seq[p] ?? 0) + 1);
@@ -788,7 +1030,7 @@ export class Store extends EventEmitter {
     const m = IDENT_RE.exec(id);
     if (m && (type === 'ticket' || this.projects().some((p) => (p.key ?? '').toLowerCase() === m[1].toLowerCase())))
       throw new HudError(400, `id "${id}" reads as a ticket identifier (KEY-n); pick another`);
-    if (this.state.items[id]) throw new HudError(409, `item "${id}" already exists`);
+    if (this.state.items[id] || Object.values(this.state.items).some(i => i.uuid === id)) throw new HudError(409, `item "${id}" already exists`);
     return id;
   }
 
@@ -842,6 +1084,10 @@ export class Store extends EventEmitter {
       if (!Object.hasOwn(input, k) || input[k] === undefined) continue;
       out[k] = input[k];
     }
+    if (type === 'monitor') {
+      try { Object.assign(out, validateMonitorFields(out)); }
+      catch (e) { throw new HudError(400, (e as Error).message); }
+    }
     for (const k of ['x', 'y', 'w', 'h'] as const) {
       if (!(k in out)) continue;
       if (out[k] === null) {
@@ -862,6 +1108,12 @@ export class Store extends EventEmitter {
       json('meta', out.meta);
       if (out.meta === null) out.meta = undefined;
     }
+    for (const k of ['messageFormat', 'questionFormat'] as const) if (k in out) out[k] = this.textFormat(out[k]);
+    if ('details' in out) {
+      out.details = text('details', out.details, 20_000);
+      if (Buffer.byteLength(out.details, 'utf8') > 20_000) throw new HudError(400, 'details must be at most 20 KB');
+    }
+    if ('summaryMonitor' in out) out.summaryMonitor = out.summaryMonitor == null || out.summaryMonitor === '' ? undefined : text('summaryMonitor', out.summaryMonitor, 64);
     for (const k of ['body', 'text'] as const) if (k in out) out[k] = text(k, out[k], LIMIT.body);
     for (const k of ['assignee', 'lead'] as const) if (k in out) out[k] = text(k, out[k], LIMIT.person).trim() || undefined;
     if ('tags' in out) out.tags = list('tags', out.tags, LIMIT.tags, LIMIT.tag, true);
@@ -1017,6 +1269,7 @@ export class Store extends EventEmitter {
     } else if (type === 'project' && fields.key) {
       this.assertKeyFree(fields.key, board);
     }
+    if (type === 'ticket') this.validateSummary({ ...fields, board } as Item);
     // ---- build ----
     if (type !== 'frame') {
       if (frame && !fields.group && frame.title.trim()) fields.group = frame.title.trim();
@@ -1071,11 +1324,12 @@ export class Store extends EventEmitter {
       item.display ??= 'auto';
       item.history = [];
       item.log = [];
-      const reading = item.value !== undefined || item.progress != null;
+      const reading = item.value !== undefined || item.progress != null || item.message !== undefined || item.details !== undefined || item.data !== undefined;
       if (reading || item.state !== undefined) {
-        this.settle(item, item.state ?? 'ok', item.progress != null);
+        this.settle(item, item.state ?? (item.value === null ? 'unknown' : 'ok'), item.progress != null);
         item.lastUpdate = t;
-        this.record(item);
+        this.observe(item, fields, actor);
+        this.record(item, item.observation?.observedAt ?? t);
       }
       item.state ??= 'unknown';
     } else if (type === 'note') {
@@ -1085,6 +1339,9 @@ export class Store extends EventEmitter {
       item.util ??= {};
       item.text ??= '';
     }
+    if (type === 'ticket' && item.options?.length) item.decisionVersion = randomUUID();
+    if (type === 'ticket') item.uuid = UUID_RE.test(item.id) ? item.id : randomUUID();
+    Object.assign(item, bounded(item));
     this.state.items[item.id] = item;
     this.emitEvent({ kind: 'item', item, actor, created: true });
     this.log(actor, 'created', `created ${type} ${item.id}${item.title ? ` "${item.title}"` : ''}`, item);
@@ -1102,9 +1359,11 @@ export class Store extends EventEmitter {
     const items = this.state.items;
     if (items[item.id]) throw new HudError(409, `item "${item.id}" already exists`);
     if (!this.state.boards.some((b) => b.id === item.board)) throw new HudError(404, `board "${item.board}" no longer exists`);
+    Object.assign(item, bounded(item));
     items[item.id] = item;
     const ok = (id: unknown) => typeof id === 'string' && items[id]?.type === 'ticket' && items[id].board === item.board && id !== item.id;
     if (item.type === 'ticket') {
+      if (item.options?.length && !item.decisionVersion) item.decisionVersion = randomUUID();
       if (item.project && (items[item.project]?.type !== 'project' || items[item.project].board !== item.board)) this.leaveProject(item, 'project is gone');
       if (item.parent && !ok(item.parent)) delete item.parent;
       for (const k of TICKET_REFS) if (item[k]) item[k] = item[k]!.filter(ok);
@@ -1131,11 +1390,14 @@ export class Store extends EventEmitter {
     let item = this.get(id);
     if (!isObj(patch)) throw new HudError(400, 'patch must be an object');
     const fields = this.clean(item.type, patch, true) as Record<string, any>;
+    if (item.type === 'monitor' && fields.observedAt !== undefined && item.observation?.observedAt != null && fields.observedAt < item.observation.observedAt)
+      throw new HudError(409, 'older observation cannot replace the current value');
     if ('board' in fields) {
       fields.board = this.requireBoard(String(fields.board)).id;
       if (fields.board !== item.board) this.assertMovable(item);
     }
     if (item.type === 'project' && fields.key) this.assertKeyFree(fields.key, item.board, item.id);
+    if (item.type === 'ticket') this.validateSummary({ ...item, ...fields });
     // relationships go through link(), which validates refs and cycles before anything else changes
     if (item.type === 'ticket') {
       const links: Record<string, unknown> = {};
@@ -1153,6 +1415,7 @@ export class Store extends EventEmitter {
     const reading = item.type === 'monitor' && READING_KEYS.some((k) => k in fields);
     const changed = Object.keys(fields).filter((k) => JSON.stringify((item as any)[k]) !== JSON.stringify(fields[k]));
     if (!changed.length && !reading) return item;
+    if (changed.some(k => ![...READING_KEYS, 'observedAt', 'evidence', 'availability', 'coverage', 'label'].includes(k))) this.touchDashboard(item);
     const prevStatus = item.status;
     const prevState = item.state;
     const prevTitle = item.title;
@@ -1162,6 +1425,10 @@ export class Store extends EventEmitter {
     const newKey = item.type === 'project' && changed.includes('key') ? (fields.key as string) : undefined;
     if (newKey) delete fields.key;
     this.assign(item, fields);
+    if (item.type === 'ticket' && changed.some(k => ['question', 'questionFormat', 'options'].includes(k))) {
+      item.decisionVersion = randomUUID();
+      delete item.decision;
+    }
     if (!item.group) delete item.group;
     if (newKey) this.setKey(item, newKey, actor);
     // frame renamed: its members follow the new name
@@ -1182,15 +1449,20 @@ export class Store extends EventEmitter {
         item.y = p.y;
       }
     }
+    Object.assign(item, bounded(item));
     item.updatedAt = now();
     item.updatedBy = actor;
     if (reading) {
       // a PATCH that carries a reading counts as one even when it re-asserts the current value
-      item.lastUpdate = item.updatedAt;
       const hasValue = 'value' in fields || 'progress' in fields;
-      this.settle(item, (fields.state as MonState) ?? (hasValue ? 'ok' : undefined), 'progress' in fields, 'state' in fields);
+      this.settle(item, (fields.state as MonState) ?? (hasValue ? fields.value === null ? 'unknown' : 'ok' : undefined), 'progress' in fields, 'state' in fields);
       if (item.state !== prevState && !('message' in fields)) delete item.message;
-      this.record(item);
+      const observed = this.observe(item, fields, actor);
+      this.record(item, observed ? item.observation?.observedAt ?? item.updatedAt : item.updatedAt, observed && ('value' in fields || 'progress' in fields));
+    }
+    if (item.type === 'monitor' && changed.includes('source')) {
+      item.availability = 'unavailable';
+      if (item.observation) item.observation = { ...item.observation, evidence: 'unknown' };
     }
     if (item.type === 'ticket' && changed.includes('status')) {
       item.autoBlocked = false;
@@ -1218,7 +1490,7 @@ export class Store extends EventEmitter {
         this.log(actor, 'updated', `updated ${item.id} (${changed.filter((k) => !['x', 'y', 'w', 'h'].includes(k)).join(', ')})`, item);
       }
     }
-    if (changed.some((k) => ['group', 'w', 'h', 'board', 'status', 'priority'].includes(k)) || (item.type === 'frame' && changed.includes('title'))) {
+    if (changed.some((k) => ['group', 'x', 'y', 'w', 'h', 'board'].includes(k)) || (item.type === 'frame' && changed.includes('title'))) {
       this.autoOrganize(item.board);
       if (prevBoard !== item.board) this.autoOrganize(prevBoard);
     }
@@ -1235,6 +1507,8 @@ export class Store extends EventEmitter {
   /** tickets and projects tied to other items can't hop boards (their links would span boards) */
   private assertMovable(it: Item) {
     const all = Object.values(this.state.items);
+    if (it.type === 'monitor' && all.some(t => t.type === 'ticket' && t.summaryMonitor === it.id))
+      throw new HudError(409, 'unlink this monitor as a run summary before moving it to another board');
     if (it.type === 'project' && all.some((t) => t.type === 'ticket' && t.project === it.id))
       throw new HudError(409, `project ${it.key} still has tickets; move or delete them first`);
     if (
@@ -1247,6 +1521,7 @@ export class Store extends EventEmitter {
   /** Delete an item. Whatever pointed at it is cleaned up first, and anything waiting on it is re-synced. */
   remove(id: string, actor: string) {
     const item = this.get(id);
+    this.touchDashboard(item);
     const touched = this.detach(item, actor);
     delete this.state.items[id];
     this.state.trash.push({ item, t: now(), actor });
@@ -1284,6 +1559,7 @@ export class Store extends EventEmitter {
           }
       } else if (item.type === 'monitor' && o.monitors?.includes(item.id)) {
         o.monitors = o.monitors.filter((x) => x !== item.id);
+        if (o.summaryMonitor === item.id) delete o.summaryMonitor;
         hit = true;
       } else if (item.type === 'project' && o.project === item.id) {
         this.leaveProject(o, `project ${item.key} deleted`);
@@ -1331,11 +1607,13 @@ export class Store extends EventEmitter {
     return c;
   }
 
-  comment(id: string, body: string, actor: string) {
+  comment(id: string, body: string, actor: string, format?: TextFormat) {
     const item = this.get(id);
     if (typeof body !== 'string' && typeof body !== 'number') throw new HudError(400, 'comment text must be a string');
     if (!String(body).trim()) throw new HudError(400, 'comment text required');
+    const fmt = this.textFormat(format);
     const c = this.addComment(item, actor, text('comment', body, LIMIT.comment));
+    c.format = fmt;
     item.updatedAt = c.t;
     item.updatedBy = actor;
     this.emitEvent({ kind: 'item', item, actor });
@@ -1358,11 +1636,13 @@ export class Store extends EventEmitter {
     return { item, c: item.comments![i], i };
   }
 
-  editComment(id: string, cid: string, body: string, actor: string): Comment {
+  editComment(id: string, cid: string, body: string, actor: string, format?: TextFormat): Comment {
     const { item, c } = this.findComment(id, cid);
     if (typeof body !== 'string' && typeof body !== 'number') throw new HudError(400, 'comment text must be a string');
     if (!String(body).trim()) throw new HudError(400, 'comment text required');
+    const fmt = this.textFormat(format ?? c.format);
     c.text = text('comment', body, LIMIT.comment);
+    c.format = fmt;
     c.edited = now();
     item.updatedAt = c.edited;
     item.updatedBy = actor;
@@ -1405,14 +1685,18 @@ export class Store extends EventEmitter {
   }
 
   /** An agent proposes options on a ticket and waits for a human to pick one. */
-  ask(id: string, input: { question?: unknown; options: unknown }, actor: string): Item {
+  ask(id: string, input: { question?: unknown; options: unknown; questionFormat?: TextFormat }, actor: string): Item {
     const tk = this.get(id);
     if (tk.type !== 'ticket') throw new HudError(400, `${id} is a ${tk.type}, not a ticket`);
     const opts = this.clean('ticket', { options: input.options }, true).options ?? [];
     if (!opts.length) throw new HudError(400, 'at least one option with a label is required');
+    const question = input.question === undefined ? tk.question : text('question', input.question, 100_000).trim().slice(0, 500) || undefined;
+    const format = this.textFormat(input.questionFormat);
     const wasFinished = this.isFinished(tk);
     tk.options = opts;
-    if (input.question !== undefined) tk.question = text('question', input.question, 100_000).trim().slice(0, 500) || undefined;
+    tk.question = question;
+    tk.questionFormat = format;
+    tk.decisionVersion = randomUUID();
     delete tk.decision;
     this.setStatus(tk, 'blocked', actor);
     // the asker is who needs woken with the answer; keep any sessions already named, add this one
@@ -1425,9 +1709,11 @@ export class Store extends EventEmitter {
   }
 
   /** Pick one of a ticket's options: move it to the option's status and wake whoever asked. */
-  decide(id: string, optionId: string, actor: string, note?: string): Item {
+  decide(id: string, optionId: string, actor: string, note?: string, decisionVersion?: string): Item {
     const tk = this.get(id);
     if (tk.type !== 'ticket') throw new HudError(400, `${id} is a ${tk.type}, not a ticket`);
+    if (tk.decision) throw new HudError(409, 'this decision has already been answered; reload the ticket');
+    if (tk.decisionVersion && decisionVersion !== tk.decisionVersion) throw new HudError(409, 'decision has changed or decisionVersion is missing; reload the ticket');
     const opt = tk.options?.find((o) => o.id === optionId);
     if (!opt) throw new HudError(404, `no option "${String(optionId).slice(0, 40)}" on ${id} (have: ${(tk.options ?? []).map((o) => o.id).join(', ') || 'none'})`);
     const from = tk.status ?? 'todo';
@@ -1492,10 +1778,13 @@ export class Store extends EventEmitter {
   }
 
   /** Validate a whole reading tree (and the ids it would create) before anything is applied. */
-  private checkReading(id: string, r: Record<string, any>, depth: number, budget: { n: number }) {
+  private checkReading(id: string, r: Record<string, any>, depth: number, budget: { n: number }, parentBoard?: string) {
     if (!isObj(r)) throw new HudError(400, 'a monitor reading must be an object');
     if (depth > FANOUT_DEPTH) throw new HudError(400, `monitors are nested deeper than ${FANOUT_DEPTH} levels`);
     const existing = typeof id === 'string' ? this.state.items[id] : undefined;
+    const frame = r.frame ? this.get(this.resolveId(String(r.frame))) : undefined;
+    const board = existing?.board ?? frame?.board ?? r.board ?? parentBoard ?? 'main';
+    if (parentBoard && (board !== parentBoard || (r.board && r.board !== parentBoard) || (frame && frame.board !== parentBoard))) throw new HudError(400, 'fan-out monitors must remain on the parent board');
     if (existing) {
       if (existing.type !== 'monitor') throw new HudError(400, `${id} is a ${existing.type}, not a monitor`);
     } else {
@@ -1507,12 +1796,13 @@ export class Store extends EventEmitter {
       }
     }
     if (r.state !== undefined && !STATES.includes(r.state)) throw new HudError(400, `state must be one of ${STATES.join('|')}`);
+    try { validateMonitorFields(r); } catch (e) { throw new HudError(400, (e as Error).message); }
     this.clean('monitor', { ...Object.fromEntries(PUSH_CONFIG.filter((k) => r[k] !== undefined).map((k) => [k, r[k]])), ...(r.title !== undefined ? { title: r.title } : {}), value: r.value, progress: r.progress, label: cut(r.label, LIMIT.label), unit: cut(r.unit, LIMIT.unit), message: r.message }, true);
     if (r.monitors !== undefined) {
       if (!isObj(r.monitors)) throw new HudError(400, 'monitors must be an object keyed by monitor id');
       for (const [cid, cr] of Object.entries(r.monitors)) {
         if (++budget.n > FANOUT_MAX) throw new HudError(400, `a reading may carry at most ${FANOUT_MAX} monitors`);
-        this.checkReading(cid, cr as Record<string, any>, depth + 1, budget);
+        this.checkReading(cid, cr as Record<string, any>, depth + 1, budget, board);
       }
     }
   }
@@ -1522,13 +1812,51 @@ export class Store extends EventEmitter {
     id: string,
     r: MonitorResult & Record<string, any> & { title?: string; board?: string; frame?: string },
     actor: string,
-    defaults: { board?: string; group?: string } = {},
+    defaults: { board?: string; group?: string; collected?: boolean } = {},
   ): Item {
-    this.checkReading(String(id), r, 0, { n: 0 });
+    this.checkReading(String(id), { ...r, board: r.board ?? defaults.board }, 0, { n: 0 });
     return this.applyReading(String(id), r, actor, defaults);
   }
 
-  private applyReading(id: string, r: Record<string, any>, actor: string, defaults: { board?: string; group?: string }): Item {
+  collect(id: string, result: MonitorResult): Item {
+    return this.push(id, result, 'hud', { collected: true });
+  }
+
+  recordAttempt(id: string) {
+    const item = this.get(id);
+    item.lastRun = now();
+    item.lastAttempt = item.lastRun;
+    this.save();
+  }
+
+  recordProgramAction(board: string, revision: string, operation: string, actor: string) {
+    this.log(actor, 'program.action', `${board} program ${revision}: ${operation}`);
+    this.save();
+  }
+
+  private observe(item: Item, r: Record<string, any>, actor: string, collected = false): boolean {
+    const t = now();
+    item.lastAttempt = t;
+    const supplied = r.value !== undefined || (item.value === undefined && (r.progress !== undefined || r.data !== undefined)) || item.source?.kind === 'heartbeat' || (item.value === undefined && item.progress == null && !item.data && r.state !== undefined && r.state !== 'error');
+    if (!supplied || r.availability === 'unavailable') {
+      if (r.state === 'error' || r.availability === 'unavailable') item.availability = 'unavailable';
+      return false;
+    }
+    const observedAt = r.observedAt ?? t;
+    if (r.observedAt !== undefined && item.observation?.observedAt != null && observedAt <= item.observation.observedAt) return false;
+    item.availability = r.availability ?? (r.value === null || r.coverage?.responding === 0 ? 'unavailable' : r.coverage && r.coverage.responding < r.coverage.total ? 'partial' : 'available');
+    if (r.coverage) item.coverage = structuredClone(r.coverage); else delete item.coverage;
+    item.observation = {
+      observedAt, receivedAt: t, actor,
+      evidence: r.evidence === 'estimate' ? 'estimate' : collected ? 'measured' : 'reported',
+      availability: item.availability!, ...(r.coverage ? { coverage: structuredClone(r.coverage) } : {}),
+    };
+    item.lastUpdate = t;
+    if (item.availability === 'available') item.lastGood = { ...(item.value === undefined ? {} : { value: item.value }), ...(item.progress === undefined ? {} : { progress: item.progress }), ...(item.data === undefined ? {} : { data: item.data }), observation: structuredClone(item.observation) };
+    return true;
+  }
+
+  private applyReading(id: string, r: Record<string, any>, actor: string, defaults: { board?: string; group?: string; collected?: boolean }): Item {
     let item = this.state.items[id];
     if (!item) {
       item = this.create(
@@ -1536,9 +1864,14 @@ export class Store extends EventEmitter {
         actor,
       );
     }
+    if (r.observedAt !== undefined && item.observation?.observedAt != null && r.observedAt <= item.observation.observedAt) {
+      item.lastAttempt = now();
+      this.save();
+      return item;
+    }
     // fan-out: one reading carrying many monitors
     const kids = r.monitors ? Object.entries(r.monitors) : [];
-    const kidItems = kids.map(([cid, cr]) => this.applyReading(cid, { ...(cr as object) }, actor, { board: item.board, group: item.group }));
+    const kidItems = kids.map(([cid, cr]) => this.applyReading(cid, { ...(r.observedAt === undefined ? {} : { observedAt: r.observedAt }), ...(r.evidence === 'estimate' ? { evidence: 'estimate' } : {}), ...(cr as object) }, actor, { board: item.board, group: item.group, collected: defaults.collected }));
     const cfg: Record<string, unknown> = {};
     for (const k of PUSH_CONFIG) if (r[k] !== undefined) cfg[k] = r[k];
     if (r.title !== undefined && r.title !== item.title) cfg.title = r.title;
@@ -1554,17 +1887,18 @@ export class Store extends EventEmitter {
     if (r.label !== undefined) item.label = r.label == null || r.label === '' ? undefined : text('label', cut(r.label, LIMIT.label), LIMIT.label);
     if (r.unit !== undefined) item.unit = text('unit', cut(r.unit, LIMIT.unit), LIMIT.unit) || undefined;
     if (r.progress !== undefined) item.progress = r.progress == null ? null : clamp(num('progress', r.progress), 0, 100);
+    if (r.data !== undefined) item.data = validateMonitorFields({ data: r.data }).data;
     const reading = r.value !== undefined || r.progress !== undefined;
-    this.settle(item, r.state ?? (reading ? 'ok' : undefined), r.progress !== undefined, r.state !== undefined);
+    this.settle(item, r.state ?? (reading ? r.value === null ? 'unknown' : 'ok' : undefined), r.progress !== undefined, r.state !== undefined);
     // a message belongs to the state it was reported with: a state change without one clears the old text
     if (r.message !== undefined) item.message = monitorMessage(r.message);
     else if (item.state !== prevState) delete item.message;
     if (!item.message) delete item.message;
     const t = now();
-    item.lastUpdate = t;
     item.updatedAt = t;
     item.updatedBy = actor;
-    this.record(item);
+    const observed = this.observe(item, r, actor, defaults.collected);
+    this.record(item, observed ? item.observation?.observedAt ?? t : t, observed && (r.value !== undefined || r.progress !== undefined));
     this.afterReading(item, prevState, actor);
     this.save();
     return item;
@@ -1572,7 +1906,7 @@ export class Store extends EventEmitter {
 
   /** shared tail of every monitor change: emit, log state changes, raise alerts, drive linked tickets */
   private afterReading(item: Item, prevState: MonState | undefined, actor: string) {
-    if (item.stale) item.stale = false;
+    item.stale = staleAt(item);
     this.emitEvent({ kind: 'item', item, actor });
     if (prevState === item.state) return;
     if (prevState !== undefined) this.log(actor, 'state', `${item.id} ${prevState} → ${item.state}${item.message ? `: ${item.message}` : ''}`, item);
@@ -1625,13 +1959,13 @@ export class Store extends EventEmitter {
    */
   checkStale() {
     const t = now();
+    for (const board of this.state.boards) if (board.comparisons?.length) this.refreshComparisons(board);
     for (const it of Object.values(this.state.items)) {
       if (it.type !== 'monitor') continue;
       const hb = it.source?.kind === 'heartbeat';
-      const limit = hb ? ((it.source?.period ?? 60) + (it.source?.grace ?? 60)) * 1000 : it.staleAfter ? it.staleAfter * 1000 : 0;
-      if (!limit) continue;
-      const since = it.lastUpdate ?? it.createdAt;
-      const stale = t - since > limit;
+      const limit = expiry(it);
+      const since = observationTime(it);
+      const stale = limit !== null && t - since > limit * 1000;
       if (stale === !!it.stale) continue;
       it.stale = stale;
       const prev = it.state ?? 'unknown';
@@ -1640,7 +1974,8 @@ export class Store extends EventEmitter {
         if (hb) {
           it.state = 'error';
           it.message = `no ping for ${secs}s`;
-          this.record(it, t);
+          it.messageFormat = 'plain';
+          this.record(it, t, false);
         }
         it.updatedAt = t;
         this.emitEvent({ kind: 'item', item: it, actor: 'hud' });
@@ -1742,6 +2077,7 @@ export class Store extends EventEmitter {
     const s = String(ref ?? '').trim();
     const own = this.state.items[s];
     if (own?.type === 'ticket') return own;
+    if (UUID_RE.test(s)) return Object.values(this.state.items).find(i => i.type === 'ticket' && i.uuid?.toLowerCase() === s.toLowerCase());
     const m = IDENT_RE.exec(s);
     if (m) {
       const hits = this.index().ident.get(`${m[1].toLowerCase()}-${Number(m[2])}`);
@@ -2122,96 +2458,254 @@ export class Store extends EventEmitter {
     item.state = s;
   }
 
-  private record(item: Item, at?: number) {
+  private record(item: Item, at?: number, observed = true) {
     const t = at ?? item.lastUpdate ?? now();
-    const v = typeof item.value === 'number' ? item.value : Number.isFinite(Number(item.value)) && item.value !== '' && item.value !== null && typeof item.value !== 'boolean' ? Number(item.value) : null;
-    const p = item.progress ?? null;
-    (item.history ??= []).push({ t, v, s: item.state ?? 'unknown', ...(p !== null ? { p } : {}) });
+    const v = !observed ? null : typeof item.value === 'number' ? item.value : Number.isFinite(Number(item.value)) && item.value !== '' && item.value !== null && typeof item.value !== 'boolean' ? Number(item.value) : null;
+    const p = observed ? item.progress ?? null : null;
+    const evidence = observed ? item.observation?.evidence ?? 'unknown' : 'unknown';
+    (item.history ??= []).push({ t, v, s: item.state ?? 'unknown', e: evidence, receivedAt: item.lastAttempt ?? now(), ...(p !== null ? { p } : {}) });
+    item.history.sort((a, b) => a.t - b.t);
     if (item.history.length > HISTORY_MAX) item.history.splice(0, item.history.length - HISTORY_MAX);
     // every reading lands in its minute's bucket, so `w` (worst severity) and uptime cover state-only monitors too
     const w = item.state === 'error' ? 2 : item.state === 'warn' ? 1 : 0;
     const bucket = Math.floor(t / 60000) * 60000;
     const tr = (item.trend ??= []);
-    const last = tr[tr.length - 1];
+    const last = tr.find(bucketReading => bucketReading.t === bucket);
     const numeric = v !== null || p !== null;
     if (last && last.t === bucket) {
       if (v !== null) last.v = last.v === null ? v : (last.v * last.n + v) / (last.n + 1);
       if (p !== null) last.p = p;
       if (numeric) last.n++;
       last.w = Math.max(last.w ?? 0, w);
+      if (last.e !== evidence) last.e = 'unknown';
     } else {
-      tr.push({ t: bucket, v, p, n: numeric ? 1 : 0, w });
+      tr.push({ t: bucket, v, p, n: numeric ? 1 : 0, w, e: evidence });
+      tr.sort((a, b) => a.t - b.t);
       if (tr.length > TREND_MAX) tr.splice(0, tr.length - TREND_MAX);
+    }
+    const reports = (item.reportHistory ??= []);
+    const report = reports[reports.length - 1];
+    if ((item.message || item.details || report) && (!report || report.message !== item.message || report.details !== item.details || report.messageFormat !== (item.messageFormat ?? 'plain'))) {
+      reports.push({ t: now(), actor: item.updatedBy, message: item.message, messageFormat: item.messageFormat ?? 'plain', details: item.details });
+      if (reports.length > 100) reports.splice(0, reports.length - 100);
     }
     const log = (item.log ??= []);
     const prev = log[log.length - 1];
     const m = item.message ?? '';
     if (!prev || prev.m !== m || prev.s !== item.state) {
-      log.push({ t, s: item.state ?? 'unknown', m });
+      log.push({ t: now(), s: item.state ?? 'unknown', m });
       if (log.length > LOG_MAX) log.splice(0, log.length - LOG_MAX);
     }
   }
 
-  /** Flow-layout items (default: everything top-level on a board, or the contents of a frame). */
+  /** Arrangement uses the board layout so neighboring cards cannot be pushed off the surface. */
   arrange(opts: { board?: string; frame?: string; ids?: string[]; width?: number; gap?: number }, actor: string) {
-    const gap = opts.gap == null ? GRID : clamp(num('gap', opts.gap), 0, 1000);
     const frame = opts.frame ? this.get(this.resolveId(String(opts.frame), opts.board)) : undefined;
     if (frame && frame.type !== 'frame') throw new HudError(400, `${frame.id} is not a frame`);
-    const board = frame?.board ?? this.requireBoard(opts.board).id;
-    const all = Object.values(this.state.items).filter((i) => i.board === board);
-    const frames = all.filter((i) => i.type === 'frame');
-    let targets: Item[];
-    const membersOf = (f: Item) => {
-      const key = f.title.trim().toLowerCase();
-      return all.filter((i) => i.type !== 'frame' && (key ? i.group?.toLowerCase() === key : !i.group && contains(f, i)));
-    };
-    const inSomeFrame = new Set(frames.flatMap((f) => membersOf(f).map((m) => m.id)));
-    if (opts.ids?.length) targets = opts.ids.map((id) => this.get(this.resolveId(String(id), board))).filter((i) => i.board === board);
-    else if (frame) targets = membersOf(frame);
-    else targets = all.filter((i) => i.type === 'frame' || (!inSomeFrame.has(i.id) && !(i.group && this.groupFrame(board, i.group))));
-    if (!opts.ids?.length) targets.sort((a, b) => a.y - b.y || a.x - b.x);
-    const x0 = frame ? frame.x + GRID : Math.min(0, ...targets.map((t) => t.x));
-    const y0 = frame ? frame.y + GRID * 2 : Math.min(0, ...targets.map((t) => t.y));
-    const maxW = opts.width == null ? (frame ? frame.w - GRID * 2 : 1600) : clamp(num('width', opts.width), GRID * 4, MAX_COORD);
-    let x = x0, y = y0, rowH = 0;
-    const moved: Item[] = [];
-    for (const it of targets) {
-      if (x > x0 && x + it.w > x0 + maxW) {
-        x = x0;
-        y += rowH + gap;
-        rowH = 0;
-      }
-      const dx = x - it.x, dy = y - it.y;
-      if (it.type === 'frame' && (dx || dy)) {
-        for (const c of membersOf(it)) {
-          c.x += dx;
-          c.y += dy;
-          moved.push(c);
-        }
-      }
-      it.x = x;
-      it.y = y;
-      moved.push(it);
-      x += it.w + gap;
-      rowH = Math.max(rowH, it.h);
+    const board = this.requireBoard(frame?.board ?? opts.board).id;
+    for (const id of opts.ids ?? []) {
+      if (this.get(this.resolveId(String(id), board)).board !== board) throw new HudError(400, 'items must be on the same board');
     }
-    if (frame) {
-      frame.w = Math.max(frame.w, snap(Math.max(...targets.map((t) => t.x + t.w), 0) - frame.x + GRID));
-      frame.h = Math.max(snap(y + rowH + GRID - frame.y), GRID * 6);
-      moved.push(frame);
-    }
-    const t = now();
-    for (const it of new Set(moved)) {
-      it.updatedAt = t;
-      it.updatedBy = actor;
-      this.emitEvent({ kind: 'item', item: it, actor });
-    }
-    this.log(actor, 'arranged', `arranged ${targets.length} items${frame ? ` in ${frame.id}` : ''}`, frame);
-    this.save();
-    return [...new Set(moved)];
+    this.organize(board, actor);
+    return Object.values(this.state.items).filter(i => i.board === board);
   }
 
   // ---------- groups & organize ----------
+  readout(board?: string, at = now()) {
+    if (board) this.requireBoard(board);
+    return readout(this.state, board, at);
+  }
+
+  lint(board: string) { return lintBoard(this.state, this.requireBoard(board)); }
+
+  private atomic<T>(fn: () => T, dryRun = false): T {
+    if (this.transactionEvents) throw new HudError(409, 'a transaction is already active');
+    const original = this.state;
+    const staged = structuredClone(original);
+    staged.items = Object.assign(dict(), staged.items);
+    staged.attention = Object.assign(dict(), staged.attention);
+    staged.seq = Object.assign(dict(), staged.seq);
+    this.state = staged;
+    this.idx = null;
+    this.transactionEvents = [];
+    try {
+      const result = fn();
+      const events = this.transactionEvents;
+      this.transactionEvents = null;
+      if (dryRun) this.state = original;
+      else { for (const event of events) this.emitEvent(event); this.save(); }
+      this.idx = null;
+      return result;
+    } catch (e) {
+      this.state = original;
+      this.transactionEvents = null;
+      this.idx = null;
+      throw e;
+    }
+  }
+
+  applyDashboard(boardId: string, spec: DashboardSpec, actor: string, options: { dryRun?: boolean; expectedRevision?: string } = {}) {
+    const board = this.requireBoard(boardId);
+    if (options.expectedRevision !== undefined && options.expectedRevision !== board.dashboard?.revision) throw new HudError(409, 'dashboard revision changed; read the dashboard again');
+    if (!isObj(spec) || !Array.isArray(spec.rows) || spec.rows.length > 20 || !spec.rows.length) throw new HudError(400, 'dashboard requires 1–20 rows');
+    json('dashboard', spec);
+    const keys = new Set<string>(), rowKeys = new Set<string>();
+    for (const row of spec.rows) {
+      if (!isObj(row) || typeof row.key !== 'string' || !row.key || rowKeys.has(row.key) || !Array.isArray(row.cards) || !row.cards.length || row.cards.length > 12) throw new HudError(400, 'rows require unique keys and 1–12 cards');
+      rowKeys.add(row.key);
+      if (row.height !== undefined && (!Number.isFinite(row.height) || row.height <= 0)) throw new HudError(400, 'row height must be a positive proportion');
+      let spans = 0;
+      for (const card of row.cards) {
+        if (!isObj(card) || typeof card.key !== 'string' || !/^[\w.-]{1,64}$/.test(card.key) || keys.has(card.key) || !isObj(card.item) || !TYPES.includes(card.item.type) || ['frame', 'ticket', 'project'].includes(card.item.type)) throw new HudError(400, 'cards require unique safe keys and visual monitor/note/util items');
+        keys.add(card.key);
+        const span = card.span ?? 12 / row.cards.length;
+        if (!Number.isFinite(span) || span <= 0 || span > 12) throw new HudError(400, 'card span must be within 0..12');
+        spans += span;
+        this.clean(card.item.type, card.item, false);
+      }
+      if (spans > 12.00001) throw new HudError(400, 'row spans exceed twelve columns');
+    }
+    return this.atomic(() => {
+      const b = this.requireBoard(boardId);
+      const previous = b.dashboard;
+      const mapping: Record<string, string> = Object.create(null);
+      for (const row of spec.rows) for (const card of row.cards) mapping[card.key] = previous?.keys[card.key] ?? card.id ?? randomUUID();
+      b.autoOrganize = false;
+      const totalHeight = spec.rows.reduce((sum, row) => sum + (row.height ?? 1), 0);
+      let y = 20;
+      const created: string[] = [], updated: string[] = [], removed: string[] = [];
+      for (const row of spec.rows) {
+        const h = (860 - (spec.rows.length - 1) * 16) * (row.height ?? 1) / totalHeight;
+        let x = 20;
+        const available = 1560 - (row.cards.length - 1) * 16;
+        for (const card of row.cards) {
+          const id = mapping[card.key]!;
+          const w = available * (card.span ?? 12 / row.cards.length) / 12;
+          if (w < 80 || h < 80) throw new HudError(400, 'dashboard cards must be at least 80×80 inside the fixed board');
+          const fields: Record<string, any> = { ...structuredClone(card.item), board: boardId, x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), group: '' };
+          if (fields.pipeline) fields.pipeline = { stages: fields.pipeline.stages.map((stage: Record<string, string>) => Object.fromEntries(Object.entries(stage).map(([k, v]) => [k, ['key', 'label'].includes(k) ? v : mapping[v] ?? v]))) };
+          if (fields.plot?.metrics) fields.plot.metrics = fields.plot.metrics.map((ref: string) => mapping[ref] ?? ref);
+          if (id && Object.hasOwn(this.state.items, id)) {
+            const existing = this.get(id);
+            if (existing.board !== boardId || existing.type !== card.item.type) throw new HudError(400, 'dashboard binding must reference the same board and type');
+            for (const k of [...READING_KEYS, 'observedAt', 'evidence', 'availability', 'coverage', 'label']) delete fields[k];
+            const before = JSON.stringify(existing);
+            this.update(id, fields, actor, { silent: true });
+            mapping[card.key] = id;
+            if (before !== JSON.stringify(this.get(id))) updated.push(id);
+          } else {
+            const item = this.create({ ...fields, id }, actor);
+            mapping[card.key] = item.id;
+            created.push(item.id);
+          }
+          x += w + 16;
+        }
+        y += h + 16;
+      }
+      for (const [key, id] of Object.entries(previous?.keys ?? {})) if (!keys.has(key) && Object.hasOwn(this.state.items, id)) { this.remove(id, actor); removed.push(id); }
+      const changed = !previous || JSON.stringify(previous.spec) !== JSON.stringify(spec) || created.length || updated.length || removed.length;
+      b.dashboard = { revision: changed ? randomUUID() : previous!.revision, spec: structuredClone(spec), keys: mapping };
+      for (const row of spec.rows) for (const card of row.cards) {
+        const item = this.get(mapping[card.key]!);
+        if (item.pipeline) {
+          item.pipeline = { stages: item.pipeline.stages.map(stage => Object.fromEntries(Object.entries(stage).map(([k, v]) => [k, ['key', 'label'].includes(k) ? v : mapping[v] ?? v])) as PipelineSpec['stages'][number]) };
+        }
+        if (item.plot?.metrics) item.plot.metrics = item.plot.metrics.map(id => mapping[id] ?? id);
+      }
+      if (spec.comparisons && JSON.stringify(previous?.spec.comparisons) !== JSON.stringify(spec.comparisons)) {
+        for (const rule of b.comparisons ?? []) rule.deletedAt = now();
+        for (const r of spec.comparisons) this.compare(boardId, { ...r, left: mapping[r.left] ?? r.left, right: mapping[r.right] ?? r.right }, actor);
+      }
+      if (spec.annotations) for (const a of spec.annotations)
+        if (!(b.annotations ?? []).some(old => !old.deletedAt && old.time === a.time && old.text === a.text)) this.annotate(boardId, a, actor);
+      const invalid = this.lint(boardId).findings.filter(f => f.code === 'missing-binding' && Object.values(mapping).includes(f.id));
+      if (invalid.length) throw new HudError(400, invalid.map(f => f.message).join('; '));
+      this.emitEvent({ kind: 'board', board: b });
+      return { board: boardId, revision: b.dashboard.revision, url: `/?board=${encodeURIComponent(boardId)}`, created, updated, removed, dryRun: !!options.dryRun, lint: this.lint(boardId) };
+    }, !!options.dryRun);
+  }
+
+  annotate(boardId: string, input: { time: number; text: string }, actor: string) {
+    const board = this.requireBoard(boardId);
+    if (typeof input.time !== 'number' || !Number.isFinite(input.time) || input.time < 0) throw new HudError(400, 'annotation time must be Unix milliseconds');
+    const message = text('annotation', input.text, 1000).trim();
+    if (!message) throw new HudError(400, 'annotation text is required');
+    const annotations = board.annotations ??= [];
+    if (annotations.length >= 1000) throw new HudError(400, 'board has 1000 annotations; export or reuse another board');
+    const annotation = { id: randomUUID(), time: input.time, text: message, actor };
+    annotations.push(annotation);
+    this.log(actor, 'annotated', `${board.id}: ${message}`);
+    this.emitEvent({ kind: 'board', board });
+    this.save();
+    return annotation;
+  }
+
+  compare(boardId: string, input: Omit<ComparisonRule, 'id'> & { id?: string }, actor: string) {
+    const board = this.requireBoard(boardId);
+    const left = this.get(input.left), right = this.get(input.right);
+    if (left.type !== 'monitor' || right.type !== 'monitor' || left.board !== boardId || right.board !== boardId) throw new HudError(400, 'comparison inputs must be monitors on this board');
+    if (!['equal', 'lte', 'gte'].includes(input.relation)) throw new HudError(400, 'comparison relation must be equal|lte|gte');
+    for (const k of ['tolerance', 'holdFor', 'maxSkew'] as const) if (input[k] !== undefined && (typeof input[k] !== 'number' || !Number.isFinite(input[k]) || input[k]! < 0)) throw new HudError(400, `${k} must be nonnegative`);
+    const rule: ComparisonRule = { id: input.id ?? randomUUID(), left: left.id, right: right.id, relation: input.relation, tolerance: input.tolerance ?? 0, holdFor: input.holdFor ?? 60, maxSkew: input.maxSkew ?? 60 };
+    const rules = board.comparisons ??= [];
+    const index = rules.findIndex(r => r.id === rule.id);
+    if (index < 0 && rules.length >= 100) throw new HudError(400, 'board has 100 comparison rules');
+    if (index < 0) rules.push(rule); else rules[index] = rule;
+    this.refreshComparisons(board);
+    this.emitEvent({ kind: 'board', board });
+    this.log(actor, 'comparison', `set comparison ${rule.id}`);
+    this.save();
+    return rule;
+  }
+
+  private refreshComparisons(board: Board) {
+    const results = comparisonResults(board, this.state.items);
+    let changed = false;
+    for (const result of results) {
+      const rule = board.comparisons!.find(r => r.id === result.id)!;
+      const previous = rule.since;
+      if ('mismatch' in result && result.mismatch) rule.since ??= now();
+      else delete rule.since;
+      if (rule.since !== previous) changed = true;
+    }
+    if (changed) { this.emitEvent({ kind: 'board', board }); this.save(); }
+  }
+
+  deleteBoardRecord(boardId: string, kind: 'annotations' | 'comparisons', id: string, actor: string) {
+    const board = this.requireBoard(boardId);
+    const entry = board[kind]?.find(e => e.id === id);
+    if (!entry) throw new HudError(404, 'record not found');
+    entry.deletedAt = now();
+    this.log(actor, 'deleted', `removed ${kind} ${id}`);
+    this.emitEvent({ kind: 'board', board });
+    this.save();
+    return { id, deleted: true };
+  }
+
+  setProgram(scope: 'board' | 'item', id: string, spec: ProgramSpec | null, actor: string, expectedRevision?: string) {
+    const target = scope === 'board' ? this.requireBoard(id) : this.get(id);
+    if (scope === 'item' && (target as Item).type !== 'monitor') throw new HudError(400, 'custom cards must be monitors');
+    if (expectedRevision !== undefined && expectedRevision !== target.program?.revision) throw new HudError(409, 'program revision changed');
+    if (spec) { target.program = { ...structuredClone(spec), revision: randomUUID(), actor, validatedAt: now(), previous: target.program ? { ...target.program, previous: undefined } : undefined }; delete target.programDraft; }
+    else if (target.program) target.program = { ...target.program, disabled: true, revision: randomUUID() };
+    if (scope === 'item') {
+      const item = target as Item;
+      item.display = spec ? 'custom' : 'auto';
+      item.updatedAt = now(); item.updatedBy = actor;
+      this.emitEvent({ kind: 'item', item, actor });
+    } else this.emitEvent({ kind: 'board', board: target as Board });
+    this.log(actor, 'program', `${spec ? 'published' : 'disabled'} ${scope} program ${id}`);
+    this.save();
+    return { board: scope === 'board' ? id : (target as Item).board, id, revision: target.program?.revision, program: target.program ? Store.programSummary(target.program) : null };
+  }
+
+  saveProgramDraft(scope: 'board' | 'item', id: string, spec: ProgramSpec, errors: string[], actor: string) {
+    const target = scope === 'board' ? this.requireBoard(id) : this.get(id);
+    target.programDraft = { program: structuredClone(spec), actor, createdAt: now(), errors: errors.slice(0, 20).map(s => String(s).slice(0, 2000)) };
+    this.log(actor, 'program.draft', `saved unpublished ${scope} program draft ${id}`);
+    this.save();
+  }
+
   groupFrame(board: string, name: string): Item | undefined {
     const n = name.trim().toLowerCase();
     return Object.values(this.state.items).find((i) => i.board === board && i.type === 'frame' && i.title.trim().toLowerCase() === n);
@@ -2226,6 +2720,7 @@ export class Store extends EventEmitter {
 
   private organizeTimers = new Map<string, NodeJS.Timeout>();
   private autoOrganize(board: string) {
+    if (this.transactionEvents) return;
     if (!this.state.boards.find((b) => b.id === board)?.autoOrganize) return;
     clearTimeout(this.organizeTimers.get(board));
     this.organizeTimers.set(
@@ -2237,122 +2732,31 @@ export class Store extends EventEmitter {
     );
   }
 
-  /**
-   * Tidy a whole board: every group gets a frame, members are sorted and packed inside it,
-   * then frames and ungrouped items are packed into rows. Ungrouped items already sitting
-   * inside a frame join that frame's group.
-   */
+  /** Stable positions across readings; only structural changes trigger a new dashboard layout. */
   organize(boardRef: string | undefined, actor: string, quiet = false) {
     const board = this.requireBoard(boardRef).id;
-    const gap = GRID;
-    const all = () => Object.values(this.state.items).filter((i) => i.board === board);
-    const touched = new Set<Item>();
-    const set = (it: Item, p: Partial<Item>) => {
-      for (const [k, v] of Object.entries(p)) {
-        if ((it as any)[k] !== v) {
-          (it as any)[k] = v;
-          touched.add(it);
-        }
-      }
-    };
-
-    // adopt ungrouped items that sit inside a titled frame
+    const all = () => Object.values(this.state.items).filter(i => i.board === board);
     for (const it of all()) {
-      if (it.type === 'frame' || it.group) continue;
-      const f = this.frameAt(it);
-      if (f?.title.trim()) set(it, { group: f.title.trim() });
+      if (it.type !== 'frame' && it.group && !this.groupFrame(board, it.group))
+        this.create({ type: 'frame', board, title: it.group }, actor);
     }
-    // make sure every group has a frame
-    const groups = new Map<string, Item>();
-    for (const it of all().sort((a, b) => a.createdAt - b.createdAt)) {
-      if (it.type === 'frame' || !it.group) continue;
-      const key = it.group.toLowerCase();
-      if (groups.has(key)) continue;
-      const f = this.groupFrame(board, it.group) ?? this.create({ type: 'frame', board, title: it.group, x: -100000, y: -100000 }, actor);
-      groups.set(key, f);
-    }
-
-    // pack members inside each frame
-    const TYPE_ORDER: Record<string, number> = { monitor: 0, ticket: 1, util: 2, note: 3 };
-    const STATUS_ORDER: Record<string, number> = { blocked: 0, doing: 1, review: 2, todo: 3, backlog: 4, done: 5, canceled: 6 };
-    const PRIO_ORDER: Record<string, number> = { urgent: 0, high: 1, med: 2, low: 3 };
-    const sortMembers = (a: Item, b: Item) =>
-      (TYPE_ORDER[a.type] ?? 9) - (TYPE_ORDER[b.type] ?? 9) ||
-      (a.type === 'ticket'
-        ? (STATUS_ORDER[a.status!] ?? 3.5) - (STATUS_ORDER[b.status!] ?? 3.5) || (PRIO_ORDER[a.priority!] ?? 4) - (PRIO_ORDER[b.priority!] ?? 4) || (a.num ?? 0) - (b.num ?? 0)
-        : a.type === 'monitor'
-          ? (a.title || a.id).localeCompare(b.title || b.id)
-          : a.createdAt - b.createdAt);
-    const frames = all().filter((i) => i.type === 'frame');
-    for (const f of frames) {
-      const key = f.title.trim().toLowerCase();
-      const members = key ? all().filter((i) => i.type !== 'frame' && i.group?.toLowerCase() === key).sort(sortMembers) : [];
-      if (!members.length) continue;
-      const cellW = Math.max(...members.map((m) => m.w));
-      const cols = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(members.length * 0.9))));
-      const innerW = Math.max(cols * cellW + (cols - 1) * gap, ...members.map((m) => m.w));
-      const x0 = f.x + GRID, y0 = f.y + GRID * 2;
-      let x = x0, y = y0, rowH = 0, prevType = '';
-      let right = x0;
-      for (const m of members) {
-        const newSection = prevType && m.type !== prevType && x > x0;
-        if (newSection || (x > x0 && x + m.w > x0 + innerW)) {
-          x = x0;
-          y += rowH + gap;
-          rowH = 0;
-        }
-        set(m, { x, y });
-        x += m.w + gap;
-        right = Math.max(right, x - gap);
-        rowH = Math.max(rowH, m.h);
-        prevType = m.type;
-      }
-      set(f, { w: snap(Math.max(right - f.x + GRID, GRID * 8)), h: snap(y + rowH + GRID - f.y) });
-    }
-
-    // pack frames (carrying their members) and loose items into rows
-    const loose = all()
-      .filter((i) => i.type !== 'frame' && !i.group && !this.frameAt(i))
-      .sort(sortMembers);
-    const placed = frames.filter((f) => f.x > -50000).sort((a, b) => a.y - b.y || a.x - b.x);
-    const fresh = frames.filter((f) => f.x <= -50000);
-    const blocks: Item[] = [...placed, ...fresh, ...loose];
-    // what each frame drags along: its group, or (untitled frames) whatever sits inside it
-    const carry = new Map<string, Item[]>();
-    for (const f of frames) {
-      const key = f.title.trim().toLowerCase();
-      carry.set(f.id, all().filter((m) => m.type !== 'frame' && (key ? m.group?.toLowerCase() === key : contains(f, m))));
-    }
-    if (blocks.length) {
-      const area = blocks.reduce((s, b) => s + (b.w + gap * 3) * (b.h + gap * 3), 0);
-      const maxW = Math.max(...blocks.map((b) => b.w), snap(Math.sqrt(area * 1.8)));
-      const frameGap = GRID * 3;
-      let x = 0, y = GRID * 2, rowH = 0, inLoose = false;
-      for (const b of blocks) {
-        const isLoose = b.type !== 'frame';
-        const g = isLoose && inLoose ? gap : frameGap;
-        if ((isLoose && !inLoose && x > 0) || (x > 0 && x + b.w > maxW)) {
-          x = 0;
-          y += rowH + frameGap;
-          rowH = 0;
-        }
-        inLoose = isLoose;
-        const dx = x - b.x, dy = y - b.y;
-        if (b.type === 'frame' && (dx || dy)) for (const m of carry.get(b.id) ?? []) set(m, { x: m.x + dx, y: m.y + dy });
-        set(b, { x, y });
-        x += b.w + g;
-        rowH = Math.max(rowH, b.h);
-      }
-    }
-
-    const t = now();
-    for (const it of touched) {
-      it.updatedAt = t;
+    clearTimeout(this.organizeTimers.get(board));
+    this.organizeTimers.delete(board);
+    const items = all();
+    let moved = 0;
+    for (const [id, rect] of layout(items)) {
+      const it = this.state.items[id]!;
+      if (it.x === rect.x && it.y === rect.y && it.w === rect.w && it.h === rect.h) continue;
+      Object.assign(it, rect);
+      it.updatedAt = now();
+      it.updatedBy = actor;
       this.emitEvent({ kind: 'item', item: it, actor });
+      moved++;
     }
-    if (!quiet || touched.size) this.log(actor, 'organized', `organized board ${board} (${groups.size || frames.length} groups, ${touched.size} moved)`);
+    if (!quiet || moved) this.log(actor, 'organized', `organized board ${board} (${moved} moved)`);
     this.save();
-    return { groups: [...groups.values()].map((f) => f.title), moved: touched.size };
+    const visual = canvasItems(items);
+    return { groups: visual.filter(i => i.type === 'frame').map(i => i.title), moved, canvas: { width: BOARD_WIDTH, height: BOARD_HEIGHT }, items: visual.filter(i => i.type !== 'frame').length, tickets: items.filter(i => i.type === 'ticket').length };
   }
 
   // ---------- trash ----------
@@ -2375,14 +2779,17 @@ export class Store extends EventEmitter {
 
   /** Put a trashed item back (newest entry with that id). A deleted board comes back with the items it took with it. */
   restore(id: string, actor: string): Item {
-    const k = String(id);
-    const e = [...this.state.trash].reverse().find((x) => x.item.id === k);
+    const ref = String(id);
+    const e = [...this.state.trash].reverse().find((x) => x.item.id === ref || x.item.uuid?.toLowerCase() === ref.toLowerCase());
+    const k = e?.item.id ?? ref;
     if (!e) throw new HudError(404, `nothing in the trash with id "${k.slice(0, 80)}"`);
     if (Object.hasOwn(this.state.items, k)) throw new HudError(409, `item "${k}" already exists; remove or rename it first`);
     const bid = e.board?.id ?? e.item.board;
     const batch: TrashEntry[] = [e];
     if (!this.state.boards.some((b) => b.id === bid)) {
-      const b: Board = e.board ? JSON.parse(JSON.stringify(e.board)) : { id: bid, name: bid, createdAt: now() };
+      const b: Board = e.board ? JSON.parse(JSON.stringify(e.board)) : { id: bid, name: bid, createdAt: now(), width: BOARD_WIDTH, height: BOARD_HEIGHT, autoOrganize: true };
+      b.width = BOARD_WIDTH; b.height = BOARD_HEIGHT;
+      b.autoOrganize ??= true;
       this.state.boards.push(b);
       this.emitEvent({ kind: 'board', board: b });
       this.log(actor, 'board.restored', `restored board "${b.name}"`);
@@ -2408,7 +2815,7 @@ export class Store extends EventEmitter {
   purge(id: string | 'all', actor: string): number {
     const tr = this.state.trash;
     const before = tr.length;
-    this.state.trash = id === 'all' ? [] : tr.filter((x) => x.item.id !== String(id));
+    this.state.trash = id === 'all' ? [] : tr.filter((x) => x.item.id !== String(id) && x.item.uuid?.toLowerCase() !== String(id).toLowerCase());
     const n = before - this.state.trash.length;
     if (!n && id !== 'all') throw new HudError(404, `nothing in the trash with id "${String(id).slice(0, 80)}"`);
     if (n) {
@@ -2429,12 +2836,12 @@ export class Store extends EventEmitter {
     const live = this.state;
     const liveIdx = this.idx;
     try {
-      this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [] };
+      this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [], attention: dict() };
       this.idx = null;
       const v = typeof raw.version === 'number' && Number.isFinite(raw.version) ? Math.floor(raw.version) : 1;
       this.adopt(raw);
       this.state.version = v;
-      if (!this.state.boards.some((b) => b.id === 'main')) this.state.boards.unshift({ id: 'main', name: 'main', createdAt: now() });
+      if (!this.state.boards.some((b) => b.id === 'main')) this.state.boards.unshift({ id: 'main', name: 'main', createdAt: now(), width: BOARD_WIDTH, height: BOARD_HEIGHT, autoOrganize: true });
       this.migrate();
       this.repair();
       for (const id of Object.keys(this.state.items)) if (RESERVED_IDS.has(id)) delete this.state.items[id];

@@ -9,6 +9,7 @@ import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
 import { asset, assetKeys, isPackaged } from './assets.ts';
 import { ROOT, config } from './config.ts';
+import { publicState, registerMonitoring } from './monitoring-server.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
 const WEB = join(ROOT, 'web');
@@ -101,7 +102,7 @@ function broadcast(msg: string) {
 }
 store.on('event', (e: HudEvent) => {
   try {
-    const out = e.kind === 'item' ? { ...e, item: Store.lite(e.item) } : e;
+    const out = e.kind === 'item' ? { ...e, item: Store.lite(e.item) } : e.kind === 'board' ? { ...e, board: Store.boardLite(e.board) } : e;
     broadcast(`data: ${JSON.stringify(out)}\n\n`);
     if (e.kind === 'alert') runAlertHook(e.alert);
   } catch (err) {
@@ -115,7 +116,7 @@ setInterval(() => {
     console.error('[hud] stale check:', e);
   }
 }, 5000).unref();
-setInterval(() => broadcast(': ping\n\n'), 20000).unref();
+setInterval(() => broadcast(`data: ${JSON.stringify({ kind: 'heartbeat', now: Date.now() })}\n\n`), 20000).unref();
 
 /** HUD_ALERT_CMD: shell command run for every alert, alert JSON on stdin and HUD_ALERT_* env vars */
 let hooksRunning = 0;
@@ -168,7 +169,7 @@ const MIME: Record<string, string> = {
   '.json': 'application/json',
 };
 const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'";
 
 const ALLOWED_HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`, `[::1]:${PORT}`]);
 
@@ -211,6 +212,11 @@ function strList(v: unknown, what: string): string[] {
   if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' && typeof x !== 'number')) throw new HudError(400, `${what} must be an array of strings`);
   return v.map(String);
 }
+function textFormat(v: unknown, what: string): 'plain' | 'markdown' | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  if (v !== 'plain' && v !== 'markdown') throw new HudError(400, `${what} must be plain or markdown`);
+  return v;
+}
 function numParam(q: URLSearchParams, name: string): number | undefined {
   const raw = q.get(name);
   if (raw === null || raw === '') return undefined;
@@ -229,7 +235,7 @@ function actorOf(req: IncomingMessage, body?: any, q?: URLSearchParams) {
 }
 
 function guide() {
-  return (asset('GUIDE.md', 'utf8') ?? '').replaceAll('{{PORT}}', String(PORT));
+  return `${asset('GUIDE.md', 'utf8') ?? ''}\n\n${asset('STYLE.md', 'utf8') ?? ''}`.replaceAll('{{PORT}}', String(PORT));
 }
 
 /** the filters shared by GET /api/items and GET /api/tickets */
@@ -321,6 +327,8 @@ const route = (method: string, path: string, h: Handler) =>
 /** resolve an id-or-ident from the URL (idents like KEY-3 are accepted everywhere) */
 const rid = (id: string, q?: URLSearchParams) => store.resolveId(dec(id), q?.get('board') || undefined);
 
+registerMonitoring({ route, store, engine, port: PORT, readObj, actorOf, send, shutdown });
+
 route('GET', '/api/health', () => ({
   ...store.health(),
   ok: true,
@@ -343,7 +351,7 @@ route('GET', '/api/guide', (_q, res) => send(res, 200, guide(), 'text/markdown; 
 route('GET', '/api/views', () => ({ dir: viewsDir, views: listViews() }));
 route('GET', '/api/state', (_r, _s, _m, q) => {
   const board = q.get('board') ? store.requireBoard(q.get('board')!).id : undefined;
-  return { boards: store.boards(), items: store.items({ board }).map(Store.lite), activity: store.activity(150, board), alerts: store.alerts().slice(-50) };
+  return publicState(store, board);
 });
 route('GET', '/api/summary', (_r, res, _m, q) => {
   const board = q.get('board');
@@ -374,7 +382,7 @@ route('GET', '/api/tickets', (_r, res, _m, q) => {
 });
 route('GET', '/api/activity', (_r, _s, _m, q) => store.activity(Math.floor(numParam(q, 'limit') || 50), q.get('board') ? store.requireBoard(q.get('board')!).id : undefined));
 
-route('GET', '/api/boards', () => store.boards());
+route('GET', '/api/boards', () => store.boards().map(Store.boardLite));
 route('POST', '/api/boards', async (req) => {
   const b = await readObj(req);
   return store.createBoard(b.name, actorOf(req, b), b.id);
@@ -386,6 +394,10 @@ route('PATCH', '/api/boards/:id', async (req, _s, [id]) => {
 route('DELETE', '/api/boards/:id', (req, _s, [id], q) => {
   store.deleteBoard(dec(id), actorOf(req, undefined, q));
   return { ok: true };
+});
+route('POST', '/api/boards/:id/clear', async (req, _res, [id]) => {
+  const body = await readObj(req);
+  return store.clearBoard(dec(id), actorOf(req, body));
 });
 
 route('GET', '/api/items', (_r, _s, _m, q) => store.items(queryOf(q)).map(Store.lite));
@@ -426,12 +438,12 @@ route('DELETE', '/api/items/:id', (req, _s, [id], q) => Store.lite(store.remove(
 route('POST', '/api/items/:id/comments', async (req, _s, [id], q) => {
   const b = await readObj(req);
   if (typeof b.text !== 'string') throw new HudError(400, 'text must be a string');
-  return store.comment(rid(id, q), b.text, actorOf(req, b));
+  return store.comment(rid(id, q), b.text, actorOf(req, b), textFormat(b.format, 'format'));
 });
 route('PATCH', '/api/items/:id/comments/:cid', async (req, _s, [id, cid], q) => {
   const b = await readObj(req);
   if (typeof b.text !== 'string') throw new HudError(400, 'text must be a string');
-  return store.editComment(rid(id, q), dec(cid), b.text, actorOf(req, b));
+  return store.editComment(rid(id, q), dec(cid), b.text, actorOf(req, b), textFormat(b.format, 'format'));
 });
 route('DELETE', '/api/items/:id/comments/:cid', (req, _s, [id, cid], q) => {
   store.deleteComment(rid(id, q), dec(cid), actorOf(req, undefined, q));
@@ -440,14 +452,15 @@ route('DELETE', '/api/items/:id/comments/:cid', (req, _s, [id, cid], q) => {
 /** an agent asks for a decision: propose options on a ticket and block it until one is picked */
 route('POST', '/api/items/:id/ask', async (req, _s, [id], q) => {
   const b = await readObj(req);
-  if (typeof b.question !== 'string' || !Array.isArray(b.options)) throw new HudError(400, 'question (string) and options (array) required');
-  return withGraph(store.ask(rid(id, q), { question: b.question, options: b.options }, actorOf(req, b)));
+  if ((b.question !== undefined && typeof b.question !== 'string') || !Array.isArray(b.options)) throw new HudError(400, 'question (string, optional) and options (array) required');
+  return withGraph(store.ask(rid(id, q), { question: b.question, options: b.options, questionFormat: textFormat(b.questionFormat, 'questionFormat') }, actorOf(req, b)));
 });
 /** pick one of a ticket's proposed options */
 route('POST', '/api/items/:id/decide', async (req, _s, [id], q) => {
   const b = await readObj(req);
   if (!b.optionId) throw new HudError(400, 'optionId required');
-  return withGraph(store.decide(rid(id, q), String(b.optionId), actorOf(req, b), b.note));
+  if (b.decisionVersion !== undefined && typeof b.decisionVersion !== 'string') throw new HudError(400, 'decisionVersion must be a string');
+  return withGraph(store.decide(rid(id, q), String(b.optionId), actorOf(req, b), b.note, b.decisionVersion));
 });
 /** an agent signals it is finished: complete its items and tidy the board */
 route('POST', '/api/finish', async (req) => {
@@ -470,6 +483,18 @@ route('POST', '/api/monitors/:id/run', async (_r, _s, [id], q) => {
 route('GET', '/api/alerts', (_r, _s, _m, q) =>
   store.alerts({ all: q.get('all') === '1', since: numParam(q, 'since'), notify: q.get('notify') || undefined }),
 );
+/** human attention is separate from the agent alert acknowledgement queue */
+route('GET', '/api/attention', () => store.attention());
+route('POST', '/api/attention/:id', async (req, _s, [id], q) => {
+  const b = await readObj(req);
+  if (b.action !== 'review' && b.action !== 'unreview' && b.action !== 'snooze') throw new HudError(400, 'action must be review, unreview or snooze');
+  if (typeof b.revision !== 'string' || !b.revision) throw new HudError(400, 'revision must be a string');
+  if (b.until !== undefined && (typeof b.until !== 'number' || !Number.isFinite(b.until) || b.until < 0)) throw new HudError(400, 'until must be a non-negative number');
+  if (b.action === 'snooze' && b.until === undefined) throw new HudError(400, 'until is required for snooze');
+  return store.reviewAttention(rid(id, q), { action: b.action, revision: b.revision, ...(b.until === undefined ? {} : { until: b.until }) }, actorOf(req, b));
+});
+route('GET', '/api/runs', () => store.runs());
+route('GET', '/api/changes', (_r, _s, _m, q) => store.changesSince(numParam(q, 'since') ?? 0));
 route('POST', '/api/alerts/ack', async (req) => {
   const b = await readObj(req);
   if (b.ids !== undefined && b.ids !== 'all' && !Array.isArray(b.ids)) throw new HudError(400, "ids must be an array or 'all'");
@@ -604,6 +629,8 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     }
     const method = req.method ?? 'GET';
     const lookup = method === 'HEAD' ? 'GET' : method;
+    if (['iframe', 'frame', 'object', 'embed'].includes(String(req.headers['sec-fetch-dest'] ?? '')) && !/^\/api\/program-frame\/[\w-]+$/.test(url.pathname)) return send(res, 403, { error: 'embedded navigation is restricted to program frames' });
+    if (url.pathname.startsWith('/api/program-preview/')) res.setHeader('content-security-policy', CSP);
     if (url.pathname.startsWith('/api/')) {
       for (const [m, re, h] of routes) {
         const match = m === lookup && url.pathname.match(re);
@@ -613,7 +640,7 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
           return res.end();
         }
         const out = await h(req, res, match.slice(1), url.searchParams);
-        if (!res.headersSent) send(res, 200, out ?? { ok: true });
+        if (!res.headersSent) send(res, 200, out === undefined ? { ok: true } : out);
         return;
       }
       return send(res, 404, { error: `no route ${method} ${url.pathname}. See GET /api/guide` });

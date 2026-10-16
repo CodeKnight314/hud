@@ -1,6 +1,7 @@
 import { contains } from './store.ts';
 import type { Store } from './store.ts';
 import type { Board, Item, SearchQuery } from './types.ts';
+import { staleAt, metricReading } from './monitoring.ts';
 
 const STATE_GLYPH: Record<string, string> = { ok: '●', warn: '▲', error: '✕', unknown: '○', running: '◐', done: '✓' };
 const STATUS_GLYPH: Record<string, string> = { backlog: '[ ]', todo: '[ ]', doing: '[~]', review: '[?]', blocked: '[!]', done: '[x]', canceled: '[-]' };
@@ -17,12 +18,44 @@ export function ago(t?: number) {
 }
 
 export function isStale(it: Item) {
-  const since = it.lastUpdate ?? it.createdAt;
-  return !!(it.staleAfter && since && Date.now() - since > it.staleAfter * 1000);
+  return staleAt(it);
 }
 
 /** control characters (newlines, escapes, NUL) in user text would corrupt a terminal listing */
 const clean = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ');
+
+/** Compact a report for a terminal line; plain messages keep their literal text, while Markdown loses decoration. */
+export function plainTextExcerpt(value: unknown, format: 'plain' | 'markdown' = 'plain'): string {
+  const raw = String(value ?? '');
+  if (format !== 'markdown') return clean(raw.replace(/\s*\r?\n\s*/g, ' ⏎ '));
+  const source = raw.replace(/\r\n?/g, '\n');
+  const lines = source.split('\n');
+  const out: string[] = [];
+  let fence = false;
+  for (const sourceLine of lines) {
+    if (/^\s*(```|~~~)/.test(sourceLine)) {
+      fence = !fence;
+      continue;
+    }
+    if (fence || /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(sourceLine)) continue;
+    out.push(
+      sourceLine
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/^\s{0,3}#{1,6}\s+/, '')
+        .replace(/^\s*>\s?/, '')
+        .replace(/^\s*[-+*]\s+(?:\[[ xX]\]\s*)?/, '')
+        .replace(/^\s*\d+[.)]\s+/, '')
+        .replace(/`+([^`]*?)`+/g, '$1')
+        .replace(/(__|\*\*)([\s\S]*?)\1/g, '$2')
+        .replace(/(^|[^\w])(_|\*)(?=\S)([\s\S]*?\S)\2(?!\w)/g, '$1$3')
+        .replace(/<((?:https?|mailto):[^>\s]+)>/gi, '$1')
+        .replace(/<\/?[A-Za-z][^>]*>/g, '')
+        .replace(/\\([\\`*_\[\]{}()#+.!-])/g, '$1'),
+    );
+  }
+  return clean(out.join(' ⏎ ')).replace(/(?: ⏎ ){2,}/g, ' ⏎ ').trim();
+}
 
 /** `ident` names the item itself; `name` resolves a related ticket's id to its ident */
 export interface NameOpts {
@@ -48,10 +81,11 @@ export function line(it: Item, opts: NameOpts = {}): string {
     case 'monitor': {
       const v = it.label ? ` ${clean(it.label)}` : it.value === undefined || it.value === null ? '' : ` ${clean(it.value)}${clean(it.unit)}`;
       const p = it.progress != null ? ` ${Math.round(it.progress)}%` : '';
-      const m = it.message ? ` — ${clean(it.message.replace(/\s*\r?\n\s*/g, ' ⏎ '))}` : '';
+      const m = it.message ? ` — ${plainTextExcerpt(it.message, it.messageFormat ?? 'plain')}` : '';
       const stale = isStale(it) ? ' STALE' : '';
       const g = it.group ? ` {${clean(it.group)}}` : '';
-      return `${STATE_GLYPH[it.state ?? 'unknown'] ?? '○'} ${it.id} ${clean(it.title)}:${v}${p} [${it.state}${stale}]${m} (${it.source?.kind ?? 'manual'}, ${ago(it.lastUpdate)})${g}`;
+      const r = metricReading(it);
+      return `${STATE_GLYPH[it.state ?? 'unknown'] ?? '○'} ${it.id} ${clean(it.title)}:${v}${p} [${it.state}${stale}]${m} (${r.evidence}, ${clean(r.source)}, ${r.ageSeconds}s ago)${g}${r.definition ? ` — ${clean(r.definition)}` : ''}`;
     }
     case 'note':
       return `≡ ${it.id} ${clean(it.title)}${it.title ? ': ' : ''}${clean(it.text).replace(/\s+/g, ' ').slice(0, 80)}`;

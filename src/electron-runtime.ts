@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
-import { SOURCE_ROOT, isElectron } from './assets.ts';
+import { SOURCE_ROOT, isElectron, isPackaged } from './assets.ts';
 
 export { isElectron };
 
@@ -46,6 +47,23 @@ export function cliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.Pr
     return { cmd: process.execPath, prefix: [bundledCli()], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
   }
   return { cmd: process.execPath, prefix: [join(SOURCE_ROOT, 'src', 'server.ts')], env: process.env };
+}
+
+/** how to start the isolated Electron capture runner, when this checkout has Electron available */
+export function renderInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } | null {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.HUD_ALERT_CMD;
+
+  if (isPackaged()) return { cmd: process.execPath, prefix: ['--hud-render-helper'], env };
+
+  try {
+    const electron = createRequire(import.meta.url)('electron');
+    if (typeof electron !== 'string' || !electron) return null;
+    return { cmd: electron, prefix: [join(SOURCE_ROOT, 'electron', 'render.mjs')], env };
+  } catch {
+    return null;
+  }
 }
 
 /**

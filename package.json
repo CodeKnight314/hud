@@ -15,6 +15,7 @@
     "start": "node src/server.ts",
     "mcp": "node src/mcp.ts",
     "check": "tsc --noEmit",
+    "test": "npm run check && node scripts/check.mjs",
     "icons": "node scripts/icons.mjs",
     "bundle": "node scripts/build.mjs",
     "dev": "npm run bundle && node scripts/dev.mjs",
