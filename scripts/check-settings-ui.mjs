@@ -25,7 +25,6 @@ const consoleFailures = [];
 const loadFailures = [];
 let settingsController;
 let primaryWindow;
-let appReady = false;
 
 function clientExecutable(id) {
   return join(fakeClients, `${id}${process.platform === 'win32' ? '.cmd' : ''}`);
@@ -170,12 +169,10 @@ async function run() {
   process.env.HUD_NO_LOGIN_SHELL = '1';
 
   app.setPath('userData', userData);
-  appReady = true;
   await app.whenReady();
   app.on('web-contents-created', (_event, contents) => {
-    contents.on('console-message', (event, detailsOrLevel, message) => {
-      const level = event.level ?? (typeof detailsOrLevel === 'object' ? detailsOrLevel.level : detailsOrLevel);
-      const text = event.message ?? (typeof detailsOrLevel === 'object' ? detailsOrLevel.message : message);
+    contents.on('console-message', (event) => {
+      const { level, message: text } = event;
       if (level === 'error' || level === 2) consoleFailures.push(String(text));
     });
     contents.on('did-fail-load', (_loadEvent, code, description, url) => loadFailures.push(`${code} ${description} ${url}`));

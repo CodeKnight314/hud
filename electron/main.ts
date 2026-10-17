@@ -57,6 +57,7 @@ app.setPath('userData', join(dataDir, 'electron'));
 let win: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
+let quittingForUpdate = false;
 const stateFile = () => join(app.getPath('userData'), 'window.json');
 
 function readPrefs(): Record<string, any> {
@@ -79,6 +80,7 @@ const settings = desktopSettings({
   },
   quitForUpdate: async () => {
     await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
+    quittingForUpdate = true;
     app.quit();
   },
 });
@@ -354,7 +356,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     savePrefsNow();
-    if (!keepServer) hud.request('POST', '/api/shutdown').catch(() => {});
+    if (!keepServer && !quittingForUpdate) hud.request('POST', '/api/shutdown').catch(() => {});
   });
 
   app.whenReady().then(async () => {

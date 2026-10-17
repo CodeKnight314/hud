@@ -786,7 +786,9 @@ returns machine-readable status. Config backups are retained beside the config f
 Settings → **Updates** shows the installed version and can check GitHub for the latest stable release. It offers the
 matching installer for the app's OS and architecture when that asset exists; **Download update** opens it in the browser,
 and **View release** opens the release page. HUD never installs an update automatically: download the installer, quit
-HUD and replace the app. The optional **Check when HUD opens** preference enables launch-time checks. The 0.1.1 build
+HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board and stops the
+background server even when Keep server running after quit is enabled. Reconnect existing agent clients after installing.
+The optional **Check when HUD opens** preference enables launch-time checks. The 0.1.1 build
 adds this checker; version 0.1.0 has none, so upgrading from it the first time requires downloading the installer
 manually.
 
