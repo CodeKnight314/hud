@@ -772,7 +772,7 @@ async function main() {
       const sub = rest[0];
       if (sub) {
         const { mcpCommand } = await import('./mcpinstall.ts');
-        process.exitCode = mcpCommand(sub, rest.slice(1), flags);
+        process.exitCode = await mcpCommand(sub, rest.slice(1), flags);
         return;
       }
       await import('./mcp.ts');

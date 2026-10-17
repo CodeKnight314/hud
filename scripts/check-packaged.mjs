@@ -379,6 +379,10 @@ async function runSmoke(outputDir, requestedArch) {
   let serverHandle;
 
   try {
+    const assetsRoot = path.dirname(path.dirname(packaged.entry));
+    for (const name of ['web/settings.html', 'web/settings.js', 'web/settings.css', 'electron/settings-preload.cjs']) {
+      assert.ok((await readFile(path.join(assetsRoot, name), 'utf8')).length > 0, `packaged Settings asset missing: ${name}`);
+    }
     const startServer = () => {
       const handle = startChild(packaged.binary, [packaged.entry, 'serve'], { ...env, ELECTRON_RUN_AS_NODE: '1' });
       children.push(handle);

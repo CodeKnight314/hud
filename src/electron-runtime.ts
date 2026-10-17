@@ -30,8 +30,8 @@ function parseEnv(out: Buffer | string): NodeJS.ProcessEnv {
 }
 
 /** Ask the login shell for its env without blocking the event loop; call once at app startup. */
-export function primeLoginEnv(): Promise<void> {
-  if (loginEnvDisabled() || cachedLoginEnv) return Promise.resolve();
+export function primeLoginEnv(refresh = false): Promise<void> {
+  if (loginEnvDisabled() || cachedLoginEnv && !refresh) return Promise.resolve();
   return new Promise((done) => {
     execFile(shellPath(), SHELL_ARGS, { encoding: 'buffer', timeout: 5000 }, (err, out) => {
       cachedLoginEnv = err ? {} : parseEnv(out); // probe failed: fall back to the inherited env

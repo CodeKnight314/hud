@@ -109,8 +109,26 @@ npm run dist:mac     # or dist:win / dist:linux
 
 Each OS builds its own artifact. A packaged app keeps its data under the per-user dir (`~/Library/Application Support/hud`
 on macOS, `%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere), seeds the example probes and views there on first
-run, and closes to the tray with the server still up so agents keep working. `Help → Install "hud" command…` puts
-`hud` on your PATH. There is no auto-updater: install a new build to update.
+run, and closes to the tray with the server still up so agents keep working. Open native Settings with ⌘, on macOS,
+File → Settings (Ctrl+,) on Windows/Linux, or Settings from the tray menu. Connections can register detected Claude Code,
+Codex and OpenCode clients; restart existing client sessions after a change. The status shows saved registration, not
+whether a client session is live. Other clients can use **Copy MCP configuration**. Settings also installs or repairs
+the app-managed `hud` command; this requires the packaged app, and Linux AppImage builds do not support that command
+integration (use the `.deb`). OpenCode JSONC files are left untouched and get copy/manual setup instructions.
+
+Settings → Updates checks GitHub for the latest stable release and opens the matching installer for this OS and
+architecture; download and replace the app manually. There is no automatic install. The 0.1.1 build adds this checker;
+version 0.1.0 has none, so upgrading from it the first time must be manual. The check-on-launch preference controls
+whether later app launches check too.
+Native CI runs on `release/**` branch pushes and manual dispatches; these builds upload seven-day artifacts. Pushing a
+stable `vX.Y.Z` tag also validates the package versions, builds and checks all four native jobs, validates the five
+installers plus `SHA256SUMS`, then creates a GitHub draft release. Publishing that draft is manual, and the update
+checker ignores drafts. Keep the existing v0.1.0 release unchanged; see [GUIDE.md](GUIDE.md) for the next-release steps.
+
+On startup, an updated app backs up the saved board and replaces only its own older packaged server using the same
+per-user data directory. It refuses to replace another/source/newer server or continue if the old server reports a save
+error. The app refreshes its managed command shim on launch so client registrations keep working across normal app
+replacement.
 
 Builds are not Developer ID signed or notarized. macOS Gatekeeper may warn on first launch; right-click → Open, or sign
 the build yourself. Command monitors and the alert hook need a POSIX shell, so those are

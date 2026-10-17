@@ -753,6 +753,62 @@ A packaged app keeps its data in the per-user dir (`~/Library/Application Suppor
 `$XDG_DATA_HOME/hud`) and seeds the example probes and renderers into `<data>/probes` and `<data>/views` on first
 run. The port and data dir are fixed (one board, one server); the `HUD_*` path/port overrides only apply with `HUD_SCRATCH=1`.
 
+Open **Settings** from the app menu with ⌘, on macOS or File → Settings (Ctrl+,) on Windows/Linux; it is also available
+from the tray menu. Connections and update checks are native app features. Saved boards and their backups remain in the
+per-user data directory. On startup, a newer app backs up and replaces only its own older packaged server using that
+same directory. It refuses to replace a source or other installation, a newer server, or a server reporting a save
+error.
+
+### Connections
+
+Settings → **Connections** shows monochrome status glyphs for Claude Code, Codex and OpenCode. **Registered** means
+the `hud` MCP entry is saved; it does not mean a client session is currently connected. Connecting or repairing from
+the packaged app installs or refreshes its managed stable `hud` command shim, then registers that command in the
+client's user-level configuration. Repair also fixes a stale registration that still points to a source checkout.
+Disconnect removes only hud's registration. Configuration files are backed up before writes, and existing client
+sessions must be restarted or reconnected to load changes.
+
+Use **Copy MCP configuration** for other clients or for manual setup. OpenCode JSONC is detected and left untouched so
+its comments are preserved; Settings provides copy/manual instructions. The **Install command** action requires the
+packaged app; a source checkout cannot install the app command. Linux AppImage command integration is unsupported; use
+the `.deb` package for stable CLI integration. The source CLI also supports:
+
+    hud mcp status [--json]
+    hud mcp install [clients...] [--json]
+    hud mcp repair [clients...] [--json]
+    hud mcp uninstall [clients...] [--json]
+
+`status` is read-only and checks saved registrations; it does not start or handshake with an MCP server. `--json`
+returns machine-readable status. Config backups are retained beside the config file.
+
+### Updates
+
+Settings → **Updates** shows the installed version and can check GitHub for the latest stable release. It offers the
+matching installer for the app's OS and architecture when that asset exists; **Download update** opens it in the browser,
+and **View release** opens the release page. HUD never installs an update automatically: download the installer, quit
+HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board and stops the
+background server even when Keep server running after quit is enabled. Reconnect existing agent clients after installing.
+The optional **Check when HUD opens** preference enables launch-time checks. The 0.1.1 build
+adds this checker; version 0.1.0 has none, so upgrading from it the first time requires downloading the installer
+manually.
+
+The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
+OS runners and upload seven-day workflow artifacts. A stable `vX.Y.Z` tag push runs the same four native build jobs
+after checking the tag against `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+After every build and packaged-runtime check passes, CI gathers exactly five named installers (two macOS DMGs, the
+Windows installer, Linux AppImage and Linux `.deb`), validates them, writes `SHA256SUMS`, and creates a GitHub draft
+release. It does not publish the draft. The update checker ignores drafts and prereleases, so a release appears to
+users only after someone reviews and manually publishes it.
+
+For the next release, keep the existing v0.1.0 release unchanged and:
+
+1. Bump the version in `package.json` and `appdir/package.json`, then update `package-lock.json` so all recorded package
+   versions agree.
+2. Push the matching stable tag, such as `vX.Y.Z`. CI verifies the tag and versions, then creates the draft only after
+   all native builds and installer checks pass.
+3. Review the draft's five installers, `SHA256SUMS` and generated notes, then publish it manually. Only then can Settings
+   find it as the latest stable release.
+
 ## Connect your agent
     hud mcp install                 # claude + codex + opencode (skips any that aren't installed)
     hud mcp install claude          # just one
@@ -764,5 +820,7 @@ run. The port and data dir are fixed (one board, one server); the `HUD_*` path/p
 Config files are parsed and backed up before any write, and only the `hud` entry is ever touched.
 When run from a packaged binary it registers `<hud> mcp`, so nothing else needs to be on `PATH`.
 
-In the desktop app, `Help → Install "hud" command…` (or `hud cli install`) puts the `hud` command on your `PATH`; the
-shim points at the app binary, so the CLI and the MCP server are the same program. `HUD_BIN_DIR` chooses where it goes.
+In the packaged desktop app, Settings → Connections → **Install command** (or `hud cli install`) puts the `hud` command
+on your `PATH`; the managed shim points at the app binary, so the CLI and MCP server use the same program. The app
+refreshes its managed shim on launch to keep registered client paths valid after normal app replacement.
+`HUD_BIN_DIR` chooses where it goes. Linux AppImage builds do not support this command integration; use the `.deb`.

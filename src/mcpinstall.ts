@@ -1,317 +1,265 @@
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { SOURCE_ROOT, isElectron } from './assets.ts';
-import { installedShim, installCli } from './cliinstall.ts';
+import { cliInfo, installedShim, installCli } from './cliinstall.ts';
+import { childEnv } from './electron-runtime.ts';
 
-/**
- * Wire hud into other agents' MCP configs, and take it back out again.
- *
- * Each client is described once: whether it has its own CLI we can drive, where its config file
- * lives, and how it shapes a stdio-server entry. Config files are parsed and backed up before any
- * write, and only the `hud` entry is ever touched.
- */
+export const CLIENT_IDS = ['claude', 'codex', 'opencode'] as const;
+export type ClientId = typeof CLIENT_IDS[number];
+export type ConnectionInfo = {
+  id: ClientId; label: string; detected: boolean; executable?: string;
+  state: 'connected' | 'needs-repair' | 'not-connected' | 'unavailable' | 'error';
+  detail: string; configPath: string; registered?: boolean;
+};
+type ToolResult = { code: number; stdout: string; stderr: string };
+type Runner = (executable: string, args: string[], env: NodeJS.ProcessEnv) => Promise<ToolResult>;
+type Options = { home?: string; env?: NodeJS.ProcessEnv; platform?: string; argv?: () => string[]; run?: Runner };
+type Registration = { present: boolean; argv?: string[]; enabled?: boolean };
+const LABELS = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' };
+let writes = 0;
 
-/**
- * The argv that runs hud's MCP server, correct from source, from the desktop app and from a
- * packaged binary. The app registers its installed `hud` command, so the entry is a short, stable
- * path that survives app updates (and needs no env block in the client's config).
- */
 export function mcpArgv(): string[] {
-  if (isElectron()) return [process.env.HUD_SHIM || installedShim() || 'hud', 'mcp'];
+  if (isElectron()) return [installedShim() || 'hud', 'mcp'];
   return [stableNode(), join(SOURCE_ROOT, 'bin', 'hud.js'), 'mcp'];
 }
 
-/** A node path that survives `brew upgrade`: the plain `node` on PATH when it is this binary, else a known symlink. */
 function stableNode(): string {
-  const real = (p: string) => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return '';
-    }
-  };
+  const real = (p: string) => { try { return realpathSync(p); } catch { return ''; } };
   const self = real(process.execPath);
-  const dirs = (process.env.PATH || '').split(process.platform === 'win32' ? ';' : ':').filter(Boolean);
-  const cands = [...dirs, '/opt/homebrew/bin', '/usr/local/bin'].map((d) => join(d, process.platform === 'win32' ? 'node.exe' : 'node'));
-  for (const c of cands) if (existsSync(c) && real(c) === self) return c;
+  const dirs = [...(process.env.PATH || '').split(delimiter), '/opt/homebrew/bin', '/usr/local/bin'];
+  for (const dir of dirs) {
+    const candidate = join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+    if (real(candidate) === self) return candidate;
+  }
   return process.execPath;
 }
 
-type Client = {
-  label: string;
-  /** config file to edit when there is no CLI to drive (may be null for print-only clients) */
-  config?: () => string;
-  /** child-process args that add / remove the entry, with the mcp argv appended after `--` */
-  cli?: { bin: string; add: string[]; remove: string[] };
-  /** client-specific config entry */
-  entry?: (argv: string[]) => unknown;
-  /** where in the config JSON the entry lives */
-  path?: string[];
-  note?: string;
-};
-
-const opencodeConfig = () => {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
-  return join(base, 'opencode', 'opencode.json');
-};
-
-const CLIENTS: Record<string, Client> = {
-  claude: {
-    label: 'Claude Code',
-    config: () => join(homedir(), '.claude.json'),
-    cli: { bin: 'claude', add: ['mcp', 'add', '-s', 'user', 'hud', '--'], remove: ['mcp', 'remove', '-s', 'user', 'hud'] },
-  },
-  codex: {
-    label: 'Codex',
-    config: () => join(homedir(), '.codex', 'config.toml'),
-    cli: { bin: 'codex', add: ['mcp', 'add', 'hud', '--'], remove: ['mcp', 'remove', 'hud'] },
-  },
-  opencode: {
-    label: 'opencode',
-    config: opencodeConfig,
-    path: ['mcp', 'hud'],
-    entry: (argv) => ({ type: 'local', command: argv, enabled: true }),
-  },
-  muse: {
-    label: 'muse',
-    note: 'muse has no documented MCP config format yet — run `hud mcp print` and paste the command into muse’s MCP settings',
-  },
-  generic: {
-    label: 'any MCP client',
-    note: 'paste one of the snippets below into your client’s MCP settings',
-  },
-};
-
-const NAMES = Object.keys(CLIENTS);
-
-function have(bin: string): boolean {
-  const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { stdio: 'ignore' });
-  return r.status === 0;
+export function findExecutable(name: string, env: NodeJS.ProcessEnv, platform: string = process.platform): string | undefined {
+  const pathValue = Object.entries(env).find(([key]) => key.toLowerCase() === 'path')?.[1] || '';
+  const extensions = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of pathValue.split(platform === 'win32' ? ';' : ':').filter(Boolean)) {
+    for (const extension of extensions) {
+      const file = join(dir.replace(/^"|"$/g, ''), name + extension);
+      try { if (statSync(file).isFile()) { accessSync(file, platform === 'win32' ? constants.F_OK : constants.X_OK); return file; } } catch {}
+    }
+  }
+  return undefined;
 }
 
-function jsonSnippet(argv: string[]): string {
-  return JSON.stringify({ mcpServers: { hud: { command: argv[0], args: argv.slice(1) } } }, null, 2);
+/** No arbitrary shell text: cmd wrappers accept only quoted, metacharacter-free arguments. */
+export async function runClient(executable: string, args: string[], env: NodeJS.ProcessEnv): Promise<ToolResult> {
+  let command = executable, argv = args;
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
+    if ([executable, ...args].some((value) => /[\r\n%!"&|<>^]/.test(value))) throw new Error('This Windows CLI path needs manual MCP configuration. Use Copy MCP configuration.');
+    command = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
+    argv = ['/d', '/v:off', '/s', '/c', `"${[executable, ...args].map((value) => `"${value}"`).join(' ')}"`];
+  }
+  return new Promise((resolve, reject) => {
+    execFile(command, argv, { env, timeout: 15_000, maxBuffer: 1024 * 1024, windowsHide: true, windowsVerbatimArguments: command !== executable }, (error, stdout, stderr) => {
+      if (error && (typeof error.code !== 'number' || error.killed)) return reject(new Error(error.killed ? 'The coding CLI timed out. Try again or use Copy MCP configuration.' : `Could not run the coding CLI: ${error.message}`));
+      resolve({ code: error ? Number(error.code) : 0, stdout, stderr });
+    });
+  });
 }
 
-function readJson(file: string): Record<string, any> {
-  if (!existsSync(file)) return {};
-  const txt = readFileSync(file, 'utf8').trim();
-  if (!txt) return {};
-  return JSON.parse(txt) as Record<string, any>;
+function object(value: unknown, label: string): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object; left the configuration untouched`);
+  return value as Record<string, any>;
+}
+
+function readJson(file: string): { value: Record<string, any>; original: string | null } {
+  regularConfig(file);
+  if (!existsSync(file)) return { value: {}, original: null };
+  const original = readFileSync(file, 'utf8');
+  return { value: object(original.trim() ? JSON.parse(original) : {}, file), original };
+}
+
+function regularConfig(file: string): string {
+  try {
+    if (!lstatSync(file).isFile()) throw new Error(`The configuration at ${file} is symlinked or not a regular file. Use Copy MCP configuration to edit it manually.`);
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  return file;
 }
 
 function backup(file: string): void {
   if (!existsSync(file)) return;
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  copyFileSync(file, `${file}.hud-backup-${stamp}`);
-  try {
-    const base = `${file.split('/').pop()}.hud-backup-`;
-    const old = readdirSync(dirname(file)).filter((f) => f.startsWith(base)).sort();
-    for (const f of old.slice(0, -5)) rmSync(join(dirname(file), f), { force: true });
-  } catch {}
+  const stamp = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}-${++writes}`;
+  const target = `${file}.hud-backup-${stamp}`;
+  copyFileSync(file, target);
+  chmodSync(target, 0o600);
+  const prefix = `${basename(file)}.hud-backup-`;
+  const old = readdirSync(dirname(file)).filter((name) => name.startsWith(prefix)).sort();
+  for (const name of old.slice(0, -5)) rmSync(join(dirname(file), name), { force: true });
 }
 
-function writeJson(file: string, data: unknown): void {
+function writeConfig(file: string, value: unknown, original: string | null): void {
+  regularConfig(file);
+  if ((existsSync(file) ? readFileSync(file, 'utf8') : null) !== original) throw new Error('The coding CLI configuration changed during this operation. Refresh and try again.');
+  backup(file);
   mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
-  renameSync(tmp, file);
+  const tmp = `${file}.${process.pid}.${++writes}.tmp`;
+  try { writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); renameSync(tmp, file); }
+  finally { rmSync(tmp, { force: true }); }
 }
 
-/** dig a nested entry out of a config object */
-function dig(obj: Record<string, any>, path: string[]): unknown {
-  let cur: any = obj;
-  for (const k of path) {
-    if (cur == null || typeof cur !== 'object') return undefined;
-    cur = cur[k];
+function registration(value: unknown, id: ClientId): Registration {
+  if (value === undefined) return { present: false };
+  const entry = object(value, 'hud registration');
+  if (id === 'opencode') return { present: true, argv: entry.type === 'local' && Array.isArray(entry.command) && entry.command.every((v: unknown) => typeof v === 'string') ? entry.command : undefined, enabled: entry.enabled !== false };
+  return { present: true, argv: typeof entry.command === 'string' && (entry.args === undefined || Array.isArray(entry.args) && entry.args.every((v: unknown) => typeof v === 'string')) ? [entry.command, ...(entry.args ?? [])] : undefined, enabled: entry.enabled !== false && (!entry.type || entry.type === 'stdio') && !entry.env?.HUD_SCRATCH && !entry.env?.HUD_URL };
+}
+
+export class ConnectionService {
+  private env: NodeJS.ProcessEnv;
+  private home: string;
+  private platform: string;
+  private argv: () => string[];
+  private run: Runner;
+  private busy = false;
+  constructor(options: Options = {}) {
+    this.env = options.env ?? childEnv();
+    this.home = options.home ?? homedir();
+    this.platform = options.platform ?? process.platform;
+    this.argv = options.argv ?? mcpArgv;
+    this.run = options.run ?? runClient;
   }
-  return cur;
-}
 
-function setPath(obj: Record<string, any>, path: string[], value: unknown): void {
-  let cur: any = obj;
-  for (const k of path.slice(0, -1)) cur = cur[k] ??= {};
-  const last = path[path.length - 1];
-  if (value === undefined) delete cur[last];
-  else cur[last] = value;
-}
-
-export type Resolved = { name: string; client: Client; file?: string };
-
-export function resolveClients(names: string[]): Resolved[] {
-  const list = names.length ? names : ['claude', 'codex', 'opencode'];
-  const out: Resolved[] = [];
-  for (const n of list) {
-    const key = NAMES.find((k) => k === n) ?? (n === 'all' ? 'all' : undefined);
-    if (key === 'all') {
-      for (const k of ['claude', 'codex', 'opencode']) out.push({ name: k, client: CLIENTS[k], file: CLIENTS[k].config?.() });
-      continue;
+  private file(id: ClientId): string {
+    if (id === 'claude') return regularConfig(join(this.env.CLAUDE_CONFIG_DIR || this.home, '.claude.json'));
+    if (id === 'codex') return regularConfig(join(this.env.CODEX_HOME || join(this.home, '.codex'), 'config.toml'));
+    if (this.env.OPENCODE_CONFIG) {
+      if (this.env.OPENCODE_CONFIG.endsWith('.jsonc')) throw new Error('Your OpenCode configuration uses JSONC. Use Copy MCP configuration to preserve its comments.');
+      return regularConfig(this.env.OPENCODE_CONFIG);
     }
-    if (!key) throw new Error(`unknown client "${n}" (known: ${NAMES.join(', ')}, all)`);
-    out.push({ name: key, client: CLIENTS[key], file: CLIENTS[key].config?.() });
+    const dir = join(this.env.XDG_CONFIG_HOME || join(this.home, '.config'), 'opencode');
+    const json = join(dir, 'opencode.json'), jsonc = join(dir, 'opencode.jsonc');
+    if (existsSync(jsonc)) throw new Error(`OpenCode has a JSONC configuration at ${jsonc}. Use Copy MCP configuration to preserve its comments.`);
+    return regularConfig(json);
   }
-  return out;
-}
 
-function installOne(r: Resolved, argv: string[], dry: boolean, log: (s: string) => void): void {
-  const { client, file } = r;
-  if (client.cli && have(client.cli.bin)) {
-    const args = [...client.cli.add, ...argv];
-    log(`  ${client.label}: ${client.cli.bin} ${args.join(' ')}`);
-    if (!dry) {
-      const res = spawnSync(client.cli.bin, args, { stdio: 'inherit' });
-      if (res.status !== 0) throw new Error(`${client.cli.bin} exited ${res.status}`);
+  private async inspect(id: ClientId, executable?: string): Promise<Registration> {
+    if (id === 'codex') {
+      if (!executable) return { present: false };
+      const result = await this.run(executable, ['mcp', 'get', 'hud', '--json'], this.env);
+      if (result.code !== 0) {
+        if (/No MCP server named ['"]?hud['"]? found\.?/i.test(result.stderr + result.stdout)) return { present: false };
+        throw new Error('Could not read the Codex MCP registration. Check that your Codex CLI supports mcp get --json.');
+      }
+      const entry = object(JSON.parse(result.stdout), 'Codex MCP registration');
+      const transport = object(entry.transport, 'Codex MCP transport');
+      return registration({ ...transport, enabled: entry.enabled !== false }, id);
     }
-    return;
+    const { value } = readJson(this.file(id));
+    const section = value[id === 'claude' ? 'mcpServers' : 'mcp'];
+    return registration(section === undefined ? undefined : object(section, 'MCP settings').hud, id);
   }
-  if (client.path && !client.cli && file && !existsSync(dirname(file))) {
-    log(`  ${client.label}: not installed, skipped`);
-    return;
-  }
-  if (!client.config || !client.path || !client.entry) {
-    log(`  ${client.label}: nothing to write — ${client.note ?? 'use `hud mcp print`'}`);
-    return;
-  }
-  const filePath = file!;
-  let cfg: Record<string, any>;
-  try {
-    cfg = readJson(filePath);
-  } catch (e) {
-    throw new Error(`could not parse ${filePath} (${(e as Error).message}); leaving it untouched`);
-  }
-  const desired = client.entry(argv);
-  const current = dig(cfg, client.path);
-  if (JSON.stringify(current) === JSON.stringify(desired)) return log(`  ${client.label}: already configured (${filePath})`);
-  log(`  ${client.label}: ${current ? 'update' : 'add'} ${filePath}`);
-  if (dry) return;
-  backup(filePath);
-  setPath(cfg, client.path, desired);
-  writeJson(filePath, cfg);
-}
 
-function uninstallOne(r: Resolved, dry: boolean, log: (s: string) => void): void {
-  const { client, file } = r;
-  if (client.cli && have(client.cli.bin)) {
-    log(`  ${client.label}: ${client.cli.bin} ${client.cli.remove.join(' ')}`);
-    if (!dry) spawnSync(client.cli.bin, client.cli.remove, { stdio: 'inherit' });
-    return;
-  }
-  if (!client.config || !client.path) return log(`  ${client.label}: nothing to remove`);
-  const filePath = file!;
-  if (!existsSync(filePath)) return log(`  ${client.label}: no config at ${filePath}`);
-  let cfg: Record<string, any>;
-  try {
-    cfg = readJson(filePath);
-  } catch (e) {
-    throw new Error(`could not parse ${filePath} (${(e as Error).message}); leaving it untouched`);
-  }
-  if (dig(cfg, client.path) === undefined) return log(`  ${client.label}: no hud entry in ${filePath}`);
-  log(`  ${client.label}: remove hud from ${filePath}`);
-  if (dry) return;
-  backup(filePath);
-  setPath(cfg, client.path, undefined);
-  writeJson(filePath, cfg);
-}
-
-function statusOne(r: Resolved, log: (s: string) => void): void {
-  const { client, file } = r;
-  let state = 'not configured';
-  const viaCli = cliHasHud(client);
-  if (viaCli === true) state = `configured (${client.cli!.bin})`;
-  else if (viaCli === false) state = `not configured (${client.cli!.bin} has no hud entry)`;
-  if (client.path && file && existsSync(file)) {
+  async status(id: ClientId): Promise<ConnectionInfo> {
+    this.validate(id);
+    const executable = findExecutable(id, this.env, this.platform);
+    const base = { id, label: LABELS[id], detected: !!executable, executable, configPath: '' };
     try {
-      if (dig(readJson(file), client.path) !== undefined) state = `configured in ${file}`;
-    } catch {
-      state = `unreadable config ${file}`;
-    }
-  } else if (!client.path && client.note) {
-    state = client.note;
+      base.configPath = this.file(id);
+      const current = await this.inspect(id, executable);
+      if (!executable) return { ...base, state: 'unavailable', registered: current.present, detail: 'CLI not found on your login PATH. Install it, then refresh. You can also copy the MCP configuration.' };
+      if (!current.present) return { ...base, state: 'not-connected', registered: false, detail: 'The CLI is installed. Register HUD to make its tools available.' };
+      const matches = current.enabled !== false && JSON.stringify(current.argv) === JSON.stringify(this.argv());
+      return { ...base, state: matches ? 'connected' : 'needs-repair', registered: true, detail: matches ? 'HUD is registered. Reconnect or restart existing client sessions to load its tools.' : 'The HUD registration is disabled or points to another installation. Repair it to use this app.' };
+    } catch (error) { return { ...base, state: 'error', detail: error instanceof Error ? error.message : 'Could not inspect the MCP configuration.' }; }
   }
-  log(`  ${client.label.padEnd(14)} ${state}`);
+
+  list(): Promise<ConnectionInfo[]> { return Promise.all(CLIENT_IDS.map((id) => this.status(id))); }
+
+  private validate(id: string): asserts id is ClientId { if (!CLIENT_IDS.includes(id as ClientId)) throw new Error('Unknown coding CLI'); }
+
+  async change(id: ClientId, connect: boolean): Promise<void> {
+    this.validate(id);
+    if (this.busy) throw new Error('Another connection change is in progress. Try again when it finishes.');
+    this.busy = true;
+    try {
+      const executable = findExecutable(id, this.env, this.platform);
+      if (connect && !executable) throw new Error(`${LABELS[id]} was not found on your login PATH. Install it, then refresh.`);
+      const file = this.file(id);
+      const current = await this.inspect(id, executable);
+      if (!connect && !current.present) return;
+      const argv = this.argv();
+      if (connect && current.enabled !== false && JSON.stringify(current.argv) === JSON.stringify(argv)) return;
+      if (id === 'codex') {
+        if (!executable) throw new Error('Install Codex to remove its HUD registration, or remove [mcp_servers.hud] from its config manually.');
+        backup(file);
+        if (current.present) {
+          const removed = await this.run(executable, ['mcp', 'remove', 'hud'], this.env);
+          if (removed.code !== 0) throw new Error('Codex could not remove its previous HUD registration. Its configuration backup is beside config.toml.');
+        }
+        if (connect) {
+          const added = await this.run(executable, ['mcp', 'add', 'hud', '--', ...argv], this.env);
+          if (added.code !== 0) throw new Error('Codex could not register HUD. Its configuration backup is beside config.toml; retry or use Copy MCP configuration.');
+        }
+      } else {
+        const { value, original } = readJson(file);
+        const key = id === 'claude' ? 'mcpServers' : 'mcp';
+        const section = value[key] === undefined ? (value[key] = {}) : object(value[key], 'MCP settings');
+        if (connect) section.hud = id === 'claude' ? { type: 'stdio', command: argv[0], args: argv.slice(1) } : { type: 'local', command: argv, enabled: true };
+        else delete section.hud;
+        writeConfig(file, value, original);
+      }
+      const after = await this.status(id);
+      if (connect ? after.state !== 'connected' : after.registered) throw new Error('The registration could not be verified. Refresh and inspect the client configuration.');
+    } finally { this.busy = false; }
+  }
 }
 
-export function mcpCommand(sub: string, names: string[], flags: Record<string, unknown>): number {
-  const dry = !!flags['dry-run'];
-  const argv = mcpArgv();
-  const log = (s: string) => process.stdout.write(s + '\n');
+export function configSnippet(argv = mcpArgv()): string {
+  return JSON.stringify({ mcpServers: { hud: { command: argv[0], args: argv.slice(1) } } }, null, 2);
+}
+
+function resolveClients(names: string[]): ClientId[] {
+  const selected = names.length ? names : ['all'];
+  const ids = selected.flatMap((name) => name === 'all' ? [...CLIENT_IDS] : [name]);
+  for (const id of ids) if (!CLIENT_IDS.includes(id as ClientId)) throw new Error(`unknown client "${id}" (known: ${CLIENT_IDS.join(', ')}, all)`);
+  return [...new Set(ids)] as ClientId[];
+}
+
+export async function mcpCommand(sub: string, names: string[], flags: Record<string, unknown>): Promise<number> {
+  const json = !!flags.json;
   try {
     if (sub === 'print') {
-      const who = (names[0] as string) ?? 'generic';
-      const r = resolveClients([who])[0];
-      log(`${r.client.label} — stdio server`);
-      log('');
-      if (r.client.cli) log(`  ${r.client.cli.bin} ${[...r.client.cli.add, ...argv].join(' ')}`);
-      if (r.client.path && r.client.entry) {
-        log(`  add this to ${r.file}:`);
-        log(indent(JSON.stringify(nestPath(r.client.path, r.client.entry(argv)), null, 2), 4));
-      } else if (!r.client.cli) {
-        log(indent(jsonSnippet(argv), 2));
-      }
+      const id = names[0] ?? 'generic';
+      if (!['generic', 'muse', ...CLIENT_IDS].includes(id)) throw new Error(`unknown client "${id}"`);
+      const argv = mcpArgv();
+      const text = id === 'opencode' ? JSON.stringify({ mcp: { hud: { type: 'local', command: argv, enabled: true } } }, null, 2) : id === 'codex' ? `[mcp_servers.hud]\ncommand = ${JSON.stringify(argv[0])}\nargs = ${JSON.stringify(argv.slice(1))}` : configSnippet(argv);
+      process.stdout.write(text + '\n');
       return 0;
     }
-    if (sub === 'install') {
-      // chicken-and-egg: from the app, the `hud` command may not exist yet, so make it first
-      if (isElectron() && !installedShim() && !dry) {
-        log(installCli());
-      }
-      const argvNow = isElectron() ? mcpArgv() : argv; // pick up a shim installed just above
-      log(dry ? 'would install the hud MCP server:' : 'installing the hud MCP server:');
-      let failed = 0;
-      for (const r of resolveClients(names)) {
-        try {
-          installOne(r, argvNow, dry, log);
-        } catch (e) {
-          failed++;
-          log(`  ${r.client.label}: FAILED — ${(e as Error).message}`);
-        }
-      }
-      return failed ? 1 : 0;
+    if (!['install', 'repair', 'uninstall', 'remove', 'status'].includes(sub)) throw new Error(`unknown mcp subcommand "${sub}" — try install|uninstall|status|print`);
+    const ids = resolveClients(names);
+    const dry = !!flags['dry-run'];
+    if (['install', 'repair'].includes(sub) && isElectron() && !dry) {
+      installCli();
+      if (!cliInfo().ready) throw new Error(cliInfo().detail);
     }
-    if (sub === 'uninstall' || sub === 'remove') {
-      log(dry ? 'would remove the hud MCP server:' : 'removing the hud MCP server:');
-      let failed = 0;
-      for (const r of resolveClients(names)) {
-        try {
-          uninstallOne(r, dry, log);
-        } catch (e) {
-          failed++;
-          log(`  ${r.client.label}: FAILED — ${(e as Error).message}`);
-        }
+    const service = new ConnectionService();
+    const output: (ConnectionInfo & { error?: string; dryRun?: boolean })[] = [];
+    let failures = 0;
+    for (const id of ids) {
+      try {
+        const before = await service.status(id);
+        const skipMissing = (!names.length || names.includes('all')) && !before.detected;
+        if (sub !== 'status' && !dry && !skipMissing) await service.change(id, sub === 'install' || sub === 'repair');
+        output.push({ ...await service.status(id), ...(dry ? { dryRun: true } : {}) });
+      } catch (error) {
+        failures++;
+        output.push({ ...await service.status(id), error: (error as Error).message });
       }
-      return failed ? 1 : 0;
     }
-    if (sub === 'status') {
-      log('hud MCP server:');
-      log(`  command        ${argv.join(' ')}`);
-      log(`  mode           ${isElectron() ? 'desktop app' : 'from source'}`);
-      for (const r of resolveClients(names.length ? names : Object.keys(CLIENTS))) statusOne(r, log);
-      return 0;
-    }
-    log(`unknown mcp subcommand "${sub}" — try: hud mcp install|uninstall|status|print`);
-    return 1;
-  } catch (e) {
-    process.stderr.write(`hud: ${(e as Error).message}\n`);
+    if (json) process.stdout.write(JSON.stringify(output) + '\n');
+    else for (const row of output) process.stdout.write(`  ${row.label}: ${row.error ? `FAILED — ${row.error}` : `${dry ? 'dry run — ' : ''}${row.state}`}\n    ${row.detail}\n`);
+    return failures ? 1 : 0;
+  } catch (error) {
+    if (json) process.stdout.write(JSON.stringify({ error: (error as Error).message }) + '\n');
+    else console.error((error as Error).message);
     return 1;
   }
-}
-
-function indent(s: string, n: number): string {
-  const pad = ' '.repeat(n);
-  return s.split('\n').map((l) => pad + l).join('\n');
-}
-
-/** wrap a value at a config path, e.g. ['mcp','hud'] + entry -> { mcp: { hud: entry } } */
-function nestPath(path: string[], value: unknown): unknown {
-  return path.slice().reverse().reduce<unknown>((acc, k) => ({ [k]: acc }), value);
-}
-
-/** ask a client's own CLI whether it knows about hud */
-function cliHasHud(client: Client): boolean | undefined {
-  if (!client.cli || !have(client.cli.bin)) return undefined;
-  const r = spawnSync(client.cli.bin, ['mcp', 'list'], { encoding: 'utf8' });
-  if (r.status !== 0 && !r.stdout) return undefined;
-  return /\bhud\b/.test(r.stdout ?? '');
 }

@@ -8,13 +8,15 @@ const webFiles = readdirSync(resolve(root, 'web'))
   .filter((name) => name.endsWith('.js'))
   .sort()
   .map((name) => resolve(root, 'web', name));
-const syntaxFiles = [...webFiles, resolve(root, 'electron', 'render.mjs')];
+const syntaxFiles = [...webFiles, resolve(root, 'electron', 'render.mjs'), resolve(root, 'electron', 'settings-preload.cjs')];
 const suites = [
   'scripts/check-layout.ts',
   'scripts/check-supervision.ts',
   'scripts/check-monitoring.ts',
   'scripts/check-monitoring-views.mjs',
   'scripts/check-markdown.mjs',
+  'scripts/check-connections.ts',
+  'scripts/check-updates.ts',
 ];
 
 function run(args, label) {
