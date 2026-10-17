@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>Settings · hud</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="settings.css">
+  <script src="settings.js" defer></script>
+</head>
+<body class="settings-page">
+  <div class="settings-shell">
+    <aside class="settings-sidebar" aria-label="Settings navigation">
+      <div class="sidebar-brand"><span aria-hidden="true">▌</span> hud <span class="brand-muted">/ settings</span></div>
+      <nav id="settings-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+        <button id="tab-connections" class="settings-tab selected" type="button" role="tab" aria-selected="true" aria-controls="panel-connections" tabindex="0" data-tab="connections">⌘ <span>Connections</span></button>
+        <button id="tab-updates" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-updates" tabindex="-1" data-tab="updates">↻ <span>Updates</span></button>
+      </nav>
+      <div class="sidebar-foot"><span id="platform-name">Loading…</span><span id="app-version" class="dim"></span></div>
+    </aside>
+
+    <main class="settings-main">
+      <header class="settings-topbar"><span id="settings-context">Connections</span><span id="load-status" role="status" aria-live="polite">Loading settings…</span></header>
+      <div class="settings-content">
+        <p id="bridge-fallback" class="notice" role="status" hidden>Open Settings from the desktop app to manage connections and updates.</p>
+        <p id="load-error" class="notice error-text" role="alert" hidden></p>
+        <p id="action-status" class="action-status" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+
+        <section id="panel-connections" role="tabpanel" aria-labelledby="tab-connections" tabindex="0">
+          <header class="page-head">
+            <div><h1>Connections</h1><p>Registered means the MCP entry is saved; it does not confirm an active agent session.</p></div>
+            <button id="refresh-connections" class="button" type="button" disabled>↻ Refresh</button>
+          </header>
+          <div id="connection-list" class="connection-list" role="list" aria-label="AI command-line connections"></div>
+          <p id="connections-empty" class="empty-state" hidden>No command-line clients were returned. Refresh to check again.</p>
+
+          <section class="setup-list" aria-label="HUD setup">
+            <div class="setup-row">
+              <div class="setup-copy"><strong>HUD command</strong><span id="command-status" class="state-label"><span id="command-glyph" aria-hidden="true">○</span><span id="command-state-text">Checking…</span></span><small id="command-detail">Used by HUD connections and terminal workflows.</small><small id="command-path" hidden></small></div>
+              <button id="install-command" class="button" type="button" disabled>Install command</button>
+            </div>
+            <div class="setup-row">
+              <div class="setup-copy"><strong>MCP configuration</strong><small>Copy the local server entry for manual client setup.</small></div>
+              <button id="copy-config" class="button" type="button" disabled>Copy configuration</button>
+            </div>
+          </section>
+          <p class="footnote">Restart clients after connecting or repairing so they reload their configuration.</p>
+        </section>
+
+        <section id="panel-updates" role="tabpanel" aria-labelledby="tab-updates" tabindex="0" hidden>
+          <header class="page-head"><div><h1>Updates</h1><p>Installed version <strong id="current-version">—</strong></p></div><span id="update-status-label" class="state-label" aria-live="polite" aria-atomic="true"><span id="update-glyph" aria-hidden="true">○</span><span id="update-status-text">Not checked</span></span></header>
+          <div class="update-card">
+            <div class="update-copy">
+              <p id="update-detail" class="update-detail">Check for a newer HUD desktop release.</p>
+              <p id="latest-version-row" class="dim" hidden>Latest version <span id="latest-version">—</span></p>
+              <p id="checked-at" class="dim" hidden></p>
+              <p id="download-name-row" class="dim" hidden>Installer <span id="download-name"></span></p>
+            </div>
+            <div class="update-actions">
+              <button id="check-updates" class="button" type="button" disabled>Check for updates</button>
+              <button id="download-update" class="button primary" type="button" disabled>Download update</button>
+              <button id="quit-for-update" class="button" type="button" disabled>Quit HUD for update</button>
+              <button id="open-release" class="text-button" type="button" disabled>View release</button>
+            </div>
+          </div>
+          <label class="preference" for="check-on-launch"><span><strong>Check when HUD opens</strong><small>Look for releases when the desktop app starts.</small></span><input id="check-on-launch" type="checkbox" disabled></label>
+          <p class="footnote">Download the installer, quit HUD using this button, then replace the app and reopen it. Your saved boards stay in the data folder.</p>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

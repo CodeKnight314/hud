@@ -3,10 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SOURCE_ROOT } from '../src/assets.ts';
+import { SOURCE_ROOT, asset } from '../src/assets.ts';
 import { isElectronNodeMode, primeLoginEnv } from '../src/electron-runtime.ts';
 import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
+import { refreshInstalledCli } from '../src/cliinstall.ts';
+import { prepareBackendUpdate, stopBackendForUpdate } from '../src/updates.ts';
+import { desktopSettings } from './settings.ts';
 
 const renderHelperMode = process.argv.includes('--hud-render-helper');
 
@@ -44,7 +47,8 @@ try {
 }
 const { port, dataDir } = cfg;
 const url = `http://127.0.0.1:${port}/`;
-const hud = new Hud({ actor: 'user', autostart: true });
+let hud = new Hud({ actor: 'user', autostart: true });
+const version = JSON.parse(asset('package.json') ?? '{"version":"0.0.0"}').version as string;
 
 // Chromium's profile (and with it the single-instance lock) is keyed to the data dir, so a dev run with
 // a scratch dir can sit beside the installed app.
@@ -66,6 +70,19 @@ function readPrefs(): Record<string, any> {
 // default: agents may depend on the server after the window closes
 let keepServer = readPrefs().keepServer !== false;
 let saveTimer: NodeJS.Timeout | null = null;
+const settings = desktopSettings({
+  version, packaged: cfg.packaged, dataDir,
+  checkOnLaunch: () => readPrefs().checkUpdatesOnLaunch !== false,
+  setCheckOnLaunch: (enabled) => {
+    mkdirSync(app.getPath('userData'), { recursive: true });
+    writeFileSync(stateFile(), JSON.stringify({ ...readPrefs(), checkUpdatesOnLaunch: enabled }));
+  },
+  quitForUpdate: async () => {
+    await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
+    app.quit();
+  },
+});
+const settingsEntry: Electron.MenuItemConstructorOptions = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => settings.show() };
 
 function bounds(): Electron.BrowserWindowConstructorOptions {
   try {
@@ -189,6 +206,14 @@ function showUnreachable(retrying = false): void {
 /** After a failed load (a reload against a server that has died), bring the server back and reconnect.
  *  Without this a Cmd+R against a dead server left a completely black window. */
 let healing = false;
+let connecting: Promise<void> | null = null;
+function ensureCurrentServer(): Promise<void> {
+  return connecting ??= (async () => {
+    if (cfg.packaged) await prepareBackendUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
+    hud = new Hud({ actor: 'user', autostart: true });
+    await hud.ensureServer();
+  })().finally(() => { connecting = null; });
+}
 async function heal(retries = 20): Promise<void> {
   if (healing) return;
   healing = true;
@@ -196,7 +221,7 @@ async function heal(retries = 20): Promise<void> {
     for (let i = 0; i < retries; i++) {
       await new Promise((r) => setTimeout(r, 1500));
       try {
-        await hud.ensureServer();
+        await ensureCurrentServer();
         await win?.loadURL(url);
         return;
       } catch {
@@ -212,7 +237,7 @@ async function heal(retries = 20): Promise<void> {
 /** start (or find) the server, then load it; never silently respawn after an explicit stop */
 async function connect(): Promise<void> {
   try {
-    await hud.ensureServer();
+    await ensureCurrentServer();
     await win?.loadURL(url);
   } catch (e) {
     dialog.showErrorBox('hud could not start its server', (e as Error).message);
@@ -223,12 +248,17 @@ async function connect(): Promise<void> {
 function menu(): void {
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
-    ...(isMac ? [{ role: 'appMenu' as const }] : []),
+    ...(isMac ? [{ role: 'appMenu' as const, submenu: [
+      { role: 'about' as const }, { type: 'separator' as const }, settingsEntry, { type: 'separator' as const },
+      { role: 'services' as const }, { type: 'separator' as const }, { role: 'hide' as const },
+      { role: 'hideOthers' as const }, { role: 'unhide' as const }, { type: 'separator' as const }, { role: 'quit' as const },
+    ] }] : []),
     {
       label: 'File',
       submenu: [
         { label: 'Open Canvas', accelerator: 'CmdOrCtrl+O', click: show },
         { label: 'Open in Browser', click: () => shell.openExternal(url) },
+        ...(!isMac ? [settingsEntry] : []),
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
@@ -298,6 +328,7 @@ function makeTray(): void {
     Menu.buildFromTemplate([
       { label: 'Open Canvas', click: show },
       { label: 'Open in Browser', click: () => shell.openExternal(url) },
+      { label: 'Settings…', click: () => settings.show() },
       { type: 'separator' },
       {
         label: 'Stop Server',
@@ -331,7 +362,11 @@ if (!app.requestSingleInstanceLock()) {
     makeTray();
     createWindow();
     await primeLoginEnv(); // async, so the window paints while the shell probe runs
+    if (cfg.packaged) {
+      try { refreshInstalledCli(); } catch (error) { console.error(`[hud] command repair failed: ${(error as Error).message}`); }
+    }
     await connect();
+    if (process.env.HUD_SCRATCH !== '1') void settings.checkAtLaunch();
     console.log(`[hud] app ready — ${url} (data: ${dataDir})`);
   });
 }

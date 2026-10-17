@@ -23,6 +23,8 @@ extraResources:
     to: hud/bin/hud.mjs
   - from: electron/render.mjs
     to: hud/electron/render.mjs
+  - from: electron/settings-preload.cjs
+    to: hud/electron/settings-preload.cjs
   - from: web
     to: hud/web
   - from: probes

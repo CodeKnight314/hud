@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - 'release/**'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -14,8 +16,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  version:
+    name: Validate release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check package versions against the stable tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            node scripts/release-assets.mjs --check-version "$GITHUB_REF_NAME"
+          else
+            node scripts/release-assets.mjs --check-version
+          fi
+
   build:
     name: ${{ matrix.platform }} / ${{ matrix.arch }}
+    needs: version
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -55,6 +76,37 @@ jobs:
         run: npm run dist -- --publish never --config.directories.output=dist/release ${{ matrix.args }}
       - name: Check packaged runtime
         run: node scripts/check-packaged.mjs dist/release ${{ matrix.arch }}
+      - name: Normalize installer filenames
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, readdir, rename, stat } from 'node:fs/promises';
+          import { resolve } from 'node:path';
+
+          const version = JSON.parse(await readFile('package.json', 'utf8')).version;
+          const entries = await readdir('dist/release');
+          const plans = process.env.PLATFORM === 'macos'
+            ? [{ extension: '.dmg', suffix: `mac-${process.env.ARCH}.dmg` }]
+            : process.env.PLATFORM === 'windows'
+              ? [{ extension: '.exe', suffix: `win-${process.env.ARCH}.exe` }]
+              : [
+                  { extension: '.AppImage', suffix: 'linux-x86_64.AppImage' },
+                  { extension: '.deb', suffix: 'linux-amd64.deb' },
+                ];
+
+          for (const { extension, suffix } of plans) {
+            const matches = entries.filter((name) => name.endsWith(extension));
+            if (matches.length !== 1) {
+              throw new Error(`expected one ${extension} installer, found ${matches.length}`);
+            }
+            const source = resolve('dist/release', matches[0]);
+            if (!(await stat(source)).isFile()) throw new Error(`${matches[0]} is not a regular file`);
+            const target = resolve('dist/release', `hud-${version}-${suffix}`);
+            if (source !== target) await rename(source, target);
+          }
+          NODE
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
@@ -66,3 +118,30 @@ jobs:
             dist/release/*.deb
           if-no-files-found: error
           retention-days: 7
+
+  draft-release:
+    name: Create draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hud-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate installers and write checksums
+        run: node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"
+      - name: Create GitHub draft release
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "Unsigned installers. See README for installation and upgrade instructions." --generate-notes
