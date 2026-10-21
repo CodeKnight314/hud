@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -371,6 +371,11 @@ async function shutdownGracefully(handle, baseUrl, dataDir, port) {
 
 async function runSmoke(outputDir, requestedArch) {
   const packaged = locatePackagedApp(outputDir, requestedArch);
+  // An unsigned arm64 app keeps Electron's linker-only signature and macOS calls the
+  // downloaded copy damaged, so the ad-hoc signature is part of a usable package.
+  if (process.platform === 'darwin') {
+    execFileSync('codesign', ['--verify', '--deep', '--strict', packaged.appRoot], { stdio: 'pipe' });
+  }
   const port = await reserveLoopbackPort();
   const workspace = await allocateWorkspace();
   const baseUrl = `http://127.0.0.1:${port}`;

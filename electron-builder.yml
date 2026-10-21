@@ -15,6 +15,10 @@ directories:
 
 asar: false
 
+# No Developer ID in this project. electron-builder skips signing then, leaving Electron's
+# linker-only signature, which macOS treats as damaged once downloaded. Sign ad-hoc instead.
+afterPack: scripts/adhoc-sign.mjs
+
 extraResources:
   # electron-builder's app-dir copy drops the manifest; place it ourselves into the app dir
   - from: appdir/package.json
@@ -50,8 +54,9 @@ mac:
   target:
     - target: dmg
       arch: [arm64, x64]
-  # no Developer ID: left to electron-builder's default (ad-hoc signature on Apple silicon). Hardened runtime and
-  # entitlements only make sense with a real identity + notarization, so they are deliberately not set.
+  # no Developer ID: scripts/adhoc-sign.mjs signs the app ad-hoc after packing (electron-builder alone only
+  # leaves Electron's linker signature). Hardened runtime and entitlements need a real identity + notarization,
+  # so they are deliberately not set.
 
 win:
   icon: build/icon.png

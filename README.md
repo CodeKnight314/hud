@@ -12,7 +12,8 @@ in a per-user directory.
 
 Download the installer for your platform from the
 [latest release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
-or Linux (x64 AppImage/deb). Builds are unsigned, so the OS may ask you to confirm the first launch.
+or Linux (x64 AppImage/deb). Builds are not notarized: on macOS, right-click the app and choose **Open** the first
+time (and again after each update); Windows may show a SmartScreen prompt.
 
 From a source checkout:
 

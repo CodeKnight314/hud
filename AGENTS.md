@@ -52,6 +52,7 @@ bin/hud.js       source CLI entry
 scripts/build.mjs  esbuild bundles -> bundle/{hud,main}.mjs (npm run bundle); bundle/ and appdir/main.mjs are generated
 scripts/dev.mjs    dev launcher: Electron against the repo, scratch port + scratch data dir
 scripts/icons.mjs  generates build/icon.svg + icon.png, tray PNGs, web favicons from one geometry
+scripts/adhoc-sign.mjs  electron-builder afterPack hook: ad-hoc signs unsigned macOS builds so downloads launch
 scripts/check.mjs               JavaScript syntax checks and all pure regression suites (`npm test`)
 scripts/check-packaged.mjs      packaged runtime smoke test using a temporary data dir and loopback port
 scripts/check-layout.ts          fixed 1600×900 layout, UUID, persistence and migration checks
