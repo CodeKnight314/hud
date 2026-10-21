@@ -24,6 +24,26 @@ This contract is for trusted renderer modules installed in `views/`. For a data-
 use the isolated `hud_graph` or `hud_canvas` flow documented in [GUIDE.md](../GUIDE.md); those programs have their own
 bindings, SDK and explicit capability grants. Do not treat a Markdown code block as executable code.
 
+## Generating one
+
+`hud_view` / `hud view` writes a module in this contract from a small spec:
+
+```
+hud_view {action: "generate", name: "latency-bar", spec: {kind: "bar", series: "categories", unit: "ms"}, write: true, display: "monitor-id"}
+hud view generate latency-bar --spec '{"kind":"bar","series":"categories"}' --write --display monitor-id
+```
+
+Kinds: `bar`, `line`, `sparkline`, `gauge`, `bullet`, `scatter`, `heatmap`, `table`, `slo`. `validate` runs the static
+checks below and a headless render against a fixture. Generated modules are ordinary modules: read them, edit them,
+or replace them with `hud view set`.
+
+Static checks reject dynamic imports, `require`, `eval`, `new Function`, network APIs (`fetch`, `XMLHttpRequest`,
+`WebSocket`, `EventSource`), storage and cookies, `window.open`, parent/top frame access, `location`/`history`, direct
+`/api/` calls, script/iframe/object/embed tags and inline event handlers. They are advisory gates, not a sandbox.
+
+**Trust boundary:** these modules run unsandboxed in the board page with the page's own origin. Only install code
+you trust. A view received from another agent should be inspected with `hud attach`/`hud view show` before writing.
+
 ## Rules
 
 - **Monochrome charts.** Use fill/stroke opacity for emphasis. Cards reserve red for blocked/decision/error states and

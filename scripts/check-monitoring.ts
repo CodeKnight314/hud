@@ -39,7 +39,7 @@ function byId<T extends { id: string }>(items: T[], id: string): T {
 }
 
 async function migrationAndStalePersistence() {
-  assert.equal(STATE_VERSION, 9);
+  assert.equal(STATE_VERSION, 10);
   const dir = mkdtempSync(join(tmpdir(), 'hud-monitoring-v8-'));
   roots.push(dir);
   const file = join(dir, 'state.json');
@@ -64,7 +64,7 @@ async function migrationAndStalePersistence() {
   const store = new Store(file);
   stores.push(store);
   const migrated = store.get(id);
-  assert.equal(store.exportState().version, 9);
+  assert.equal(store.exportState().version, STATE_VERSION);
   assert.equal(migrated.id, id, 'migration preserves item id');
   assert.deepEqual(migrated.history, oldState.items[id].history, 'migration preserves history');
   assert.equal(migrated.observation?.observedAt, null, 'legacy observation time stays unknown');

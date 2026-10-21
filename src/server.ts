@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync, existsSync, statSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Engine } from './engine.ts';
@@ -10,6 +11,10 @@ import { spawn } from 'node:child_process';
 import { asset, assetKeys, isPackaged } from './assets.ts';
 import { ROOT, config } from './config.ts';
 import { publicState, registerMonitoring } from './monitoring-server.ts';
+import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, textOf, writeAttachmentBytes } from './attachments.ts';
+import { unifiedDiff } from './diff.ts';
+import { capturePage } from './render.ts';
+import { deleteViewFile, generateViewCode, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
 const WEB = join(ROOT, 'web');
@@ -59,21 +64,6 @@ function seedDir(dir: string, prefix: 'probes' | 'views') {
   }
 }
 
-/** the renderer modules on offer, newest mtime first — also what GET /api/views reports */
-function listViews(): { name: string; mtime: number; bytes: number }[] {
-  try {
-    return readdirSync(viewsDir)
-      .filter((n) => /^[\w][\w.-]*\.js$/.test(n))
-      .map((n) => {
-        const st = statSync(join(viewsDir, n));
-        return { name: n, mtime: st.mtimeMs, bytes: st.size };
-      })
-      .sort((a, b) => b.mtime - a.mtime);
-  } catch {
-    return [];
-  }
-}
-
 /**
  * Serve an agent-authored renderer module. Read-only, GET-only, path-stripped, and the same loopback
  * Host/Origin gate as everything else — these execute in the page, so treat them like probes.
@@ -100,11 +90,65 @@ function broadcast(msg: string) {
     c.write(msg);
   }
 }
+// ---------- waiters: event-driven hud_wait ----------
+interface Waiter {
+  session?: string;
+  scope?: string;
+  ticket?: string;
+  ticketBoard?: string;
+  sessions: Set<string>;
+  kinds: Set<string>;
+  includeSelf: boolean;
+  done: (value: unknown) => void;
+}
+const waiters = new Set<Waiter>();
+
+function matchWaiter(w: Waiter, e: HudEvent): boolean {
+  const self = w.session;
+  if (!w.includeSelf && self) {
+    if (e.kind === 'context' && e.entry.session === self) return false;
+    if (e.kind === 'claim' && e.claim.session === self) return false;
+    if (e.kind === 'session' && e.session.id === self) return false;
+  }
+  switch (e.kind) {
+    case 'context': {
+      if (!w.kinds.has('context')) return false;
+      if (w.scope && e.entry.scope === w.scope) return true;
+      if (w.ticket && (e.entry.refs?.includes(w.ticket) || e.entry.scope === `run:${w.ticket}`)) return true;
+      return false;
+    }
+    case 'claim': {
+      if (!w.kinds.has('claim')) return false;
+      if (w.ticket && e.claim.ticket === w.ticket) return true;
+      if (w.scope && (w.scope === `board:${e.claim.board}` || w.scope === `run:${e.claim.ticket}`)) return true;
+      return false;
+    }
+    case 'session':
+      return w.kinds.has('session') && w.sessions.has(e.session.id);
+    case 'item':
+      return w.kinds.has('item') && !!w.ticket && e.item.id === w.ticket;
+    case 'item.deleted':
+      return w.kinds.has('item') && !!w.ticket && e.id === w.ticket;
+    default:
+      return false;
+  }
+}
+
+function matchWaiters(e: HudEvent) {
+  if (!waiters.size) return;
+  for (const w of [...waiters]) {
+    let matched = false;
+    try { matched = matchWaiter(w, e); } catch { matched = false; }
+    if (matched) w.done({ woke: true, reason: e.kind, event: e, now: Date.now() });
+  }
+}
+
 store.on('event', (e: HudEvent) => {
   try {
     const out = e.kind === 'item' ? { ...e, item: Store.lite(e.item) } : e.kind === 'board' ? { ...e, board: Store.boardLite(e.board) } : e;
     broadcast(`data: ${JSON.stringify(out)}\n\n`);
     if (e.kind === 'alert') runAlertHook(e.alert);
+    matchWaiters(e);
   } catch (err) {
     console.error('[hud] event handler:', err);
   }
@@ -112,6 +156,7 @@ store.on('event', (e: HudEvent) => {
 setInterval(() => {
   try {
     store.checkStale();
+    store.pruneCoordination();
   } catch (e) {
     console.error('[hud] stale check:', e);
   }
@@ -165,6 +210,7 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
   '.md': 'text/markdown; charset=utf-8',
   '.json': 'application/json',
 };
@@ -232,6 +278,13 @@ function actorOf(req: IncomingMessage, body?: any, q?: URLSearchParams) {
   if (h) try { h = decodeURIComponent(h); } catch {}
   const a = h || (isObj(body) ? body.actor : undefined) || q?.get('actor') || 'api';
   return String(a).slice(0, 40);
+}
+
+/** the session making a call: header, body or query; undefined when the caller has none */
+function sessionOf(req: IncomingMessage, body?: any, q?: URLSearchParams): string | undefined {
+  const h = req.headers['x-hud-session'];
+  const s = (typeof h === 'string' ? h : undefined) || (isObj(body) ? body.session : undefined) || q?.get('session');
+  return s === undefined || s === null || s === '' ? undefined : String(s).slice(0, 64);
 }
 
 function guide() {
@@ -348,7 +401,79 @@ route('POST', '/api/shutdown', () => {
   return { ok: true, stopping: process.pid };
 });
 route('GET', '/api/guide', (_q, res) => send(res, 200, guide(), 'text/markdown; charset=utf-8'));
-route('GET', '/api/views', () => ({ dir: viewsDir, views: listViews() }));
+route('GET', '/api/views', () => ({
+  dir: viewsDir,
+  views: listViewInfos(viewsDir).map(({ name, mtime, bytes, sha256, validation }) => ({ name: `${name}.js`, mtime, bytes, sha256, valid: validation.ok, errors: validation.errors })),
+}));
+
+// ---------- generated view modules (trusted local code: they run in the board page) ----------
+const viewPreviews = new Map<string, { name: string; code: string; expires: number }>();
+const viewPreviewUrl = (token: string) => `http://127.0.0.1:${PORT}/api/view-preview/${token}`;
+
+route('GET', '/api/views/:name', (_req, _res, [name]) => {
+  const n = dec(name).replace(/\.js$/i, '');
+  const code = readViewFile(n);
+  return { name: n, code, sha256: validateViewCode(code).sha256, validation: validateViewCode(code) };
+});
+route('PUT', '/api/views/:name', async (req, _res, [name]) => {
+  const b = await readObj(req);
+  if (typeof b.code !== 'string') throw new HudError(400, 'code is required');
+  const r = writeViewFile(dec(name).replace(/\.js$/i, ''), b.code, { overwrite: b.overwrite === true, expectedSha256: b.expectedSha256 === undefined ? undefined : String(b.expectedSha256) });
+  return { name: dec(name).replace(/\.js$/i, ''), ...r, validation: validateViewCode(b.code) };
+});
+route('POST', '/api/views', async (req) => {
+  const b = await readObj(req);
+  if (typeof b.name !== 'string') throw new HudError(400, 'name is required');
+  if (!isObj(b.spec)) throw new HudError(400, 'spec must be an object');
+  const code = generateViewCode(b.name, b.spec as any);
+  const validation = validateViewCode(code);
+  if (b.write === true && validation.ok) {
+    const r = writeViewFile(b.name, code, { overwrite: b.overwrite === true, expectedSha256: b.expectedSha256 === undefined ? undefined : String(b.expectedSha256) });
+    return { name: b.name, code, validation, written: true, ...r };
+  }
+  return { name: b.name, code, validation, written: false };
+});
+route('DELETE', '/api/views/:name', (req, _res, [name], q) => deleteViewFile(dec(name).replace(/\.js$/i, ''), q.get('expectedSha256') || undefined));
+route('POST', '/api/views/:name/validate', async (req, _res, [name]) => {
+  const b = await readObj(req);
+  const code = typeof b.code === 'string' ? b.code : readViewFile(dec(name).replace(/\.js$/i, ''));
+  const validation = validateViewCode(code);
+  if (!validation.ok) return { ...validation, rendered: false };
+  const token = randomUUID();
+  viewPreviews.set(token, { name: dec(name), code, expires: Date.now() + 120_000 });
+  try {
+    const shot = await capturePage(viewPreviewUrl(token), 'page');
+    const errors = shot.errors ?? [];
+    return { ...validation, rendered: errors.length === 0, renderErrors: errors, image: shot.image };
+  } catch (e) {
+    return { ...validation, rendered: false, renderErrors: [(e as Error).message] };
+  } finally {
+    viewPreviews.delete(token);
+  }
+});
+route('GET', '/api/view-preview/:token', (_req, res, [token]) => {
+  const p = viewPreviews.get(dec(token));
+  if (!p || p.expires < Date.now()) throw new HudError(404, 'preview expired');
+  const fixture = JSON.stringify(viewFixture()).replaceAll('<', '\\u003c');
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; base-uri 'none'" });
+  res.end(`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#050505;color:#e8e8e8;font:12px monospace}svg{display:block}</style><body><div id="out"></div><script type="module">
+import { render } from '/api/view-preview-source/${token}';
+import { helpers } from '/views.js';
+const errors = [];
+window.__hudCapture = { ready: false, errors };
+try {
+  const out = render({ item: ${fixture}, w: 420, h: 160, helpers });
+  document.getElementById('out').innerHTML = out || '';
+} catch (e) { errors.push(String(e && e.message || e)); }
+window.__hudCapture.ready = true;
+</script>`);
+});
+route('GET', '/api/view-preview-source/:token', (_req, res, [token]) => {
+  const p = viewPreviews.get(dec(token));
+  if (!p || p.expires < Date.now()) throw new HudError(404, 'preview expired');
+  res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(p.code);
+});
 route('GET', '/api/state', (_r, _s, _m, q) => {
   const board = q.get('board') ? store.requireBoard(q.get('board')!).id : undefined;
   return publicState(store, board);
@@ -398,6 +523,173 @@ route('DELETE', '/api/boards/:id', (req, _s, [id], q) => {
 route('POST', '/api/boards/:id/clear', async (req, _res, [id]) => {
   const body = await readObj(req);
   return store.clearBoard(dec(id), actorOf(req, body));
+});
+
+// ---------- coordination: presence, claims, queue ----------
+route('GET', '/api/sessions', () => store.sessions());
+route('POST', '/api/sessions', async (req) => {
+  const b = await readObj(req);
+  const id = b.id ?? b.name;
+  if (typeof id !== 'string' || !id.trim()) throw new HudError(400, 'id (or name) is required');
+  return store.sessionStart({ id, name: typeof b.name === 'string' ? b.name : undefined, actor: typeof b.actor === 'string' ? b.actor : undefined, kind: b.kind, pid: Number.isFinite(b.pid) ? b.pid : undefined, run: typeof b.run === 'string' ? b.run : undefined }, actorOf(req, b));
+});
+route('POST', '/api/sessions/:id/heartbeat', (_req, _res, [id]) => store.sessionHeartbeat(dec(id)));
+route('DELETE', '/api/sessions/:id', (req, _res, [id], q) => store.sessionEnd(dec(id), actorOf(req, undefined, q)));
+
+route('GET', '/api/items/:id/claim', (_req, _res, [id], q) => store.claimOf(rid(id, q)));
+route('POST', '/api/items/:id/claim', async (req, _res, [id], q) => {
+  const b = await readObj(req);
+  const session = sessionOf(req, b, q);
+  if (!session) throw new HudError(400, 'session is required to claim work');
+  return store.claim(rid(id, q), {
+    session,
+    ttl: b.ttl === undefined ? undefined : Number(b.ttl),
+    start: b.start === true || b.start === 'true' || b.start === 1,
+    takeover: b.takeover === true || b.takeover === 'true' || b.takeover === 1,
+  }, actorOf(req, b, q));
+});
+route('DELETE', '/api/items/:id/claim', (req, _res, [id], q) => store.releaseClaim(rid(id, q), { session: sessionOf(req, undefined, q), reason: q.get('reason') ?? undefined }, actorOf(req, undefined, q)));
+route('GET', '/api/queue', (_req, _res, _m, q) => store.queue(q.get('board') || 'main', {
+  status: q.get('status') || undefined,
+  project: q.get('project') || undefined,
+  assignee: q.get('assignee') || undefined,
+  includeDone: q.get('includeDone') === '1' || q.get('includeDone') === 'true' || q.get('all') === '1',
+  limit: numParam(q, 'limit'),
+}));
+
+// ---------- shared context ----------
+const kindsOf = (v: unknown) => {
+  const list = Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : undefined;
+  return list?.map(x => String(x).trim().toUpperCase()).filter(Boolean);
+};
+route('POST', '/api/context', async (req) => {
+  const b = await readObj(req);
+  return store.contextPublish({
+    scope: String(b.scope ?? ''), kind: b.kind, text: b.text, data: b.data, refs: strList(b.refs, 'refs'),
+    attachments: strList(b.attachments, 'attachments'), corrects: b.corrects === undefined ? undefined : String(b.corrects),
+    session: sessionOf(req, b),
+  }, actorOf(req, b));
+});
+route('GET', '/api/context', (req, _res, _m, q) => store.contextRead({
+  scope: q.get('scope') || undefined,
+  since: numParam(q, 'since'),
+  kinds: kindsOf(q.get('kind')) as any,
+  limit: numParam(q, 'limit'),
+}, { session: sessionOf(req, undefined, q), mark: q.get('mark') === '1' }));
+route('POST', '/api/context/read', async (req) => {
+  const b = await readObj(req);
+  return store.contextRead({
+    scope: b.scope === undefined ? undefined : String(b.scope),
+    since: b.since === undefined ? undefined : Number(b.since),
+    kinds: kindsOf(b.kinds ?? b.kind) as any,
+    limit: b.limit === undefined ? undefined : Number(b.limit),
+  }, { session: sessionOf(req, b), mark: b.mark !== false });
+});
+route('GET', '/api/context/scopes', (_req, _res, _m, q) => store.contextScopes(q.get('board') ? store.requireBoard(q.get('board')!).id : undefined));
+
+// ---------- long-poll: wait for a peer ----------
+route('POST', '/api/wait', async (req, res) => {
+  if (waiters.size >= 100) throw new HudError(429, 'too many waiters');
+  const b = await readObj(req);
+  const session = sessionOf(req, b);
+  const scope = b.scope === undefined ? undefined : String(b.scope);
+  const ticket = b.ticket === undefined ? undefined : store.resolveId(String(b.ticket));
+  const sessions = new Set(strList(b.sessions, 'sessions'));
+  if (!scope && !ticket && !sessions.size) throw new HudError(400, 'a wait needs scope, ticket or sessions');
+  const kinds = new Set((b.kinds === undefined ? ['context', 'claim', 'session'] : Array.isArray(b.kinds) ? b.kinds : String(b.kinds).split(',')).map((k: unknown) => String(k)));
+  const includeSelf = b.includeSelf === true || b.includeSelf === 'true';
+  if (ticket && (!store.state.items[ticket] || store.state.items[ticket]!.type !== 'ticket')) throw new HudError(400, `ticket ${String(b.ticket)} not found`);
+  const since = b.since === undefined ? undefined : Number(b.since);
+  if (since !== undefined && (!Number.isFinite(since) || since < 0)) throw new HudError(400, 'since must be a non-negative sequence number');
+  // catch up on context first, so a delta read and a wait cannot miss an entry
+  if (since !== undefined && scope) {
+    const r = store.contextRead({ scope, since, limit: 20 });
+    const first = r.entries.find(e => includeSelf || e.session !== session);
+    if (first) return { woke: true, reason: 'context', event: { kind: 'context', entry: first }, cursor: first.seq, now: Date.now() };
+  }
+  const seconds = Math.max(1, Math.min(25, Number(b.timeoutSeconds) || 20));
+  return await new Promise((resolve) => {
+    const waiter: Waiter = {
+      session, scope, ticket, ticketBoard: ticket ? store.state.items[ticket]!.board : undefined, sessions, kinds, includeSelf,
+      done: () => {},
+    };
+    const finish = (value: unknown) => {
+      clearTimeout(timer);
+      waiters.delete(waiter);
+      res.off('close', onClose);
+      if (!res.headersSent && !res.destroyed) send(res, 200, value);
+      resolve(undefined);
+    };
+    const onClose = () => {
+      clearTimeout(timer);
+      waiters.delete(waiter);
+      resolve(undefined);
+    };
+    const timer = setTimeout(() => finish({ woke: false, timeout: true, now: Date.now() }), seconds * 1000);
+    waiter.done = finish;
+    waiters.add(waiter);
+    res.on('close', onClose);
+  });
+});
+
+// ---------- attachments (bytes live outside state.json) ----------
+route('POST', '/api/attachments', async (req) => {
+  const b = await readObj(req, 8 << 20);
+  if (typeof b.contentBase64 !== 'string' || !b.contentBase64) throw new HudError(400, 'contentBase64 is required');
+  const bytes = Buffer.from(b.contentBase64, 'base64');
+  const name = sanitizeName(String(b.name ?? ''));
+  const id = randomUUID();
+  const board = store.requireBoard(String(b.board ?? 'main')).id;
+  const written = writeAttachmentBytes(board, id, name, bytes);
+  try {
+    return store.attachmentAdd({
+      id, board, name, scope: b.scope === undefined ? undefined : String(b.scope), kind: b.kind, mime: b.mime,
+      bytes: written.bytes, sha256: written.sha256, session: sessionOf(req, b), target: b.target,
+      baseId: b.baseId, baseSha256: b.baseSha256, corrects: b.corrects,
+    }, actorOf(req, b));
+  } catch (e) {
+    removeAttachmentBytes({ id, board, name } as any);
+    throw e;
+  }
+});
+route('GET', '/api/attachments', (_req, _res, _m, q) => store.attachments({ board: q.get('board') ? store.requireBoard(q.get('board')!).id : undefined, scope: q.get('scope') || undefined }));
+route('GET', '/api/attachments/:id', (_req, _res, [id]) => store.attachment(dec(id)));
+route('GET', '/api/attachments/:id/content', (_req, res, [id], q) => {
+  const a = store.attachment(dec(id));
+  const bytes = readAttachmentBytes(a);
+  if (q.get('format') === 'text') {
+    const text = textOf(bytes);
+    if (text === null) throw new HudError(415, 'attachment is not UTF-8 text');
+    return send(res, 200, text, 'text/plain; charset=utf-8');
+  }
+  res.writeHead(200, { 'content-type': a.mime || 'application/octet-stream', 'content-length': bytes.length, 'cache-control': 'no-store' });
+  res.end(bytes);
+});
+route('GET', '/api/attachments/:id/expand', (_req, _res, [id]) => {
+  const a = store.attachment(dec(id));
+  if (a.kind === 'diff') {
+    const text = textOf(readAttachmentBytes(a));
+    if (text === null) throw new HudError(415, 'attachment is not UTF-8 text');
+    return { text, added: null, removed: null, truncated: false, kind: 'diff' };
+  }
+  if (!a.baseId) throw new HudError(400, 'expand needs a base attachment (publish a diff against an earlier version)');
+  const base = store.attachment(a.baseId);
+  const baseBytes = readAttachmentBytes(base);
+  if (a.baseSha256 && hashBytes(baseBytes) !== a.baseSha256) throw new HudError(409, 'base attachment changed since this version was published', { code: 'base-mismatch' });
+  const before = textOf(baseBytes);
+  const after = textOf(readAttachmentBytes(a));
+  if (before === null || after === null) throw new HudError(415, 'expand only works on UTF-8 text');
+  return { ...unifiedDiff(before, after), kind: 'diff' };
+});
+route('DELETE', '/api/attachments/:id', (req, _res, [id], q) => {
+  const a = store.attachmentRemove(dec(id), actorOf(req, undefined, q), { force: q.get('force') === '1' || q.get('force') === 'true' });
+  removeAttachmentBytes(a);
+  return a;
+});
+route('POST', '/api/attachments/:id/applied', async (req, _res, [id]) => {
+  const b = await readObj(req);
+  if (typeof b.target !== 'string' || !b.target) throw new HudError(400, 'target is required');
+  return store.attachmentApplied(dec(id), b.target, actorOf(req, b));
 });
 
 route('GET', '/api/items', (_r, _s, _m, q) => store.items(queryOf(q)).map(Store.lite));
@@ -653,7 +945,8 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const uri = e instanceof URIError;
     const status = e instanceof HudError ? e.status : uri ? 400 : 500;
     if (status === 500) console.error(`[hud] ${req.method} ${String(req.url).slice(0, 200)}:`, e);
-    if (!res.headersSent) send(res, status, { error: status === 500 ? 'internal error' : uri ? 'malformed URL encoding' : (e as Error).message });
+    const details = e instanceof HudError && e.details ? e.details : undefined;
+    if (!res.headersSent) send(res, status, { error: status === 500 ? 'internal error' : uri ? 'malformed URL encoding' : (e as Error).message, ...(details ?? {}) });
     else res.end();
   }
 };

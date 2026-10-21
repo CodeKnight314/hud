@@ -4,37 +4,47 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hud</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23000'/%3E%3Crect x='3' y='3' width='4' height='10' fill='%23fff'/%3E%3Crect x='9' y='3' width='4' height='4' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <header id="top">
-  <span class="brand">hud</span>
-  <button id="btn-attention" title="cross-board attention inbox">attention <span class="nav-count" id="attention-count"></span></button>
-  <button id="btn-runs" title="run overview">runs <span class="nav-count" id="runs-count"></span></button>
-  <div id="board-switcher">
-    <button id="btn-board" aria-haspopup="true" aria-expanded="false" title="switch board">board</button>
-    <div id="board-menu" hidden></div>
-  </div>
+  <a class="brand" href="#board" title="board"><img class="brand-mark" src="/mark.svg" alt=""><span>hud</span></a>
   <button id="btn-search" title="search everything (⌘/Ctrl+K)">search</button>
-  <nav id="tabs"></nav>
+  <span id="monitor-attention-strip" aria-label="monitor and comparison issues" aria-live="polite" hidden></span>
   <span class="spacer"></span>
   <span id="who" title="actors active in the last 10 minutes"></span>
+  <button id="btn-sessions" title="live agent sessions">● 0 sessions</button>
   <button id="btn-alerts" style="display:none"></button>
-  <button id="btn-dashboard" title="monitors, notes and visual objects (l)">dashboard</button>
-  <button id="btn-view" title="ticket list; click a row for details (l)">tickets</button>
-  <details id="top-more"><summary>more</summary><div class="top-actions">
-    <button id="btn-source" title="inspect the board's live metric sources and custom program bindings">source inspector</button>
-    <button id="btn-organize" title="fit cards and groups into the fixed board (o)">organize board</button>
-    <button id="btn-auto" title="keep this board organized automatically (shift+o)">auto</button>
-    <button id="btn-trash" title="trash: restore or purge deleted items (T)">trash</button>
-    <button id="btn-activity" title="activity feed (a)">activity</button>
-    <button id="btn-help" title="help (?)">help / shortcuts</button>
-  </div></details>
   <span id="conn" class="off" title="live connection">○ offline</span>
 </header>
 
-<section id="monitor-attention-strip" aria-label="monitor and comparison issues" aria-live="polite" hidden></section>
+<aside id="sessions" hidden></aside>
+
+<aside id="rail" aria-label="workspace">
+  <nav class="rail-nav">
+    <button class="rail-item" id="btn-attention" title="cross-board attention inbox (A)">attention <span class="rail-count" id="attention-count"></span></button>
+    <button class="rail-item" id="btn-runs" title="run overview (R)">runs <span class="rail-count" id="runs-count"></span></button>
+  </nav>
+  <div class="rail-boards">
+    <div class="rail-heading"><span>boards</span><button id="btn-new-board" title="new board">+</button></div>
+    <div id="board-list" role="listbox" aria-label="boards"></div>
+  </div>
+  <div class="rail-foot">
+    <button id="btn-organize" title="fit cards and groups into the fixed board (o)">organize</button>
+    <button id="btn-auto" title="keep this board organized automatically (shift+o)">auto</button>
+    <button id="btn-source" title="inspect the board's live metric sources and custom program bindings">sources</button>
+    <button id="btn-activity" title="activity feed">activity</button>
+    <button id="btn-trash" title="trash: restore or purge deleted items">trash</button>
+    <button id="btn-help" title="help / shortcuts (?)">help</button>
+    <div id="board-switcher">
+      <button id="btn-board" aria-haspopup="true" aria-expanded="false" title="board actions">board ▾</button>
+      <div id="board-menu" hidden></div>
+    </div>
+  </div>
+</aside>
 
 <section id="global-search" aria-label="global search" hidden>
   <div class="search-head"><span>search</span><span class="sp"></span><button data-search-close aria-label="close search">×</button></div>
@@ -66,9 +76,9 @@ t m n f w         ticket · monitor · note · frame · widget
 agents            hud_overview (MCP) · hud ls (CLI)</pre>
 </div>
 
-<aside id="drawer"></aside>
+<aside id="drawer" aria-label="inspector"></aside>
 <aside id="program-inspector" aria-label="source inspector" hidden></aside>
-<div id="drawer-grip" role="separator" aria-orientation="vertical" aria-label="Resize details sidebar" tabindex="0"></div>
+<div id="drawer-grip" role="separator" aria-orientation="vertical" aria-label="Resize inspector" tabindex="0"></div>
 <aside id="activity"><div class="phd"><span>activity</span><button data-close>×</button></div><div class="list"></div></aside>
 <aside id="trash"><div class="phd"><span>trash</span><span class="sp"></span><button data-purge-all title="empty trash">empty</button><button data-close>×</button></div><div class="list"></div></aside>
 <div id="menu"></div>
@@ -81,8 +91,9 @@ agents            hud_overview (MCP) · hud ls (CLI)</pre>
   <span id="hint"></span>
   <span class="spacer"></span>
   <span id="pos"></span>
-  <button id="btn-fit" title="show the whole board (.)">fit board</button>
-  <button id="zoom-out" aria-label="Zoom out" title="zoom out to board limit (−)">−</button>
+  <button id="btn-view" title="ticket list (l)">tickets</button>
+  <button id="btn-fit" title="show the whole board (.)">fit</button>
+  <button id="zoom-out" aria-label="Zoom out" title="zoom out (−)">−</button>
   <span id="zoom"></span>
   <button id="zoom-in" aria-label="Zoom in" title="zoom in (+)">+</button>
 </footer>

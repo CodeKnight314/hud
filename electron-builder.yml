@@ -41,6 +41,8 @@ extraResources:
     to: trayTemplate.png
   - from: build/trayTemplate@2x.png
     to: trayTemplate@2x.png
+  - from: build/icon.png
+    to: icon.png
 
 mac:
   category: public.app-category.developer-tools

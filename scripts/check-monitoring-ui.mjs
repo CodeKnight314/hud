@@ -294,7 +294,6 @@ async function runUI(base, seedData, artifactDir) {
 
     const chrome = await pageEval(win, `(() => ({ top: document.querySelector('#top')?.getBoundingClientRect().height, bar: document.querySelector('#bar')?.getBoundingClientRect().height }))()`);
     assert(chrome.top > 0 && chrome.bar > 0, 'native navigation and status chrome remain visible around the custom board');
-    await pageEval(win, `document.querySelector('#top-more summary')?.click()`);
     await waitForPage(win, `(() => document.querySelector('#btn-source')?.getBoundingClientRect().width > 0)()`, 'source inspector control');
     await pageEval(win, `document.querySelector('#btn-source')?.click()`);
     const inspector = await waitForPage(win, `(() => { const e=document.querySelector('#program-inspector'); return e && !e.hidden && e.textContent.includes('monitoring UI board renderer') && e.textContent.includes(${JSON.stringify(seedData.metricId)}); })()`, 'visible native source inspector with bindings');
@@ -387,7 +386,7 @@ async function runUI(base, seedData, artifactDir) {
       return card.classList.contains('sel');
     })()`);
     assert.equal(selected, true, 'native metric can be selected before clearing');
-    await pageEval(win, `document.querySelector('.item[data-id="${seedData.metricId}"] .expand-btn')?.click()`);
+    await pageEval(win, `(() => { const el = document.querySelector('.item[data-id="${seedData.metricId}"]'); el?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); return true; })()`);
     await waitForPage(win, `(() => document.querySelector('#drawer.open') !== null)()`, 'open monitor details before board clear');
 
     const extraMetricId = `ui-compare-${seedData.nonce}`;
@@ -470,7 +469,7 @@ async function runUI(base, seedData, artifactDir) {
     const validBoardIds = new Set((await request(base, '/api/boards')).map((board) => board.id));
     const activeHash = await waitForPage(win, `(() => decodeURIComponent(location.hash.replace(/^#/, '')) === 'main' ? 'main' : false)()`, 'navigation to the protected main board after deletion');
     assert(validBoardIds.has(activeHash), `deleted board navigation resolved to a valid board: ${activeHash}`);
-    assert.equal(await pageEval(win, `document.querySelector('#btn-board')?.textContent.trim()`), `board: ${(await request(base, '/api/boards')).find((board) => board.id === activeHash)?.name}`, 'board switcher reflects the surviving board');
+    assert.equal(await pageEval(win, `document.querySelector('#board-list .board-row.on .name')?.textContent.trim()`), (await request(base, '/api/boards')).find((board) => board.id === activeHash)?.name, 'rail reflects the surviving board');
     await pageEval(win, `document.querySelector('#btn-board')?.click()`);
     await waitForPage(win, `(() => !!document.querySelector('#board-menu [data-board-delete]'))()`, 'main board maintenance controls');
     const mainActions = await pageEval(win, `(() => {

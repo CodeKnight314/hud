@@ -5,16 +5,25 @@ hud is a local, live canvas shared between a human and agents. It holds **ticket
 human's browser at http://localhost:{{PORT}} and vice versa. The human rearranges things too, so
 re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 
+- [Ways in](#ways-in-all-equivalent) · [Browser navigation](#browser-navigation) · [Items](#items) ·
+  [Projects, tickets and links](#projects-tickets-and-links) · [Coordination](#coordination) ·
+  [Shared context](#shared-context) · [Monitors](#monitors) · [Renderers](#renderers) ·
+  [Attention, runs and changes](#attention-runs-and-incremental-changes) · [Decisions](#decisions-when-youre-blocked) ·
+  [Finishing a run](#finishing-a-run) · [Trash and backups](#trash-backups-and-undo) ·
+  [Install as an app](#install-hud-as-an-app-macos-windows-linux) · [Connect your agent](#connect-your-agent)
+
 ## Ways in (all equivalent)
 - **MCP**: tools `hud_overview`, `hud_tickets`, `hud_search`, `hud_project`, `hud_link`, `hud_create`, `hud_update`,
   `hud_push`, `hud_comment`, `hud_get`, `hud_delete`, `hud_trash`, `hud_backup`, `hud_board`, `hud_organize`,
   `hud_arrange`, `hud_run`, `hud_views`, `hud_watch`, `hud_alerts`, `hud_attention`, `hud_runs`, `hud_changes`,
   `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare`, `hud_lint`, `hud_graph`,
-  `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_guide`. MCP also exposes the
+  `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_session`, `hud_claim`, `hud_queue`,
+  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_guide`. MCP also exposes the
   `hud://guide` resource.
   Times in tool output are in the machine's local time zone. `source.kind: "command"` runs a shell command on the
   user's machine, so only set it for checks the user would run themselves.
-- **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud attention`, `hud runs`, `hud changes`, `hud readout`,
+- **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
+  `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
   `hud comment`, `hud ask`, `hud decide`, `hud finish`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
@@ -55,38 +64,41 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 The server starts automatically the first time the CLI, MCP server or client needs it.
 
 ## Browser navigation
-The browser opens on the cross-board **Attention** landing: current decisions, blocked work, warnings, errors and stale
-reporters are grouped by board and run. Review keeps an issue active; it only records human review. **Runs** lists
-tickets tagged `run`, with their explicit `summaryMonitor`, progress, ETA and linked work. **Board** returns to the
-selected dashboard or Tickets view. Completed runs are hidden until **show completed** is selected.
+The app opens on the last board. A persistent **left rail** switches **Attention**, **Runs** and boards; the board rows
+show their item counts and double-click to rename, and `+` creates one. Attention groups current decisions, blocked
+work, warnings, errors and stale reporters by board and run; review keeps an issue active, it only records human
+review. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
+**queue** tab lists open, claimed and done work with owner, live session, blockers and a claim/release action.
+Completed runs are hidden until **show completed** is selected.
 
-Use the searchable **board** switcher in the top bar to find or create a board; recent boards are kept near the top.
-Use **search** or `⌘/Ctrl+K` for a cross-board search of titles, ids, UUIDs, ticket idents, bodies and notes. Opening a
-result switches to its board and opens the details sidebar without acknowledging attention or alerts.
+The top bar holds **search** (`⌘/Ctrl+K`), the live actor count, the session popover and the connection pill. Search is
+cross-board: titles, ids, UUIDs, ticket idents, bodies and notes. Opening a result switches to its board and opens the
+inspector without acknowledging attention or alerts.
 
 ## Items
 Common fields: `id`, `type`, `board` (default `main`), `title`, `group`, `x`, `y`, `w`, `h` (board pixels),
 `meta` (free-form object for your own bookkeeping). Dashboard surfaces are fixed **1600 × 900**. Geometry is clamped
 to those bounds. Auto layout is on by default; omit coordinates and let hud place and size visual cards.
 
-**Tickets are list objects, not canvas cards.** Use **Tickets** to search and manage them; clicking a row opens
-its scrollable sidebar. Done and canceled tickets are hidden by default; **completed** reveals them, and an
-explicit status filter or search also finds them. **Dashboard** shows monitors, notes, utilities and their
-frames. Double-click any visual card to open its sidebar. Ticket-only frames and projects do not take dashboard
-space. Ticket-heavy boards initially open the list; view choice is remembered per board. Ticket identities,
-groups and relationships remain shared with agents. Never size or position tickets to improve visual layout.
+**Tickets are list objects, not canvas cards.** Use **Tickets** (or `l`) to search and manage them; clicking a row opens
+the inspector. Done and canceled tickets are hidden by default; **completed** reveals them, and an explicit status
+filter or search also finds them. The canvas shows monitors, notes, utilities and their frames. Double-click any
+visual card to open the inspector. Ticket-only frames and projects do not take canvas space. Ticket-heavy boards
+initially open the list; view choice is remembered per board. Ticket identities, groups and relationships remain
+shared with agents. Never size or position tickets to improve visual layout.
 
 Tickets have an immutable `uuid`. New ticket ids are UUIDs unless a custom id is supplied. Existing ids and
 `KEY-n` identifiers remain valid; existing tickets gain a UUID alias without breaking links. Use the SVG copy
-button beside a ticket identifier on its card, list row, or details panel, then paste the UUID into MCP, CLI,
-or HTTP anywhere a ticket id is accepted. `hud_get` returns the full UUID.
+button beside a ticket identifier in the inspector, then paste the UUID into MCP, CLI, or HTTP anywhere a ticket id
+is accepted. `hud_get` returns the full UUID.
 
 ### Details sidebar
-Opening an item shows **Overview**, **History**, and **Settings** tabs. The sidebar can be resized with its grip or
-keyboard: it stays between **360 px** and **900 px**, capped by the window width, and the chosen width is remembered
-in that browser. Overview is for the current report, linked run, decision, comments and follow-up; History contains
-readings, report history, comments and activity; Settings edits fields and configuration. Resizing or opening details
-does not move cards or acknowledge attention.
+Opening an item shows one scrolling **inspector** with **overview**, **activity** and **settings** sections, plus jump
+links at the top; the source inspector for a board opens in the same place from the rail. There are no tabs. The
+inspector can be resized with its grip or keyboard: it stays between **360 px** and **900 px**, capped by the window
+width, and the chosen width is remembered in that browser. Overview carries the current report, linked run, decision,
+claim and shared context; activity carries readings, report history and the audit log; settings edits fields and
+configuration. Resizing or opening details does not move cards or acknowledge attention.
 
 **Groups** are the main way to organize: give an item `group: "CI"` and it lives in the frame titled "CI" (created if
 missing). Changing `group` moves it; `group: ""` ungroups it. Renaming a frame renames its group. When a human drags an
@@ -185,6 +197,101 @@ list comments on it, changes its status or changes its assignee. The alert's `to
 The human reads the same structure in the **Tickets view** (or press `l` on a board): one row per
 ticket with its ident, status glyph, blockers and branch, sub-tickets nested, and `＋` beside any status to add a
 ticket inline. `hud ls tickets` prints the same thing on the command line.
+
+## Coordination
+Several agents can work one board without a coordinator. hud tracks **who is live** and **what each agent has taken**;
+the agents decide the work.
+
+    hud_session {action: "start" | "heartbeat" | "end" | "list", name?, kind?, run?}
+    hud_queue   {board?, status?, project?, assignee?, includeDone?, limit?}
+    hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?}
+
+- **Presence is automatic.** An MCP client registers a session on `initialize` and renews it every 20 s; the framework
+  records the session, never the agent. A session that stops renewing expires after 90 s, and its claims are released.
+  `hud_session {action:"list"}` (or `hud session list`) shows name, kind, age and claims.
+- **A claim is an exclusive lease.** `hud_claim {ticket:"EGO-3"}` succeeds for the first caller and returns a 409 with
+  `code:"claimed"` for everyone else. Leases last 120 s by default (15–900 via `ttl`); renew by calling `claim` again,
+  or rely on the session heartbeat. One session holds at most one unfinished claim, so two agents cannot silently grab
+  the same work. `start: true` also moves the ticket to `doing`; it is refused while the ticket is blocked.
+- **Ownership is explicit.** A live lease is never stolen, even with `takeover: true`. `takeover` only applies to a claim
+  whose session is no longer live; an expired lease is released automatically. A ticket's `assignee` is durable human
+  ownership: an agent cannot claim work assigned to someone else.
+- **Claims end with the work.** Finishing, canceling, trashing, clearing or deleting the board releases the lease.
+  Reopening a finished ticket does not restore it. Assigning the ticket to someone else releases it too.
+- **The queue is the read model.** `hud_queue` returns `open`, `claimed` and `done` rows with owner, live session state,
+  blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
+  `hud_queue {includeDone: true}` includes finished tickets.
+
+Two coordination policies use the same primitives:
+
+- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, works, publishes
+  findings, and finishes. No planner and no closure step.
+- **Centralized:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
+  fixed, and leaves the rest in the queue for pull. The lead's waits are visible as blocked or claimed rows.
+
+## Shared context
+The queue says *what* to do; the shared context records *what was learned*. It is an append-only log scoped to a
+**run**, a **project** or a **board**, and agents read only what changed since their last read.
+
+    hud_context {action: "publish", scope: "run:EGO-1", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
+    hud_context {action: "read", scope: "run:EGO-1", since?, kind?, limit?, mark?}
+    hud_context {action: "scopes", board?}
+
+- **Scopes:** `run:<ticket id>` requires a ticket tagged `run`; `project:<project id>`; `board:<board id>`. The board is
+  derived from the scope, so entries never drift across boards.
+- **Kinds:** `FACT` is a finding supported by observations; `FAIL` is an approach or hypothesis that was contradicted,
+  with the conditions under which it failed; `SUMMARY` is the state of a finished or handed-off piece of work;
+  `STATUS` is a short progress note. Facts and failures are what let a peer skip a dead end.
+- **Append-only.** There is no edit or delete. Correct an entry by publishing a new one with `corrects: "<entry id>"`.
+  Readers see both, so the correction is visible without erasing the history.
+- **Delta reads.** Every entry has a monotonically increasing `seq`. `read` with `since: <seq>` returns only newer
+  entries; omit `since` and a session's cursor is used, advancing it when `mark` is true (the default). `cursor` in the
+  response is the value to pass next time. `complete: false` or `truncated: true` means older entries were pruned or a
+  limit cut the result — read again with the returned cursor.
+- **Bounds.** Text is at most 4 KB, `data` at most 8 KB, up to 50 refs and 50 attachments. Retention keeps the newest
+  10,000 entries globally and 2,000 per scope. A session may publish at most 60 entries per minute.
+- **What not to publish.** No routine restatements of the ticket description, no whole file dumps (use attachments),
+  and no claims that a check passed without the evidence. Peers rely on these entries to choose work, so scope them:
+  say what you measured, on which inputs, and what remains unverified.
+
+The web UI shows entries in the ticket inspector's work section once you have a run ticket selected; agents remain the
+primary writers. Context entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
+
+### Attachments
+Publish a file by reference so peers can inspect it without pasting it into the context log.
+
+    hud_attach {action: "add", path: "/abs/notes.md", scope: "run:EGO-1", baseId?, baseSha256?}
+    hud_attach {action: "list", board?, scope?}
+    hud_attach {action: "get" | "content" | "expand" | "delete", id}
+    hud_attach {action: "apply", id, target: "/abs/notes.md", expectedSha256?, mode?: "overwrite" | "create"}
+
+- **Bytes live outside `state.json`** under `<dataDir>/attachments/<board>/<id>/<name>`, with only metadata in state.
+  Files are capped at 2 MB; a board holds at most 500 records and a scope at most 100.
+- **Publish a version, then a diff.** The first version is the original. Publish a later version with `baseId` and
+  `baseSha256`; `expand` then returns a unified diff against that base, not against your current file.
+- **Apply is local and deliberate.** `apply` runs in the agent's process (MCP/CLI), not on the server. It writes only
+  an absolute regular-file target, refuses symlinks, backs up the old file to `<target>.hud-backup-<timestamp>`, and
+  checks the hash you based your work on. If the target has changed, it returns 409 `conflict` with the actual hash;
+  re-read and reconcile instead of forcing the write.
+- **References are protected.** An attachment referenced by a context entry cannot be deleted without `force: true`.
+
+### Waiting for peers
+    hud_wait {scope?: "run:EGO-1", ticket?: "EGO-3", sessions?: ["agent-b"], kinds?, since?, timeoutSeconds?, includeSelf?}
+    hud wait --scope run:EGO-1 --timeout 20
+
+`hud_wait` blocks (up to 25 s) and returns on the first matching event instead of sleeping and polling. Give it at
+least one selector — a scope, a ticket or peer session names — so unrelated activity never wakes it.
+
+- **Wait for a finding:** `hud_context read` first, then `hud_wait {scope, since: cursor}` returns as soon as a peer
+  publishes, and the response includes the entry.
+- **Wait for a blocker:** `hud_wait {ticket: "EGO-3"}` returns on that ticket's claim, reference or item change.
+- **Wait for a claim to free:** `hud_wait {scope: "board:main", kinds: ["claim"]}`.
+- **Wait for a peer to end:** `hud_wait {sessions: ["agent-b"]}`.
+
+Own-session events are excluded unless `includeSelf` is set. The MCP call blocks that session's serialized tool chain
+for the duration, so keep `timeoutSeconds` at 20 rather than the maximum. Default kinds are `context`, `claim` and
+`session`; `item` can be requested explicitly.
+
 
 ## Monitors
 `source.kind` decides how a monitor is updated:
@@ -618,6 +725,29 @@ or action error. Expose each action in the UI with a clear label and result. Exi
 `view:<name>` modules remain trusted filesystem
 renderers with their separate contract in [views/README.md](views/README.md); they are not persisted custom programs.
 
+### Generated views
+For a reusable chart that follows one of the standard shapes, generate a view module instead of hand-writing HTML.
+
+    hud_view {action: "generate", name: "latency-bar", spec: {kind: "bar", series: "categories", unit: "ms"}, write: true}
+    hud_view {action: "validate", name: "latency-bar"}
+    hud_view {action: "list" | "get" | "delete", name?}
+    hud set <monitor> --display "view:latency-bar"
+
+`spec.kind` is one of `bar`, `line`, `sparkline`, `gauge`, `bullet`, `scatter`, `heatmap`, `table` or `slo`.
+`series` is a dot path into `meta` (or omitted for history/table reads); `unit`, `max`, `targets`, `thresholds` and
+`maxRows` shape the output. `generate` returns the code and its validation; add `write: true` to install it in the
+views directory, and `display` to point a monitor at it in one step.
+
+- **Validation is two-stage.** Static checks reject imports, network/storage access, `eval`, script/iframe tags and
+  inline handlers, then compile the module without executing it. `validate` also renders it in a headless Electron
+  window against a fixture, so a blank or throwing renderer is caught before it reaches a card.
+- **Trust boundary.** Views execute unsandboxed in the board page. Only install code you trust; publish a view as an
+  attachment and inspect it before writing. Sandboxed custom programs (`hud_graph`/`hud_canvas`) are the right tool
+  for untrusted or data-heavy UI.
+- **Native alternatives.** `bullet` (value against warn/error ticks and a target) and `waterfall` (categorical
+  contributions to a total) are built in, so an agent can use `display: "bullet"` with `max`/`warnAbove`/`target`
+  without generating a module.
+
 ### Agent dashboard workflow
 
 For an MCP-built board, use this sequence:
@@ -701,13 +831,17 @@ responded.
 When you're done, call `hud_finish {board?, ids?, note?}` (`hud finish`). It marks the named items complete and tidies
 the board (re-runs organize) so the canvas ends up clean. Pass `organize: false` to leave the layout alone. With no `ids` it only completes items you created or are assigned, and
 only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work.
+Finishing releases your claim on those tickets. If you coordinated with peers, publish a final `SUMMARY` entry before
+finishing so the next session can start from what you learned.
 
 ## Trash, backups and undo
 Nothing is deleted outright. `hud_delete` / `hud rm` / `DELETE /api/items/:id` move the item to the **trash**
 (deleting a board trashes its items plus the board; `main` cannot be deleted). `hud_trash {action:"list|restore|purge"}`
 (`hud trash`, `hud restore <id>`, `hud purge <id>|--all`) brings things back, recreating the board if needed and dropping
 links that no longer resolve; only `purge` deletes for good. The trash keeps 500 entries for 30 days. The UI's `u` /
-⌘Z undoes a delete the same way.
+⌘Z undoes a delete the same way. Trashing or clearing a board releases its claims. Sessions and claims are runtime
+state: they are not exported, and a restart starts with none. Shared context and attachment metadata are exported;
+attachment bytes live under `<data>/attachments` and are copied with a backup only when you copy that directory too.
 
 State is backed up to `<data>/backups/state-<YYYYMMDD-HHMMSS>[-reason].json` on server start (before migrations),
 before an import or board delete, and hourly; the newest 30 are kept. `hud backup [--list] [--reason r]`,
@@ -720,9 +854,13 @@ dir (`hud.lock`); a second one refuses to start.
 ## Conventions
 - Start with `hud_overview`. Reuse existing boards/frames/tickets instead of duplicating them.
 - One board per project or area; frames for sub-areas (e.g. "CI", "Release 1.4", "Agent: claude").
-- Track your own work as tickets: set `status: doing` when you start, `hud_comment` progress notes, `done` when finished,
-  `blocked` with a comment saying what you need from the human — and if you are waiting on another *ticket*, set
-  `blockedBy` instead so it clears itself when that ticket finishes.
+- When several agents work the same board, call `hud_queue` and `hud_claim` before starting. Take one claim at a time,
+  publish a `FACT` as soon as it can unblock a peer, and release or finish the claim when you stop.
+- Track your own work as tickets: set `status: doing` when you start (or claim with `start: true`), `hud_comment`
+  progress notes, `done` when finished, `blocked` with a comment saying what you need from the human — and if you are
+  waiting on another *ticket*, set `blockedBy` instead so it clears itself when that ticket finishes.
+- Prefer a typed context entry over a long comment when the finding should outlive the ticket: `FACT` for evidence,
+  `FAIL` for a dead end with its conditions, `SUMMARY` for a handoff.
 - For long tasks, push a progress monitor (`hud_push id=<task> progress=… message=…`), and `state: done` at the end.
 - Link tickets to the monitors that track them (`monitors`, `autoStatus`), and `hud_watch` the monitors you're
   responsible for so you're woken instead of polling.

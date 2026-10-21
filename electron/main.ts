@@ -141,6 +141,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#000000',
     title: 'hud',
+    ...(process.platform === 'darwin' ? {} : { icon: join(process.resourcesPath ?? '', 'icon.png') }),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // the canvas is a plain web page: no preload, no node in the renderer
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },

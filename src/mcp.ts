@@ -5,9 +5,15 @@
  * Starts the hud server in the background if it isn't running.
  */
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { Hud } from './client.ts';
+import { applyAttachment } from './apply.ts';
+import { asset } from './assets.ts';
 import { line } from './summary.ts';
-import type { Item } from './types.ts';
+import type { Item, QueueResult } from './types.ts';
+
+const VERSION = JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version;
 
 const baseHud = new Hud({ actor: process.env.HUD_ACTOR ?? 'agent' });
 
@@ -40,7 +46,7 @@ const ITEM_FIELDS = {
   display: {
     type: 'string',
     description:
-      'monitor view: auto (default), value, progress, status, text, log, spark, line, area, bars, gauge, histogram, scatter, pie, donut, heatmap, box, ridgeline, scatter3d, surface3d, composite, capacity, breakdown, table, grid, pipeline, custom, or "view:<name>" (hud_views)',
+      'monitor view: auto (default), value, progress, status, text, log, spark, line, area, bars, gauge, histogram, scatter, pie, donut, heatmap, box, ridgeline, scatter3d, surface3d, composite, capacity, breakdown, table, grid, pipeline, bullet, waterfall, custom, or "view:<name>" (hud_views)',
   },
   plot: {
     type: 'object',
@@ -432,9 +438,141 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: 'hud_session',
+    description:
+      'Register this agent\'s presence so peers can see it on the queue. MCP registers automatically on connect and heartbeat; use this to start a named session, list live sessions, or end one. Claims are renewed with the session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'heartbeat', 'end', 'list'], description: 'default: start' },
+        name: { type: 'string', description: 'session name (default: this MCP session)' },
+        kind: { type: 'string', enum: ['agent', 'cli', 'human', 'unknown'] },
+        run: { type: 'string', description: 'run ticket id/ident this session is working on' },
+      },
+    },
+  },
+  {
+    name: 'hud_claim',
+    description:
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['claim', 'renew', 'release', 'status', 'list'], description: 'default: claim' },
+        ticket: { type: 'string', description: 'ticket id or KEY-12' },
+        session: { type: 'string', description: 'session name (default: this MCP session)' },
+        ttl: { type: 'number', description: 'lease seconds (default 120, 15-900)' },
+        start: { type: 'boolean', description: 'also set the ticket to doing' },
+        takeover: { type: 'boolean', description: 'take a lease whose holder is no longer live' },
+      },
+    },
+  },
+  {
+    name: 'hud_queue',
+    description:
+      'Read the work queue: open, claimed and done tickets with owner, live session state, blockers and ready flag. Use it before claiming to pick complementary work; use hud_claim to take a ticket.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        board: { type: 'string' },
+        status: { type: 'string', description: 'comma-separated statuses' },
+        project: { type: 'string', description: 'project id or KEY' },
+        assignee: { type: 'string' },
+        includeDone: { type: 'boolean', description: 'include finished tickets (default false)' },
+        limit: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'hud_context',
+    description:
+      'Shared, append-only context for a run, project or board. Publish typed entries — FACT (a finding), FAIL (a contradicted approach), SUMMARY (state of the work), STATUS (short progress note) — and read only what changed since your last read. Corrections are new entries with corrects:<entryId>; entries are never edited.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['publish', 'read', 'scopes'], description: 'default: read' },
+        scope: { type: 'string', description: 'run:<ticket>, project:<project> or board:<board>' },
+        kind: { type: 'string', enum: ['FACT', 'FAIL', 'SUMMARY', 'STATUS'], description: 'publish: entry type; read: comma-separated filter' },
+        text: { type: 'string', description: 'publish: the finding or correction (≤4 KB)' },
+        data: { type: 'object', description: 'publish: optional structured payload (≤8 KB)' },
+        refs: { type: 'array', items: { type: 'string' }, description: 'publish: related item ids/idents' },
+        attachments: { type: 'array', items: { type: 'string' }, description: 'publish: attachment ids' },
+        corrects: { type: 'string', description: 'publish: id of an earlier entry this one corrects' },
+        since: { type: 'number', description: 'read: last seen sequence number (omit to use your session cursor)' },
+        limit: { type: 'number', description: 'read: at most this many entries (default 200)' },
+        mark: { type: 'boolean', description: 'read: advance your session cursor (default true)' },
+        session: { type: 'string', description: 'publish/read: session name (default: this MCP session)' },
+      },
+    },
+  },
+  {
+    name: 'hud_attach',
+    description:
+      'Share a file with peers by reference, or apply a peer version with conflict detection. add copies bytes into hud storage (the server never reads an arbitrary local path); expand shows a unified diff against the version it was based on; apply writes a real file in this process — it refuses paths outside your intent, symlinks and changed targets.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['add', 'list', 'get', 'content', 'expand', 'apply', 'delete'] },
+        id: { type: 'string', description: 'attachment id (get/content/expand/apply/delete)' },
+        board: { type: 'string', description: 'add/list: board (default main)' },
+        scope: { type: 'string', description: 'add/list: run:<ticket>, project:<project> or board:<board>' },
+        name: { type: 'string', description: 'add: file name (default: basename of path)' },
+        kind: { type: 'string', enum: ['file', 'text', 'diff'] },
+        mime: { type: 'string' },
+        path: { type: 'string', description: 'add: absolute local file to publish' },
+        content: { type: 'string', description: 'add: text content instead of path' },
+        target: { type: 'string', description: 'add: display-only intended destination; apply: absolute path to write' },
+        baseId: { type: 'string', description: 'add: earlier attachment this version is based on (enables expand)' },
+        baseSha256: { type: 'string', description: 'add: hash of the base version' },
+        corrects: { type: 'string' },
+        expectedSha256: { type: 'string', description: 'apply: hash of the local target you based your work on' },
+        mode: { type: 'string', enum: ['create', 'overwrite'], description: 'apply: default overwrite' },
+        force: { type: 'boolean', description: 'delete: remove even when a context entry references it' },
+      },
+    },
+  },
+  {
+    name: 'hud_wait',
+    description:
+      'Block until a peer publishes shared context, claims/releases a ticket, or ends its session — up to 25 s. Give a scope, a ticket or session names; unrelated events never wake it. Check hud_queue/hud_context first so you do not wait for something already there. The call blocks this session\'s tool chain for its duration.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: { type: 'string', description: 'run:<ticket>, project:<project> or board:<board>' },
+        ticket: { type: 'string', description: 'wake on this ticket\'s claim changes, refs or item updates' },
+        sessions: { type: 'array', items: { type: 'string' }, description: 'wake when one of these sessions ends' },
+        kinds: { type: 'array', items: { type: 'string' }, description: 'context | claim | session | item (default: context, claim, session)' },
+        since: { type: 'number', description: 'context sequence already seen; a matching backlog wakes immediately' },
+        timeoutSeconds: { type: 'number', description: '1-25 (default 20)' },
+        includeSelf: { type: 'boolean', description: 'include this session\'s own events (default false)' },
+      },
+    },
+  },
+  {
+    name: 'hud_view',
+    description:
+      'Create, inspect or validate a chart renderer module for display:"view:<name>". generate turns a small declarative spec into a module; validate runs static checks and a headless render. Trust boundary: these modules run unsandboxed in the board page, so only install code you trust. Prefer hud_graph/hud_canvas for sandboxed custom programs.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'get', 'generate', 'write', 'validate', 'delete'], description: 'default: list' },
+        name: { type: 'string', description: 'module name (lowercase letters, digits, . _ -)' },
+        spec: {
+          type: 'object',
+          description: '{kind:"bar"|"line"|"sparkline"|"gauge"|"bullet"|"scatter"|"heatmap"|"table"|"slo", series?, unit?, max?, targets?, thresholds?, maxRows?}',
+        },
+        code: { type: 'string', description: 'write/validate: module source' },
+        write: { type: 'boolean', description: 'generate: write the module to disk (default false)' },
+        overwrite: { type: 'boolean' },
+        expectedSha256: { type: 'string' },
+        display: { type: 'string', description: 'monitor id to set display:"view:<name>" on after a successful write' },
+      },
+    },
+  },
 ];
 
-const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint']);
+const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint', 'hud_queue']);
 const DESTRUCTIVE = new Set(['hud_delete', 'hud_finish', 'hud_trash', 'hud_board', 'hud_clear_canvas']);
 const OPEN_WORLD = new Set(['hud_create', 'hud_update', 'hud_run']); // can start shell-command / http monitors
 const listed = TOOLS.map((t) => ({
@@ -524,8 +662,42 @@ function attentionRecordMarkdown(record: any): string {
   return [`## Human attention`, ``, `- item: ${mdCell(record?.itemId)}`, `- kind: ${mdCell(record?.kind)}`, `- revision: ${mdCell(record?.revision)}`, `- reviewed: ${record?.reviewedAt ? 'yes' : 'no'}`, `- snoozed until: ${record?.snoozedUntil ? mdCell(record.snoozedUntil) : '—'}`, ``, `Reviewing this queue does not acknowledge old agent alerts.`].join('\n');
 }
 
-function runsMarkdown(r: any): string {
-  const items = Array.isArray(r?.items) ? r.items : [];
+function sessionsMarkdown(r: { items: any[]; now: number }): string {
+  if (!r.items.length) return '## Sessions\n\nNo agent sessions. MCP clients register on connect.';
+  const rows = r.items.map((s) => {
+    const age = Math.max(0, Math.round((r.now - s.lastSeenAt) / 1000));
+    const claims = (s.claims ?? []).map((c: any) => c.ident).join(', ') || '—';
+    return `| ${mdCell(s.id)} | ${mdCell(s.kind)} | ${s.live ? 'live' : 'ended'} | ${age}s ago | ${mdCell(claims)} |`;
+  });
+  return ['## Sessions', '', '| Session | Kind | State | Last seen | Claims |', '|---|---|---|---:|---|', ...rows].join('\n');
+}
+
+function queueMarkdown(r: QueueResult): string {
+  const c = r.counts;
+  const head = `## Queue · ${r.board}\n\n${c.ready} ready · ${c.open} open · ${c.claimed} claimed · ${c.blocked} blocked · ${c.done} done`;
+  if (!r.items.length) return `${head}\n\nNo matching work.`;
+  const rows = r.items.map((t) => `| ${mdCell(t.ident)} | ${mdCell(t.status)}${t.ready ? ' · ready' : ''} | ${mdCell(t.owner ?? '—')} | ${t.session ? (t.session.live ? 'live' : 'ended') : '—'} | ${mdCell(t.blockedBy.join(', ') || '—')} | ${mdCell(t.title)} |`);
+  return [head, '', '| Ticket | Status | Owner | Session | Blocked by | Title |', '|---|---|---|---|---|---|', ...rows].join('\n');
+}
+
+function contextMarkdown(r: { entries: any[]; cursor: number; complete: boolean; truncated: boolean; oldest: number }, scope?: string): string {
+  const head = `## Shared context${scope ? ` · ${scope}` : ''}\n\ncursor ${r.cursor}${r.truncated ? ' · older entries were pruned' : ''}${r.complete ? '' : ' · more entries remain'}`;
+  if (!r.entries.length) return `${head}\n\nNothing new.`;
+  const rows = r.entries.map((e) => `| ${e.seq} | ${mdCell(e.kind)} | ${mdCell(e.actor)} | ${mdCell(e.session ?? '—')} | ${mdCell(e.text)} | ${mdCell((e.refs ?? []).join(', ') || '—')} | ${mdCell(e.corrects ?? '—')} |`);
+  return [head, '', '| Seq | Kind | Actor | Session | Text | Refs | Corrects |', '|---|---|---|---|---|---|---|', ...rows].join('\n');
+}
+
+function contextScopesMarkdown(rows: any[]): string {
+  if (!rows.length) return '## Context scopes\n\nNo shared context yet.';
+  return ['## Context scopes', '', '| Scope | Board | Entries | Last |', '|---|---|---:|---|', ...rows.map((s) => `| ${mdCell(s.scope)} | ${mdCell(s.board)} | ${mdCell(s.count)} | ${mdCell(localTime(s.lastAt))} |`)].join('\n');
+}
+
+function attachmentsMarkdown(rows: any[]): string {
+  if (!rows.length) return 'No attachments.';
+  return ['| Id | Name | Bytes | Scope | Created | Applied |', '|---|---|---:|---|---|---|', ...rows.map((a) => `| ${mdCell(a.id)} | ${mdCell(a.name)} | ${mdCell(a.bytes)} | ${mdCell(a.scope ?? '—')} | ${mdCell(localTime(a.createdAt))} | ${mdCell(a.appliedTo ?? '—')} |`)].join('\n');
+}
+
+function runsMarkdown(r: any): string {  const items = Array.isArray(r?.items) ? r.items : [];
   if (!items.length) return '## Runs\n\nNo runs found.';
   const rows = items.map((run: any) => {
     const progress = run.progress === null || run.progress === undefined ? '—' : `${run.progress}%`;
@@ -751,6 +923,143 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       const since = Number(args.since);
       if (!Number.isFinite(since) || since < 0) throw new Error('since must be a non-negative timestamp');
       return cap(changesMarkdown(await hud.changes(since)));
+    }
+    case 'hud_session': {
+      const action = args.action ?? 'start';
+      const name = String(args.name ?? sessionName());
+      if (action === 'list') return cap(sessionsMarkdown(await hud.sessions()));
+      if (action === 'start') {
+        const s = await hud.sessionStart(name, { kind: args.kind ?? 'agent', run: args.run });
+        session.name = name;
+        return `session ${s.id} started (${s.kind})${s.run ? ` for ${s.run}` : ''}. Peers can see it in hud_queue.`;
+      }
+      if (action === 'heartbeat') {
+        const r = await hud.sessionHeartbeat(name);
+        session.name = name;
+        return `session ${r.session.id} live; ${r.renewed.length} claim${r.renewed.length === 1 ? '' : 's'} renewed`;
+      }
+      if (action === 'end') {
+        const r = await hud.sessionEnd(name);
+        return `session ${r.session.id} ended; released ${r.released.length} claim${r.released.length === 1 ? '' : 's'}`;
+      }
+      throw new Error('action must be start|heartbeat|end|list');
+    }
+    case 'hud_claim': {
+      const action = args.action ?? 'claim';
+      const name = String(args.session ?? sessionName());
+      if (action === 'list') {
+        const s = (await hud.sessions()).items.find((x) => x.id === name);
+        return s?.claims.length ? s.claims.map((c) => `${c.ident}  until ${localTime(c.expiresAt)}`).join('\n') : `no active claim for ${name}`;
+      }
+      if (!args.ticket) throw new Error(`ticket is required for ${action}`);
+      if (action === 'status') {
+        const c = await hud.claimOf(args.ticket);
+        return c ? `${c.ident} claimed by ${c.session} until ${localTime(c.expiresAt)}${c.live ? '' : ' (expired)'}` : `${args.ticket} is not claimed`;
+      }
+      if (action === 'release') {
+        const c = await hud.releaseClaim(args.ticket, name);
+        return `released ${c.ident}`;
+      }
+      if (action === 'renew') {
+        const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl });
+        return `${c.ident} renewed until ${localTime(c.expiresAt)}`;
+      }
+      if (action !== 'claim') throw new Error('action must be claim|renew|release|status|list');
+      const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl, start: args.start, takeover: args.takeover });
+      return `${c.ident} "${c.title}" claimed by ${c.session} until ${localTime(c.expiresAt)}${args.start ? '; ticket moved to doing' : ''}`;
+    }
+    case 'hud_queue': {
+      await needBoard(args.board, hud);
+      return cap(queueMarkdown(await hud.queue({ board: args.board ?? 'main', status: args.status, project: args.project, assignee: args.assignee, includeDone: args.includeDone, limit: args.limit })));
+    }
+    case 'hud_context': {
+      const action = args.action ?? 'read';
+      const session = String(args.session ?? sessionName());
+      if (action === 'scopes') return cap(contextScopesMarkdown(await hud.contextScopes(args.board)));
+      if (action === 'publish') {
+        if (!args.scope || !args.kind || !args.text) throw new Error('scope, kind and text are required to publish');
+        const e = await hud.contextPublish({ scope: args.scope, kind: args.kind, text: args.text, data: args.data, refs: args.refs, attachments: args.attachments, corrects: args.corrects, session });
+        return `published ${e.kind} #${e.seq} ${e.scope} id=${e.id}`;
+      }
+      if (action !== 'read') throw new Error('action must be publish|read|scopes');
+      const r = await hud.contextRead({ scope: args.scope, since: args.since, kinds: args.kind ? String(args.kind).split(',') : undefined, limit: args.limit, session, mark: args.mark });
+      return cap(contextMarkdown(r, args.scope));
+    }
+    case 'hud_wait': {
+      const r = await hud.wait({ scope: args.scope, ticket: args.ticket, sessions: args.sessions, kinds: args.kinds, since: args.since, timeoutSeconds: args.timeoutSeconds, includeSelf: args.includeSelf });
+      if (!r.woke) return `no matching event within ${args.timeoutSeconds ?? 20}s`;
+      return cap(JSON.stringify(r, null, 2));
+    }
+    case 'hud_view': {
+      const action = args.action ?? 'list';
+      if (action === 'list') {
+        const r = await hud.views();
+        return cap(`renderer modules in ${r.dir}\n` + (r.views.length ? r.views.map((v) => `${v.name}  ${v.bytes}b  ${v.valid === false ? `INVALID: ${(v.errors || []).join('; ')}` : 'valid'}`).join('\n') : 'none'));
+      }
+      if (!args.name) throw new Error('name is required');
+      if (action === 'get') {
+        const r = await hud.viewGet(args.name);
+        return cap(`// ${r.name} (sha256 ${r.sha256})\n${r.code}`);
+      }
+      if (action === 'generate') {
+        if (!args.spec) throw new Error('spec is required');
+        const r = await hud.viewGenerate(args.name, args.spec, { write: !!args.write, overwrite: !!args.overwrite });
+        let out = `${r.written ? 'wrote' : 'generated (not written)'} ${r.name}${r.written ? ` at ${r.path}` : ''}\nvalidation: ${r.validation.ok ? 'ok' : r.validation.errors.join('; ')}`;
+        if (args.display && r.written) {
+          await hud.update(String(args.display), { display: `view:${args.name}` });
+          out += `\nset display "view:${args.name}" on ${args.display}`;
+        }
+        out += `\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`;
+        return cap(out);
+      }
+      if (action === 'write') {
+        if (typeof args.code !== 'string') throw new Error('code is required');
+        const r = await hud.viewWrite(args.name, { code: args.code, overwrite: !!args.overwrite, expectedSha256: args.expectedSha256 });
+        return `wrote ${r.name} at ${r.path} (sha256 ${r.sha256.slice(0, 12)}…)\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`;
+      }
+      if (action === 'validate') {
+        const r = await hud.viewValidate(args.name, args.code);
+        return cap(JSON.stringify({ ok: r.ok, rendered: r.rendered, errors: r.errors, warnings: r.warnings, renderErrors: r.renderErrors, sha256: r.sha256 }, null, 2));
+      }
+      if (action === 'delete') {
+        const r = await hud.viewDelete(args.name, args.expectedSha256);
+        return `deleted ${args.name}: ${r.deleted}`;
+      }
+      throw new Error('action must be list|get|generate|write|validate|delete');
+    }
+    case 'hud_attach': {
+      const action = args.action ?? 'list';
+      if (action === 'list') {
+        await needBoard(args.board, hud);
+        return cap(attachmentsMarkdown(await hud.attachments({ board: args.board, scope: args.scope })));
+      }
+      if (action === 'add') {
+        let content: Buffer;
+        if (typeof args.content === 'string') content = Buffer.from(args.content);
+        else if (typeof args.path === 'string') content = readFileSync(args.path);
+        else throw new Error('add needs path or content');
+        const name = String(args.name ?? (args.path ? basename(args.path) : '')) || 'attachment.txt';
+        const a = await hud.attachmentAdd({ board: args.board, scope: args.scope, name, kind: args.kind, mime: args.mime, target: args.target, baseId: args.baseId, baseSha256: args.baseSha256, corrects: args.corrects, content });
+        return `attachment ${a.id} ${a.name} (${a.bytes}b, sha256 ${a.sha256.slice(0, 12)}…)`;
+      }
+      if (action === 'delete') {
+        if (!args.id) throw new Error('id is required');
+        const a = await hud.deleteAttachment(String(args.id), !!args.force);
+        return `deleted attachment ${a.id}`;
+      }
+      if (!args.id) throw new Error('id is required');
+      if (action === 'get') return cap(JSON.stringify(await hud.attachment(args.id), null, 2));
+      if (action === 'content') return cap(await hud.attachmentText(args.id));
+      if (action === 'expand') {
+        const d = await hud.expandAttachment(args.id);
+        return cap(`+${d.added ?? '?'} -${d.removed ?? '?'}${d.truncated ? ' (truncated)' : ''}\n${d.text}`);
+      }
+      if (action === 'apply') {
+        if (!args.target) throw new Error('target is required');
+        const r = await applyAttachment(hud, args.id, { target: args.target, expectedSha256: args.expectedSha256, mode: args.mode });
+        return `applied ${r.attachment} to ${r.path}${r.backup ? ` (backup ${r.backup})` : ''}`;
+      }
+      throw new Error('action must be add|list|get|content|expand|apply|delete');
     }
     case 'hud_readout': {
       await needBoard(args.board, hud);
@@ -984,6 +1293,24 @@ const INSTRUCTIONS =
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 
+// ---------- presence ----------
+let heartbeatTimer: NodeJS.Timeout | null = null;
+let presenceRegistered = false;
+async function registerPresence() {
+  if (presenceRegistered) return;
+  presenceRegistered = true;
+  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid }); } catch {}
+  heartbeatTimer = setInterval(() => { baseHud.sessionHeartbeat(sessionName()).catch(() => {}); }, 20_000);
+  heartbeatTimer.unref();
+}
+async function endPresence() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  if (!presenceRegistered) return;
+  presenceRegistered = false;
+  try { await baseHud.sessionEnd(sessionName()); } catch {}
+}
+
 // stdin: one JSON-RPC message per line, tools/call strictly in order
 let chain: Promise<unknown> = Promise.resolve();
 const rl = createInterface({ input: process.stdin });
@@ -992,8 +1319,10 @@ rl.on('line', (raw) => {
 });
 rl.on('close', async () => {
   await chain;
+  await endPresence();
   process.stdout.write('', () => process.exit(0));
 });
+for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { endPresence().finally(() => process.exit(0)); });
 
 const rpcError = (id: unknown, code: number, message: string) => out({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
 
@@ -1027,6 +1356,7 @@ async function handleOne(msg: any): Promise<void> {
     switch (method) {
       case 'initialize': {
         if (!process.env.HUD_ACTOR) baseHud.actor = baseActor = actorFromClient(params?.clientInfo?.name) ?? baseActor;
+        void registerPresence();
         // start streaming once the session has any watches (or HUD_SESSION is set); hud_watch/hud_ask also start it
         setTimeout(async () => {
           try {
@@ -1041,7 +1371,7 @@ async function handleOne(msg: any): Promise<void> {
           // channel servers must use the pre-2026 handshake
           protocolVersion: want > '2025-06-18' ? '2025-06-18' : want,
           capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false }, experimental: { 'claude/channel': {} } },
-          serverInfo: { name: 'hud', version: '0.1.0' },
+          serverInfo: { name: 'hud', version: VERSION },
           instructions: INSTRUCTIONS,
         });
       }

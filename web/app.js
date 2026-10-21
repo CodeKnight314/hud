@@ -21,7 +21,7 @@ const MGLYPH = { ok: '●', warn: '▲', error: '✕', unknown: '○', running: 
 const KINDS = ['manual', 'push', 'command', 'http', 'probe', 'heartbeat'];
 const DISPLAYS = DISPLAY_KINDS;
 /** display kinds drawn as an SVG chart (so they get hover readout + y-range controls) */
-const CHART_SET = new Set(['composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut', 'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d']);
+const CHART_SET = new Set(['composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut', 'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d', 'bullet', 'waterfall']);
 const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
 
 const S = {
@@ -33,9 +33,7 @@ const S = {
   open: new Set(), // ticket ids whose sub-tickets are collapsed in the list view
   view: { x: 60, y: 60, z: 1 },
   sel: new Set(),
-  expanded: new Set(), // item ids whose card is expanded in place (client-only; never persisted)
   drawer: null, // item id
-  drawerTab: 'overview',
   drawerWide: false,
   drawerWidth: 420,
   detail: new Map(), // full single-item reads; list/SSE payloads stay lite
@@ -52,11 +50,17 @@ const S = {
   captureNow: null,
   captureErrors: [],
   views: [], // renderer modules from GET /api/views, used to cache-bust dynamic imports
-  page: 'attention', // attention | runs | board
+  page: 'board', // attention | runs | board
   attention: { items: [], now: Date.now() },
   attentionExpanded: { reviewed: false, snoozed: false },
   runs: { items: [], showCompleted: false },
+  sessions: { items: [], now: Date.now() },
+  sessionsOpen: false,
+  queue: null,
+  runsTab: 'runs',
   changes: { since: 0, now: 0, complete: false, events: [] },
+  claimCache: new Map(),
+  contextCache: new Map(),
   lastVisit: 0,
   visitStarted: Date.now(),
   boardQuery: '',
@@ -68,7 +72,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-dashboard, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #top-more > summary, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-dtab], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-drawer], [data-copy-ticket]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-drawer], [data-copy-ticket]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -695,7 +699,7 @@ function cardHTML(it) {
       ]
         .filter(Boolean)
         .join('  ');
-      return `<div class="hd"><span class="st">${STATUS_GLYPH[it.status] || '[·]'} ${esc(it.status)}</span><span class="r">${it.autoStatus ? '<span title="status follows linked monitors">⟳</span> ' : ''}${pr} <span class="idt">${esc(identOf(it))}</span> ${copyTicketButton(it)} <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      return `<div class="hd"><span class="st">${STATUS_GLYPH[it.status] || '[·]'} ${esc(it.status)}</span><span class="r">${it.autoStatus ? '<span title="status follows linked monitors">⟳</span> ' : ''}${pr} <span class="idt">${esc(identOf(it))}</span> ${copyTicketButton(it)}</span></div>
         <div class="bd"><div class="ttl">${esc(it.title) || '<span class="faint">untitled</span>'}</div>${lineage ? `<div class="lineage">${lineage}</div>` : ''}${opts}${answer}${links ? `<div class="links">${links}</div>` : ''}<div class="body md">${md(it.body)}</div></div>
         <div class="ft">${by(it)}${it.assignee ? `<span>→${esc(it.assignee)}</span>` : ''}<span>${tags}</span>${targetHTML(it)}<span class="r">${nc} ${ago(it.updatedAt)}</span></div>`;
     }
@@ -755,18 +759,18 @@ function cardHTML(it) {
       const yhint = disp !== 'auto' && DISPLAYS.includes(disp) && CHART_SET.has(disp) ? `<span class="yhint" title="alt+scroll to stretch the y-range (meters/axes are auto by default)">⇕</span>` : '';
       const metaFooter = monitorMetaFooter(it);
       const observedTime = it.observation?.observedAt ?? it.observation?.receivedAt ?? it.lastUpdate;
-      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${stale}${bell}${yhint}<span class="r" title="observation ${esc(localDT(observedTime))}; received ${esc(localDT(it.observation?.receivedAt ?? it.lastUpdate))}">${ago(observedTime)} <span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${stale}${bell}${yhint}<span class="r" title="observation ${esc(localDT(observedTime))}; received ${esc(localDT(it.observation?.receivedAt ?? it.lastUpdate))}">${ago(observedTime)}</span></div>
         <div class="bd">${body}${msg}</div>
         <div class="ft${metaFooter ? ' readout-footer' : ''}"${metaFooter ? ` title="${esc(monitorMetadata(it).definition)}"` : ''}>${by(it)}<span>${esc(srcLabel)}</span>${metaFooter}<span class="r">${esc(it.id)}</span></div>`;
     }
     case 'util': {
       const body = renderUtilCard(it);
-      return `<div class="hd"><span class="g">⚙</span><span class="t">${esc(it.title) || UTIL_LABEL[it.kind] || 'utility'}</span><span class="tag">${esc(UTIL_LABEL[it.kind] || it.kind || '')}</span><span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      return `<div class="hd"><span class="g">⚙</span><span class="t">${esc(it.title) || UTIL_LABEL[it.kind] || 'utility'}</span><span class="tag">${esc(UTIL_LABEL[it.kind] || it.kind || '')}</span><span class="r"></span></div>
         <div class="bd">${body}</div>
         <div class="ft">${by(it)}<span class="r">${esc(it.id)}</span></div>`;
     }
     case 'note':
-      return `${it.title ? `<div class="hd"><span class="t">${esc(it.title)}</span>` : '<div class="hd"><span class="t faint">note</span>'}<span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div><div class="bd md">${md(it.text)}</div>`;
+      return `${it.title ? `<div class="hd"><span class="t">${esc(it.title)}</span>` : '<div class="hd"><span class="t faint">note</span>'}<span class="r"></span></div><div class="bd md">${md(it.text)}</div>`;
     case 'frame': {
       const n = membersOf(it).filter(i => i.type !== 'ticket' && i.type !== 'project').length;
       return `<div class="flabel">${esc(it.title) || 'frame'}<span class="n">${n}</span></div>`;
@@ -775,7 +779,7 @@ function cardHTML(it) {
       const ts = [...S.items.values()].filter((t) => t.type === 'ticket' && t.project === it.id);
       const done = ts.filter((t) => t.status === 'done' || t.status === 'canceled').length;
       const meta = [it.lead && `@${esc(it.lead)}`, it.target && `→ ${esc(it.target)}`].filter(Boolean).join('  ');
-      return `<div class="hd"><span class="g">◈</span><span class="t">${esc(it.key || '—')} ${esc(it.title) || '<span class="faint">untitled</span>'}</span><span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div>
+      return `<div class="hd"><span class="g">◈</span><span class="t">${esc(it.key || '—')} ${esc(it.title) || '<span class="faint">untitled</span>'}</span><span class="r"></span></div>
         <div class="bd"><div class="big txt">${done}/${ts.length}<span class="u"> done</span></div><div class="bar">${bar(ts.length ? (done / ts.length) * 100 : 0, cols)}</div>${meta ? `<div class="msg">${meta}</div>` : ''}</div>
         <div class="ft">${by(it)}<span class="r">${esc(it.id)}</span></div>`;
     }
@@ -800,7 +804,6 @@ function renderItem(it, soft = false) {
   try {
     const cls = ['item', it.type, ...stateClass(it)];
     if (it.type === 'monitor' && isStale(it)) cls.push('stale');
-    if (S.expanded.has(it.id)) cls.push('expanded');
     if (S.sel.has(it.id)) cls.push('sel');
     if (el.classList.contains('drag')) cls.push('drag');
     if (el.classList.contains('flash')) cls.push('flash');
@@ -811,7 +814,7 @@ function renderItem(it, soft = false) {
     if (el.dataset.sig === sig) return;
     if (it.type === 'monitor' && it.display === 'custom' && !it.program?.disabled && el.querySelector('.hud-program[data-program-item]')) {
       const preview = document.createElement('div');
-      preview.innerHTML = cardHTML(it) + (S.expanded.has(it.id) ? expandedHTML(it) : '') + '<div class="rz"></div>';
+      preview.innerHTML = cardHTML(it) + '<div class="rz"></div>';
       const nextProgram = preview.querySelector('.hud-program[data-program-item]');
       const currentProgram = el.querySelector('.hud-program[data-program-item]');
       if (nextProgram && currentProgram && nextProgram.dataset.programRevision === currentProgram.dataset.programRevision) {
@@ -845,7 +848,7 @@ function renderItem(it, soft = false) {
     el.style.height = it.h + 'px';
     if (it.type === 'frame') el.style.zIndex = String(Math.max(1, 9 - Math.round(Math.log10(it.w * it.h) || 0)));
     const previousProgram = el.querySelector('.hud-program[data-program-item]');
-    el.innerHTML = cardHTML(it) + (S.expanded.has(it.id) ? expandedHTML(it) : '') + '<div class="rz"></div>';
+    el.innerHTML = cardHTML(it) + '<div class="rz"></div>';
     const nextProgram = el.querySelector('.hud-program[data-program-item]');
     if (previousProgram && nextProgram && previousProgram.dataset.programRevision === nextProgram.dataset.programRevision) nextProgram.replaceWith(previousProgram);
     applyReadonlyControls(el);
@@ -860,7 +863,7 @@ function renderItem(it, soft = false) {
     el.style.top = (Number(it.y) || 0) + 'px';
     el.style.width = (Number(it.w) || 260) + 'px';
     el.style.height = (Number(it.h) || 120) + 'px';
-    el.innerHTML = `<div class="hd"><span class="g">✕</span><span class="t">render error</span><span class="r"><span class="expand-btn" data-drawer="1" title="details (Enter)">⤢</span></span></div><div class="bd faint">${esc(it.id)}: ${esc(e.message)}</div><div class="rz"></div>`;
+    el.innerHTML = `<div class="hd"><span class="g">✕</span><span class="t">render error</span><span class="r"></span></div><div class="bd faint">${esc(it.id)}: ${esc(e.message)}</div><div class="rz"></div>`;
     applyReadonlyControls(el);
   }
 }
@@ -1092,59 +1095,6 @@ function queueProgramsMount() {
   });
 }
 
-/** the detail a double-click reveals: comments, history, source, thresholds, meta */
-function expandedHTML(it) {
-  if (it.type === 'ticket') {
-    const comments =
-      (it.comments || [])
-        .map((c) => `<div class="comment"><span class="who">${esc(c.actor)} ${localDT(c.t)}</span><div class="txt">${esc(c.text)}</div></div>`)
-        .join('') || '<div class="faint">no comments</div>';
-    const mons =
-      (it.monitors || [])
-        .map((id) => {
-          const m = S.items.get(id);
-          if (!m) return `<div class="ln faint">? ${esc(id)}</div>`;
-          const val = m.label ?? (m.value != null ? fmtVal(m.value) + (m.unit || '') : m.state);
-          return `<div class="ln s-${esc(m.state)}"><span class="g">${MGLYPH[m.state] || '○'}</span> ${esc(m.title || m.id)} <span class="lv">${esc(val)}${m.progress != null && m.label == null ? ` ${Math.round(m.progress)}%` : ''}</span></div>`;
-        })
-        .join('') || '<div class="faint">none linked</div>';
-    const meta = it.meta && Object.keys(it.meta).length ? `<div class="meta">meta ${esc(JSON.stringify(it.meta))}</div>` : '';
-    return `<div class="more"><div class="sec-h">comments (${(it.comments || []).length})</div>${comments}<div class="sec-h">monitors</div>${mons}${meta}<div class="meta">${esc(it.id)} · by ${esc(it.createdBy || '—')} ${localDT(it.createdAt)}</div></div>`;
-  }
-  if (it.type === 'monitor') {
-    const hist =
-      (it.history || [])
-        .filter(Boolean)
-        .slice(-12)
-        .map((x) => `<div>${MGLYPH[x.s] || '·'} ${hhmmss(x.t)}  ${esc(x.v ?? '')}${x.p != null ? `  ${Math.round(x.p)}%` : ''}</div>`)
-        .join('') || '<div class="faint">no history</div>';
-    const lg =
-      (it.log || [])
-        .slice(-8)
-        .map((l) => `<div>${MGLYPH[l.s] || '·'} ${hhmmss(l.t)} ${esc(l.m)}</div>`)
-        .join('') || '<div class="faint">no messages</div>';
-    const thr =
-      [['warnAbove', it.warnAbove], ['errorAbove', it.errorAbove], ['warnBelow', it.warnBelow], ['errorBelow', it.errorBelow]]
-        .filter(([, v]) => v != null)
-        .map(([k, v]) => `${k}=${v}`)
-        .join(' ') || 'none';
-    const meta = monitorMetadata(it);
-    return `<div class="more"><div class="sec-h">history</div><div class="hist">${hist}</div><div class="sec-h">log</div><div class="hist">${lg}</div><div class="sec-h">metric</div><div class="meta">source ${esc(meta.source)} · evidence ${esc(meta.evidence)} · age ${esc(meta.age)} · coverage ${esc(meta.coverage)}</div><div class="meta">${esc(meta.definition)}</div>${it.freshness?.mode === 'static' ? `<div class="meta">static · ${esc(it.freshness.reason || '')}</div>` : ''}<div class="sec-h">config</div><div class="meta">thresholds ${esc(thr)} · max ${esc(it.max ?? '—')} · stale ${esc(it.staleAfter ?? '—')}s · notify ${esc((it.notify || []).join(', ') || '—')}</div><div class="meta">${esc(JSON.stringify(it.source ?? { kind: 'manual' }))}</div></div>`;
-  }
-  if (it.type === 'util') {
-    const detail =
-      it.kind === 'calculator'
-        ? `<div class="sec-h">history</div><div class="hist">${(it.util?.history || []).slice(-8).map((h) => `<div>${esc(h)}</div>`).join('') || '<div class="faint">nothing yet</div>'}</div>`
-        : it.kind === 'stopwatch'
-          ? `<div class="sec-h">laps</div><div class="hist">${(it.util?.laps || []).slice(-8).map((l, i) => `<div>${i + 1}  ${esc(String(l.toFixed ? l.toFixed(2) : l))}s</div>`).join('') || '<div class="faint">no laps</div>'}</div>`
-          : it.kind === 'dice'
-            ? `<div class="sec-h">rolls</div><div class="hist">${(it.util?.rolls || []).slice(-16).map((r) => `<div>${esc(String(r))}</div>`).join('') || '<div class="faint">no rolls</div>'}</div>`
-            : '';
-    return `<div class="more">${detail}<div class="meta">${esc(JSON.stringify(it.util ?? {}))}</div></div>`;
-  }
-  return '';
-}
-
 function removeEl(id) {
   els.get(id)?.remove();
   els.delete(id);
@@ -1176,8 +1126,7 @@ function updateChrome() {
   }
   const utilPart = counts.util ? ` · ${counts.util} tools` : '';
   $('#pos').textContent = `${counts.ticket} tickets (${open} open) · ${counts.monitor} monitors${bad ? ` (${bad} ▲✕)` : ''} · ${counts.note} notes${utilPart}`;
-  $('#btn-view').textContent = `tickets ${counts.ticket}`;
-  $('#btn-dashboard').textContent = `dashboard ${canvasItems().filter(i => i.type !== 'frame').length}`;
+  $('#btn-view').textContent = S.mode === 'list' ? `board ${canvasItems().filter(i => i.type !== 'frame').length}` : `tickets ${counts.ticket}`;
   renderMonitorAttentionStrip();
   renderProgramInspector();
   setModeHint();
@@ -1314,25 +1263,24 @@ function setModeHint() {
   $('#mode').textContent = document.body.classList.contains('cmd') ? 'COMMAND' : n ? `SEL ${n}` : 'NORMAL';
   $('#hint').textContent = S.page !== 'board' ? 'click to inspect · ⌘/Ctrl+K search · review keeps issues active · esc closes details' : n
     ? 'drag move · ⏎ open · ⌫ delete · arrows nudge · esc clear'
-    : S.mode === 'list' ? 'click a ticket for details · / search · completed shows finished work · l dashboard'
+    : S.mode === 'list' ? 'click a ticket for details · / search · completed shows finished work · l board'
     : 'dbl-click details · drag pan · ⌘/ctrl+scroll zoom · shift+drag select · : command · ? help';
 }
 
-// ---------------------------------------------------------------- tabs / boards
+// ---------------------------------------------------------------- rail / boards
 function renderTabs() {
-  const tabs = $('#tabs');
   renderBoardButtons();
-  if (tabs.querySelector('input')) return;
-  const counts = {};
-  for (const it of S.items.values()) counts[it.board] = (counts[it.board] || 0) + 1;
-  const html =
-    S.boards.map((b) => `<span class="tab ${b.id === S.board ? 'on' : ''}" data-board="${esc(b.id)}" title="double-click to rename">${esc(b.name)}<span class="n">${counts[b.id] || 0}</span></span>`).join('') +
-    `<span class="tab add" data-add title="new board">+</span>`;
+  const list = $('#board-list');
+  if (!list || list.querySelector('input')) return;
+  const counts = boardCounts();
+  const attCounts = {};
+  for (const a of activeAttention().filter((x) => !x.reviewedAt)) attCounts[a.board] = (attCounts[a.board] || 0) + 1;
+  const html = S.boards.map((b) => `<div class="board-row ${b.id === S.board ? 'on' : ''}" role="option" tabindex="0" aria-selected="${b.id === S.board}" data-board="${esc(b.id)}" title="double-click to rename"><span class="name">${esc(b.name)}</span><span class="count">${attCounts[b.id] ? `▲${attCounts[b.id]} ` : ''}${counts[b.id] || 0}</span></div>`).join('');
   // rewriting identical markup would drop a click whose mousedown and mouseup straddle an SSE-driven rebuild
-  if (tabs.dataset.sig === html) return;
-  tabs.dataset.sig = html;
-  tabs.innerHTML = html;
-  tabs.querySelector('.tab.on')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest' });
+  if (list.dataset.sig === html) return;
+  list.dataset.sig = html;
+  list.innerHTML = html;
+  list.querySelector('.board-row.on')?.scrollIntoView?.({ block: 'nearest' });
 }
 
 function switchBoard(id, opts = {}) {
@@ -1357,16 +1305,17 @@ function switchBoard(id, opts = {}) {
   if (!CAPTURE_READONLY) loadReadout(id);
 }
 
-function tabInput(initial, onDone) {
-  const tabs = $('#tabs');
+function inlineBoardInput(initial, onDone) {
+  const host = $('#board-list');
   const inp = document.createElement('input');
   inp.value = initial;
+  inp.className = 'board-input';
   let done = false;
   const finish = (ok) => {
     if (done) return;
     done = true;
     inp.remove();
-    $('#tabs').dataset.sig = '';
+    host.dataset.sig = '';
     renderTabs();
     if (ok && inp.value.trim()) onDone(inp.value.trim());
   };
@@ -1376,32 +1325,49 @@ function tabInput(initial, onDone) {
     if (e.key === 'Escape') finish(false);
   });
   inp.addEventListener('blur', () => finish(true));
-  return { inp, tabs };
+  return inp;
 }
 
-$('#tabs').addEventListener('click', (e) => {
-  const t = e.target.closest('.tab');
-  if (!t) return;
-  if (t.dataset.add !== undefined) {
-    const { inp } = tabInput('', async (name) => {
-      const b = await api('POST', '/api/boards', { name });
-      upsertBoard(b);
-      switchBoard(b.id);
-    });
-    t.replaceWith(inp);
-    inp.focus();
-    return;
-  }
-  switchBoard(t.dataset.board);
+$('#board-list').addEventListener('click', (e) => {
+  const row = e.target.closest('.board-row');
+  if (row) switchBoard(row.dataset.board);
 });
-$('#tabs').addEventListener('dblclick', (e) => {
-  const t = e.target.closest('.tab[data-board]');
-  if (!t) return;
-  const b = S.boards.find((x) => x.id === t.dataset.board);
-  const { inp } = tabInput(b.name, (name) => api('PATCH', `/api/boards/${encodeURIComponent(b.id)}`, { name }));
-  t.replaceWith(inp);
+$('#board-list').addEventListener('keydown', (e) => {
+  const rows = $$('.board-row', $('#board-list'));
+  const i = rows.indexOf(document.activeElement);
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (i >= 0) { e.preventDefault(); switchBoard(rows[i].dataset.board); }
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!rows.length) return;
+    e.preventDefault();
+    const next = clamp((i < 0 ? -1 : i) + (e.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1);
+    rows[next]?.focus();
+  } else if (e.key === 'Home' || e.key === 'End') {
+    if (!rows.length) return;
+    e.preventDefault();
+    rows[e.key === 'Home' ? 0 : rows.length - 1]?.focus();
+  }
+});
+$('#board-list').addEventListener('dblclick', (e) => {
+  const row = e.target.closest('.board-row');
+  if (!row) return;
+  const b = S.boards.find((x) => x.id === row.dataset.board);
+  if (!b) return;
+  const inp = inlineBoardInput(b.name, (name) => api('PATCH', `/api/boards/${encodeURIComponent(b.id)}`, { name }));
+  row.replaceWith(inp);
   inp.focus();
   inp.select();
+});
+$('#btn-new-board').addEventListener('click', () => {
+  if ($('#board-list input')) return;
+  const inp = inlineBoardInput('', async (name) => {
+    const b = await api('POST', '/api/boards', { name });
+    upsertBoard(b);
+    switchBoard(b.id);
+  });
+  inp.placeholder = 'board name';
+  $('#board-list').prepend(inp);
+  inp.focus();
 });
 
 function upsertBoard(b) {
@@ -1438,7 +1404,7 @@ function setPage(page, opts = {}) {
     if (!CAPTURE_READONLY) { loadAttention(); loadChanges(); }
   } else if (next === 'runs') {
     renderRuns();
-    if (!CAPTURE_READONLY) loadRuns();
+    if (!CAPTURE_READONLY) { loadRuns(); loadQueue(); loadSessions(); }
   } else {
     renderAll();
     if (S.mode === 'list') renderList();
@@ -1569,8 +1535,11 @@ function renderRuns() {
   if (S.page !== 'runs') return;
   const all = S.runs.items || [];
   const shown = S.runs.showCompleted ? all : all.filter((r) => !runDone(r));
-  $('#supervision-head').innerHTML = `<div class="sup-title"><h1>runs</h1><span class="sup-meta">${shown.length} shown · ${all.length} total</span><span class="sp"></span><span class="sup-meta">${esc(localDT(Date.now()))}</span></div><div class="sup-actions"><button class="btn" data-runs-refresh>refresh</button><button class="btn ${S.runs.showCompleted ? 'on' : ''}" data-runs-completed aria-pressed="${S.runs.showCompleted}">${S.runs.showCompleted ? 'hide' : 'show'} completed</button></div>`;
-  $('#supervision-body').innerHTML = shown.length ? `<div class="run-grid">${shown.map(runCardHTML).join('')}</div>` : '<div class="sup-empty">No runs match this view. Runs are ticket trees tagged <code>run</code>.</div>';
+  const tabs = `<div class="sup-tabs"><button class="sup-tab ${S.runsTab === 'runs' ? 'on' : ''}" data-sup-tab="runs">runs</button><button class="sup-tab ${S.runsTab === 'queue' ? 'on' : ''}" data-sup-tab="queue">queue</button></div>`;
+  $('#supervision-head').innerHTML = `<div class="sup-title"><h1>${S.runsTab === 'queue' ? 'queue' : 'runs'}</h1><span class="sup-meta">${S.runsTab === 'queue' ? (S.queue ? `${S.queue.counts.ready} ready · ${S.queue.counts.open} open` : 'loading') : `${shown.length} shown · ${all.length} total`}</span><span class="sp"></span><span class="sup-meta">${esc(localDT(Date.now()))}</span></div>${tabs}<div class="sup-actions"><button class="btn" data-runs-refresh>refresh</button>${S.runsTab === 'runs' ? `<button class="btn ${S.runs.showCompleted ? 'on' : ''}" data-runs-completed aria-pressed="${S.runs.showCompleted}">${S.runs.showCompleted ? 'hide' : 'show'} completed</button>` : ''}</div>`;
+  $('#supervision-body').innerHTML = S.runsTab === 'queue'
+    ? queueHTML()
+    : (shown.length ? `<div class="run-grid">${shown.map(runCardHTML).join('')}</div>` : '<div class="sup-empty">No runs match this view. Runs are ticket trees tagged <code>run</code>.</div>');
   applyReadonlyControls($('#supervision-head'));
   applyReadonlyControls($('#supervision-body'));
 }
@@ -1580,7 +1549,7 @@ async function loadRuns() {
   if (!data) return;
   S.runs.items = Array.isArray(data.items) ? data.items : [];
   $('#runs-count').textContent = S.runs.items.filter((r) => !runDone(r)).length ? `(${S.runs.items.filter((r) => !runDone(r)).length})` : '';
-  if (S.page === 'runs') renderRuns();
+  if (S.page === 'runs' && S.runsTab === 'runs') renderRuns();
   if (S.drawer && runForItem(S.drawer)) renderDrawer();
 }
 async function loadChanges() {
@@ -1591,9 +1560,69 @@ async function loadChanges() {
   S.changes = { since: data.since || S.lastVisit, now: data.now || Date.now(), complete: !!data.complete, events: Array.isArray(data.events) ? data.events : [] };
   if (S.page === 'attention') renderChanges();
 }
+
+// ---------------------------------------------------------------- presence + queue
+async function loadSessions() {
+  if (CAPTURE_READONLY) return;
+  const data = await optionalGET('/api/sessions');
+  if (!data) return;
+  S.sessions = { items: Array.isArray(data.items) ? data.items : [], now: data.now || Date.now() };
+  renderSessions();
+}
+function renderSessions() {
+  const live = S.sessions.items.filter((s) => s.live);
+  const btn = $('#btn-sessions');
+  if (btn) btn.textContent = `● ${live.length} session${live.length === 1 ? '' : 's'}`;
+  const pop = $('#sessions');
+  if (!pop) return;
+  if (!S.sessionsOpen) { pop.hidden = true; return; }
+  pop.hidden = false;
+  const rows = S.sessions.items.map((s) => `<div class="session-row"><span>${s.live ? '●' : '○'}</span><span class="id">${esc(s.id)}</span><span class="dim">${esc(s.kind)} · ${s.live ? `${ago(s.lastSeenAt)} ago` : 'ended'}${(s.claims || []).length ? ` · ${s.claims.map((c) => esc(c.ident)).join(', ')}` : ''}</span></div>`).join('');
+  pop.innerHTML = `<div class="phd"><span>sessions</span><span class="sp"></span><button data-sessions-close aria-label="close">×</button></div>${rows || '<div class="sup-empty">No sessions. MCP clients register on connect.</div>'}`;
+}
+async function heartbeatSelf() {
+  try { await api('POST', '/api/sessions/user/heartbeat'); } catch {}
+}
+async function loadQueue() {
+  if (CAPTURE_READONLY) return;
+  const data = await optionalGET(`/api/queue?board=${encodeURIComponent(S.board)}`);
+  if (!data) return;
+  S.queue = data;
+  if (S.page === 'runs' && S.runsTab === 'queue') renderRuns();
+}
+function queueHTML() {
+  const q = S.queue;
+  if (!q) return '<div class="sup-empty">Loading the queue…</div>';
+  const rows = q.items.map((t) => {
+    const claimed = t.claim ? `<span class="q-claim">${esc(t.claim.session)}</span>` : '—';
+    const sess = t.session ? `<span class="${t.session.live ? 'q-live' : 'dim'}">${t.session.live ? '● live' : '○ ended'}</span>` : '—';
+    const action = t.bucket === 'done' ? '' : t.claim && t.claim.session === 'user'
+      ? `<button data-release="${esc(t.id)}">release</button>`
+      : t.claim ? '' : `<button data-claim="${esc(t.id)}"${t.ready ? ' class="q-ready"' : ''}>claim</button>`;
+    return `<tr class="q-${esc(t.bucket)}"><td class="q-ident">${esc(t.ident)}</td><td class="q-title">${esc(t.title)}</td><td>${esc(t.status)}</td><td>${claimed}</td><td>${sess}</td><td>${esc(t.blockedBy.join(', ') || '—')}</td><td>${action}</td></tr>`;
+  }).join('');
+  return `<div class="sup-meta" style="margin:10px 0">${q.counts.ready} ready · ${q.counts.open} open · ${q.counts.claimed} claimed · ${q.counts.blocked} blocked · ${q.counts.done} done</div><table class="queue-table"><thead><tr><th>ticket</th><th>title</th><th>status</th><th>owner</th><th>session</th><th>blocked by</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="faint">No matching work.</td></tr>'}</tbody></table>`;
+}
+async function claimTicket(id) {
+  try {
+    await api('POST', `/api/items/${encodeURIComponent(id)}/claim`, { session: 'user', ttl: 300, start: true });
+    toast('claimed');
+  } catch (e) { toast(e.message || 'claim failed'); }
+  await loadQueue();
+  await loadSessions();
+}
+async function releaseTicket(id) {
+  try {
+    await api('DELETE', `/api/items/${encodeURIComponent(id)}/claim?session=user`);
+    toast('released');
+  } catch (e) { toast(e.message || 'release failed'); }
+  await loadQueue();
+  await loadSessions();
+}
 const refreshAttentionLater = debounce(() => { if (S.page === 'attention') loadAttention(); }, 350);
 const refreshRunsLater = debounce(() => { if (S.page === 'runs' || (S.drawer && runForItem(S.drawer))) loadRuns(); }, 350);
 const refreshChangesLater = debounce(() => { if (S.page === 'attention') loadChanges(); }, 350);
+const refreshQueueLater = debounce(() => { if (S.page === 'runs' && S.runsTab === 'queue') loadQueue(); }, 350);
 function markSinceRead() {
   if (CAPTURE_READONLY) return;
   const now = Date.now();
@@ -1671,6 +1700,8 @@ function openItemDeepLink(id) {
 
 $('#btn-attention').addEventListener('click', () => setPage('attention'));
 $('#btn-runs').addEventListener('click', () => setPage('runs'));
+$('#btn-sessions').addEventListener('click', () => { S.sessionsOpen = !S.sessionsOpen; renderSessions(); if (S.sessionsOpen) loadSessions(); });
+$('#sessions').addEventListener('click', (e) => { if (e.target.closest('[data-sessions-close]')) { S.sessionsOpen = false; renderSessions(); } });
 $('#btn-board').addEventListener('click', () => toggleBoardMenu());
 $('#btn-source').addEventListener('click', () => {
   const panel = $('#program-inspector');
@@ -1696,7 +1727,6 @@ $('#toast').addEventListener('click', (e) => {
   const link = e.target.closest('[data-created-board-link]');
   if (link) { e.preventDefault(); openItemDeepLink(link.dataset.createdBoardLink); }
 });
-$('#top-more').addEventListener('click', (e) => { if (e.target.closest('button')) $('#top-more').open = false; });
 $('#btn-search').addEventListener('click', () => openSearch());
 $('#global-search').addEventListener('click', (e) => {
   if (e.target.closest('[data-search-close]')) return closeSearch();
@@ -1738,7 +1768,7 @@ $('#board-menu').addEventListener('click', async (e) => {
     toggleBoardMenu(false);
     try {
       const result = await api('POST', `/api/boards/${encodeURIComponent(board.id)}/clear`, {});
-      for (const id of boardItemIds) { S.sel.delete(id); S.expanded.delete(id); S.detail.delete(id); }
+      for (const id of boardItemIds) { S.sel.delete(id); S.detail.delete(id); }
       if (S.drawer && boardItemIds.has(S.drawer)) closeDrawer();
       toast(`cleared canvas "${board.name}" · ${Number(result?.cleared ?? count)} item${Number(result?.cleared ?? count) === 1 ? '' : 's'} moved to Trash`, 5000);
     } catch (error) { toast(error.message, 5000); }
@@ -1755,7 +1785,6 @@ $('#board-menu').addEventListener('click', async (e) => {
     try {
       await api('DELETE', `/api/boards/${encodeURIComponent(board.id)}`);
       S.sel.clear();
-      S.expanded.clear();
       if (S.drawer) closeDrawer();
       if (S.board === board.id && next) switchBoard(next.id);
       toast(`deleted canvas "${board.name}" · its items moved to Trash`, 5000);
@@ -1778,6 +1807,12 @@ $('#supervision').addEventListener('click', (e) => {
     return attentionAction(card, 'snooze', until);
   }
   if (e.target.closest('[data-attention-refresh]')) return loadAttention();
+  const supTab = e.target.closest('[data-sup-tab]');
+  if (supTab) { S.runsTab = supTab.dataset.supTab === 'queue' ? 'queue' : 'runs'; if (S.runsTab === 'queue') loadQueue(); return renderRuns(); }
+  const claimBtn = e.target.closest('[data-claim]');
+  if (claimBtn) return claimTicket(claimBtn.dataset.claim);
+  const releaseBtn = e.target.closest('[data-release]');
+  if (releaseBtn) return releaseTicket(releaseBtn.dataset.release);
   if (e.target.closest('[data-mark-read]')) return markSinceRead();
   if (e.target.closest('[data-runs-refresh]')) return loadRuns();
   if (e.target.closest('[data-runs-completed]')) { S.runs.showCompleted = !S.runs.showCompleted; try { localStorage.setItem(localKey('show-completed-runs'), String(S.runs.showCompleted)); } catch {} return renderRuns(); }
@@ -1817,7 +1852,7 @@ async function load() {
     } catch {}
   })();
   const id = S.boards.some((b) => b.id === want) ? want : S.board && S.boards.some((b) => b.id === S.board) ? S.board : S.boards[0].id;
-  const initialPage = CAPTURE_READONLY ? 'board' : hs.page === 'runs' ? 'runs' : hs.page === 'attention' ? 'attention' : hs.page === 'item' || hs.board ? 'board' : 'attention';
+  const initialPage = CAPTURE_READONLY ? 'board' : hs.page === 'runs' ? 'runs' : hs.page === 'attention' ? 'attention' : hs.page === 'item' || hs.board ? 'board' : 'board';
   if (id !== S.board) switchBoard(id, { page: initialPage, hash: false });
   else { setPage(initialPage, { hash: false }); renderAll(); }
   if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
@@ -1886,6 +1921,21 @@ function onEvent(e) {
     S.live = true;
     return;
   }
+  if (e.kind === 'session') {
+    loadSessions();
+    return;
+  }
+  if (e.kind === 'claim') {
+    S.claimCache.delete(e.claim.ticket);
+    if (S.drawer === e.claim.ticket) fillClaim(itemFor(S.drawer));
+    if (S.page === 'runs' && S.runsTab === 'queue') refreshQueueLater();
+    return;
+  }
+  if (e.kind === 'context') {
+    S.contextCache.delete(e.entry.scope);
+    if (S.drawer) { const it = itemFor(S.drawer); if (it && scopeFor(it) === e.entry.scope) fillContext(it); }
+    return;
+  }
   if (e.kind === 'alert') {
     S.alerts.push(e.alert);
     if (S.alerts.length > 300) S.alerts.splice(0, S.alerts.length - 300);
@@ -1920,13 +1970,13 @@ function onEvent(e) {
     if (S.drawer === e.item.id && e.item.type === 'monitor') refreshDetailLater(e.item.id);
     refreshAttentionLater();
     refreshRunsLater();
+    refreshQueueLater();
     updateChrome();
     queueProgramsMount();
   } else if (e.kind === 'item.deleted') {
     S.items.delete(e.id);
     S.detail.delete(e.id);
     S.sel.delete(e.id);
-    S.expanded.delete(e.id);
     S.trend.delete(e.id);
     pendingNudge.delete(e.id);
     if (drag?.ids?.has(e.id) || drag?.id === e.id) endDragSilently();
@@ -1945,7 +1995,6 @@ function onEvent(e) {
       S.items.delete(it.id);
       S.detail.delete(it.id);
       S.sel.delete(it.id);
-      S.expanded.delete(it.id);
       S.trend.delete(it.id);
       S.uptime.delete(it.id);
       pendingNudge.delete(it.id);
@@ -2154,22 +2203,6 @@ canvas.addEventListener('dblclick', (e) => {
   openDrawer(itemEl.dataset.id);
 });
 
-/** expand/collapse a card in place to reveal the detail we normally hide */
-function toggleExpand(id) {
-  if (S.expanded.has(id)) S.expanded.delete(id);
-  else S.expanded.add(id);
-  const it = S.items.get(id);
-  if (it) renderItem(it);
-}
-
-function collapseAll() {
-  for (const id of S.expanded) {
-    const it = S.items.get(id);
-    if (it) renderItem(it);
-  }
-  S.expanded.clear();
-}
-
 /** the monitor under the cursor, if it is currently drawn as one of the value-axis charts */
 function chartAt(e) {
   const card = e.target?.closest?.('.item');
@@ -2215,12 +2248,7 @@ function stretchRange(it, deltaY) {
 }
 
 canvas.addEventListener('click', (e) => {
-  if (CAPTURE_READONLY && !e.target.closest('.expand-btn')) return;
-  const dr = e.target.closest('.expand-btn');
-  if (dr && !suppressClick) {
-    e.stopPropagation();
-    return openDrawer(dr.closest('.item').dataset.id);
-  }
+  if (CAPTURE_READONLY) return;
   const ub = e.target.closest('.ubtn');
   if (ub && !suppressClick) {
     e.stopPropagation();
@@ -2500,8 +2528,6 @@ async function cycleDisplay() {
 function openDrawer(id, focusTitle = false) {
   const changed = S.drawer !== id;
   S.drawer = id;
-  if (changed) S.drawerTab = 'overview';
-  if (focusTitle) S.drawerTab = 'settings';
   S.pendingKind = null;
   if (itemFor(id)?.type === 'monitor') fetchTrend(id);
   if (itemFor(id)?.type === 'ticket') fetchItemActivity(id);
@@ -2512,12 +2538,11 @@ function openDrawer(id, focusTitle = false) {
   renderDrawer();
   if (changed) $('#drawer').scrollTop = 0;
   applyView();
-  if (focusTitle) setTimeout(() => $('#drawer [data-k="title"]')?.focus(), 0);
+  if (focusTitle) setTimeout(() => { $('#drawer [data-k="title"]')?.focus(); $('#drawer [data-section="settings"]')?.scrollIntoView({ block: 'start' }); }, 0);
 }
 function closeDrawer() {
   S.drawer = null;
   S.pendingKind = null;
-  S.drawerTab = 'overview';
   S.drawerWide = false;
   $('#drawer').classList.remove('open');
   document.body.classList.remove('drawer-open');
@@ -2579,25 +2604,6 @@ function drawerSettingsHTML(it) {
   const meta = `<div class="sec"><h4>meta</h4><div class="meta">created ${localDT(it.createdAt)} by @${esc(it.createdBy)}<br>updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy)}<br>board ${esc(it.board)} · ${esc(it.x)},${esc(it.y)} · ${esc(it.w)}×${esc(it.h)}${it.meta ? `<br>meta ${esc(JSON.stringify(it.meta))}` : ''}</div>
     <div class="btns"><button class="btn danger" data-act="delete">delete</button></div></div>`;
   if (it.type === 'ticket') {
-    const comments = (it.comments || [])
-      .map((c) => `<div class="comment" data-cid="${esc(c.id)}"><div class="who"><span class="cact"><span data-act="cedit" title="edit">✎</span><span data-act="cdel" title="delete">×</span></span>@${esc(c.actor)} · ${localDT(c.t)}${c.edited ? ' · edited' : ''}${c.format ? ` · ${esc(c.format)}` : ''}</div><div class="txt">${reportHTML(c.text, c.format || 'plain', { readonly: true })}</div></div>`)
-      .join('');
-    const chosen = it.options?.find((o) => o.id === it.decision?.optionId);
-    const decision = it.options?.length
-      ? `<div class="sec"><h4>decision</h4>
-      ${row('question', inp('question', it.question || '', 'what the agent asked'))}
-      ${row('question format', chips('questionFormat', ['plain', 'markdown'], it.questionFormat || 'plain'))}
-      ${
-        it.decision
-          ? `<div class="answer">✓ @${esc(it.decision.actor)} chose ${esc(chosen?.label ?? it.decision.optionId)}${it.decision.note ? ` — ${esc(it.decision.note)}` : ''}</div><div class="btns"><button class="btn" data-act="reopen">re-open</button><button class="btn danger" data-act="clear-options">clear options</button></div>`
-          : `<div class="hint">choose one — the ticket moves to that option's status and the asking agent is woken</div>${it.options
-              .map(
-                (o) =>
-                  `<div class="row"><label>${esc(o.id)}</label><div>${esc(o.label)}${o.detail ? ` <span class="dim">${esc(o.detail)}</span>` : ''} <button class="btn" data-act="decide" data-opt="${esc(o.id)}" data-decision-version="${esc(it.decisionVersion ?? '')}">choose${o.status ? ` →${esc(o.status)}` : ''}</button></div></div>`,
-              )
-              .join('')}<div class="btns"><button class="btn danger" data-act="clear-options">clear options</button></div>`
-      }</div>`
-      : '';
     const up = ancestryOf(it);
     const kids = [...S.items.values()].filter((c) => c.type === 'ticket' && c.parent === it.id);
     const kidDone = kids.filter((k) => k.status === 'done' || k.status === 'canceled').length;
@@ -2622,10 +2628,8 @@ function drawerSettingsHTML(it) {
       ${row('monitors', inp('monitors', (it.monitors || []).join(', '), 'linked monitor ids', 'list="monlist"') + `<datalist id="monlist">${boardItems().filter((m) => m.type === 'monitor').map((m) => `<option value="${esc(m.id)}">${esc(m.title)}</option>`).join('')}</datalist>`)}
       ${runField}
       ${it.monitors?.length ? row('auto', chips('autoStatus', ['off', 'on'], it.autoStatus ? 'on' : 'off', { on: 'on: all done → done, error → blocked', off: 'off' })) : ''}
-      </div>${subline}${decision}<div class="sec"><h4>description</h4><textarea data-k="body" placeholder="markdown">${esc(it.body)}</textarea></div>
-      <div class="sec"><h4>comments ${it.comments?.length || ''}</h4>${comments}
-      <div class="format-row"><select data-comment-format><option value="plain">plain</option><option value="markdown">markdown</option></select><input id="comment-in" placeholder="add a comment, ⏎ to send"></div></div>
-      <div class="sec"><h4>activity</h4><div id="itact" class="hist">${itemActHTML(it.id)}</div></div>${meta}`;
+      </div>${subline}<div class="sec"><h4>description</h4><textarea data-k="body" placeholder="markdown">${esc(it.body)}</textarea></div>
+      ${meta}`;
   }
   if (it.type === 'monitor') {
     const src = it.source || { kind: 'manual' };
@@ -2727,9 +2731,6 @@ function drawerSettingsBody(it) {
   const at = html.indexOf(marker);
   return at >= 0 ? html.slice(at) : html;
 }
-function drawerTabsHTML() {
-  return `<nav class="drawer-tabs" aria-label="details sections"><button class="drawer-tab ${S.drawerTab === 'overview' ? 'on' : ''}" data-dtab="overview">overview</button><button class="drawer-tab ${S.drawerTab === 'history' ? 'on' : ''}" data-dtab="history">history</button><button class="drawer-tab ${S.drawerTab === 'settings' ? 'on' : ''}" data-dtab="settings">settings</button></nav>`;
-}
 function commentsOverviewHTML(it) {
   const comments = (it.comments || []).slice(-30);
   return `<div class="sec"><h4>comments ${comments.length || ''}</h4>${comments.map((c) => `<div class="comment" data-cid="${esc(c.id)}"><div class="who">@${esc(c.actor)} · ${localDT(c.t)}${c.format ? ` · ${esc(c.format)}` : ''}</div><div class="txt">${reportHTML(c.text, c.format || 'plain', { readonly: true })}</div></div>`).join('') || '<div class="faint">no comments</div>'}<div class="format-row"><select data-comment-format><option value="plain">plain</option><option value="markdown">markdown</option></select></div><textarea id="comment-in" data-comment-draft placeholder="write a comment; Enter for newline · Ctrl/Cmd+Enter to send"></textarea><div class="btns"><button class="btn" data-act="comment-send">send comment</button></div><div class="report-preview" id="comment-preview"></div></div>`;
@@ -2787,7 +2788,8 @@ function drawerOverviewHTML(it) {
     report = `<h3 class="detail-title">${esc(it.title || it.id)}</h3>${it.type === 'ticket' ? `<div class="meta">${esc(it.status || 'todo')} · ${esc(it.assignee || it.createdBy || 'unassigned')}</div>` : ''}<div class="drawer-report">${body ? reportHTML(body, 'markdown') : '<span class="faint">No description yet.</span>'}</div>`;
   }
   const url = location.origin + location.pathname + '#item=' + encodeURIComponent(it.uuid || it.id);
-  return `<div class="sec"><div class="meta">${esc(boardName(it.board))} · updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy || it.createdBy || '—')}</div>${report}</div>${decisionOverviewHTML(it)}${runSummaryHTML(it)}${commentsOverviewHTML(it)}${followupHTML(it)}<div class="sec"><h4>identity</h4><div class="meta">${esc(it.id)}${it.uuid ? `<br>uuid ${esc(it.uuid)}` : ''}</div><button class="btn" data-act="copy" data-text="${esc(url)}">copy link</button></div>`;
+  const coord = `${it.type === 'ticket' ? '<div class="claim-box" id="claim-box"></div>' : ''}${['ticket', 'project'].includes(it.type) ? '<div class="context-box" id="context-box"></div>' : ''}`;
+  return `<div class="sec"><div class="meta">${esc(boardName(it.board))} · updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy || it.createdBy || '—')}</div>${report}</div>${decisionOverviewHTML(it)}${runSummaryHTML(it)}${coord}${commentsOverviewHTML(it)}${followupHTML(it)}<div class="sec"><h4>identity</h4><div class="meta">${esc(it.id)}${it.uuid ? `<br>uuid ${esc(it.uuid)}` : ''}</div><button class="btn" data-act="copy" data-text="${esc(url)}">copy link</button></div>`;
 }
 function historyHTML(it) {
   if (it.type === 'monitor') {
@@ -2800,9 +2802,9 @@ function historyHTML(it) {
   return `<div class="sec"><h4>comments & records</h4>${comments || '<div class="faint">no comments</div>'}${activity ? `<h4>activity</h4>${activity}` : ''}</div>`;
 }
 function drawerHTML(it) {
-  const tab = S.drawerTab || 'overview';
-  const body = tab === 'settings' ? drawerSettingsBody(it) : tab === 'history' ? historyHTML(it) : drawerOverviewHTML(it);
-  return `${drawerHeaderHTML(it)}${drawerTabsHTML()}${body}`;
+  const jump = `<nav class="inspector-jump" aria-label="inspector sections"><button data-jump="overview">overview</button><button data-jump="activity">activity</button>${it.type === 'monitor' ? '<button data-jump="monitor">monitor</button>' : ''}<button data-jump="settings">settings</button></nav>`;
+  const activity = historyHTML(it);
+  return `${drawerHeaderHTML(it)}${jump}<div class="inspector-body"><section class="inspector-section" data-section="overview">${drawerOverviewHTML(it)}</section><section class="inspector-section" data-section="activity">${activity}</section>${it.type === 'monitor' ? `<section class="inspector-section" data-section="monitor">${drawerSettingsBody(it)}</section>` : `<section class="inspector-section" data-section="settings">${drawerSettingsBody(it)}</section>`}</div>`;
 }
 const fmtRaw = (v) => (v === null || v === undefined ? '' : String(v));
 
@@ -2976,7 +2978,46 @@ function renderDrawer() {
   }
   d.scrollTop = scroll;
   if (it.type === 'monitor') renderChart();
+  if (it.type === 'ticket') fillClaim(it);
+  fillContext(it);
   S.drawerDirty = false;
+}
+
+async function fillClaim(it) {
+  const box = $('#claim-box');
+  if (!box) return;
+  let c = S.claimCache.get(it.id);
+  if (c === undefined) {
+    c = await optionalGET(`/api/items/${encodeURIComponent(it.id)}/claim`);
+    S.claimCache.set(it.id, c || null);
+  }
+  if (!box.isConnected) return;
+  box.innerHTML = `<h4>claim</h4>` + (c
+    ? `<div class="claim-state held">${esc(c.session)} · ${c.live ? `expires ${ago(c.expiresAt)} from now` : 'expired'}</div><div class="btns">${c.session === 'user' ? `<button class="btn" data-release="${esc(it.id)}">release</button>` : ''}</div>`
+    : `<div class="claim-state">unclaimed</div><div class="btns"><button class="btn" data-claim="${esc(it.id)}">claim</button></div>`);
+}
+
+function scopeFor(it) {
+  if (it.type === 'ticket' && (it.tags || []).some((t) => String(t).toLowerCase() === 'run')) return `run:${it.id}`;
+  if (it.type === 'ticket' && it.project) return `project:${it.project}`;
+  if (it.type === 'project') return `project:${it.id}`;
+  return `board:${it.board}`;
+}
+
+async function fillContext(it) {
+  const box = $('#context-box');
+  if (!box) return;
+  const scope = scopeFor(it);
+  let data = S.contextCache.get(scope);
+  if (!data) {
+    data = await optionalGET(`/api/context?scope=${encodeURIComponent(scope)}&limit=20`);
+    S.contextCache.set(scope, data || { entries: [] });
+  }
+  if (!box.isConnected) return;
+  const entries = (data?.entries || []).slice(-10).reverse();
+  box.innerHTML = `<h4>shared context · ${esc(scope)}</h4>` + (entries.length
+    ? entries.map((e) => `<div class="context-entry"><span class="ck">${esc(e.kind)}</span><span class="ca">@${esc(e.actor)}</span><span class="ct">${esc(e.text)}</span></div>`).join('')
+    : '<div class="faint">Nothing published for this scope yet.</div>');
 }
 
 const saveText = debounce((id, k, v) => patchItem(id, { [k]: v }).catch(() => {}), 600);
@@ -3201,11 +3242,12 @@ function renderDrawerWith(fake) {
 $('#drawer').addEventListener('click', (e) => {
   const it = itemFor(S.drawer);
   if (!it) return;
-  const tab = e.target.closest('[data-dtab]');
-  if (tab) {
-    S.drawerTab = tab.dataset.dtab;
-    return renderDrawer();
-  }
+  const jump = e.target.closest('[data-jump]');
+  if (jump) return $('#drawer [data-section="' + jump.dataset.jump + '"]')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  const claimBtn = e.target.closest('[data-claim]');
+  if (claimBtn) return claimTicket(claimBtn.dataset.claim).then(() => { S.claimCache.delete(claimBtn.dataset.claim); renderDrawer(); });
+  const releaseBtn = e.target.closest('[data-release]');
+  if (releaseBtn) return releaseTicket(releaseBtn.dataset.release).then(() => { S.claimCache.delete(releaseBtn.dataset.release); renderDrawer(); });
   if (e.target.closest('[data-report-more]')) {
     e.stopPropagation();
     return e.target.closest('[data-report-more]').previousElementSibling?.classList.toggle('expanded');
@@ -3430,9 +3472,9 @@ async function toggleAuto(on) {
 function renderBoardButtons() {
   const b = S.boards.find((x) => x.id === S.board);
   $('#btn-auto').classList.toggle('on', !!b?.autoOrganize);
-  $('#btn-auto').textContent = b?.autoOrganize ? 'layout: auto' : 'layout: manual';
+  $('#btn-auto').textContent = b?.autoOrganize ? 'auto' : 'manual';
   const board = $('#btn-board');
-  if (board) board.textContent = b ? `board: ${b.name}` : 'board';
+  if (board) board.textContent = 'board ▾';
 }
 $('#btn-organize').addEventListener('click', () => organize());
 $('#btn-auto').addEventListener('click', () => toggleAuto());
@@ -3504,10 +3546,10 @@ const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
   t  m  n  f  w           new ticket / monitor / note / frame / widget (util) at cursor
   ⏎                       open selected        ⌫ / del    delete selected (to trash)
   u  or  ⌘/ctrl + z       undo delete          arrows     nudge selected
-  T                       trash panel (restore / delete forever)
-  l                       list view (search, filters, sort; remembered per board)
+  l                       canvas / ticket list (remembered per board)
   v                       cycle monitor view
-  a                       activity feed        [ ]        prev / next board
+  A / R                   attention / runs     Home / End first / last rail or list row
+  [ ]                     prev / next board
   o                       organize board       O          toggle auto-organize
   ⌘a                      select all           esc        close / clear
   :                       command line         ?          this help
@@ -3646,7 +3688,7 @@ function setMode(m) {
   document.body.classList.toggle('list', S.mode === 'list');
   const b = $('#btn-view');
   b.classList.toggle('on', S.mode === 'list');
-  $('#btn-dashboard').classList.toggle('on', S.mode === 'canvas');
+  b.textContent = S.mode === 'list' ? 'board' : 'tickets';
   if (!CAPTURE_READONLY) try { localStorage.setItem('hud.mode.' + S.board, S.mode); } catch {}
   if (S.page === 'board') { ensureBoardProgramHost(); updateChrome(); queueProgramsMount(); }
   if (S.mode === 'list') renderList();
@@ -3947,8 +3989,7 @@ $('#list').addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]');
   if (open) return openDrawer(open.dataset.open);
 });
-$('#btn-view').addEventListener('click', () => setMode('list'));
-$('#btn-dashboard').addEventListener('click', () => setMode('canvas'));
+$('#btn-view').addEventListener('click', () => setMode(S.mode === 'list' ? 'canvas' : 'list'));
 
 // ---------------------------------------------------------------- keyboard
 const typing = () => {
@@ -3981,11 +4022,11 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.key === 'Escape') {
     if (typing()) return document.activeElement.blur();
+    if (S.sessionsOpen) { S.sessionsOpen = false; renderSessions(); return; }
     if ($('#help').classList.contains('open')) return toggleHelp(false);
     if ($('#trash').classList.contains('open')) return toggleTrash(false);
     if ($('#menu').classList.contains('open')) return closeMenu();
     if (S.drawer) return closeDrawer();
-    if (S.expanded.size) return collapseAll();
     return select([]);
   }
   if (typing()) return;
@@ -4002,7 +4043,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'A') return setPage('attention');
   if (e.key === 'R') return setPage('runs');
   if (e.key === 'l') return setMode(S.mode === 'list' ? 'canvas' : 'list');
-  if (S.page !== 'board' && !['?', 'a', 'T', ':', ';'].includes(e.key)) return;
+  if (S.page !== 'board' && !['?', ':', ';'].includes(e.key)) return;
   const r = canvas.getBoundingClientRect();
   const k = e.key;
   // the canvas shortcuts act on a canvas selection and a canvas cursor, neither of which exists in the list
@@ -4025,8 +4066,6 @@ window.addEventListener('keydown', (e) => {
   if (k === 'u') return undoDelete();
   if (k === 'Enter' && S.sel.size === 1) return openDrawer([...S.sel][0]);
   if (k === 'v') return cycleDisplay();
-  if (k === 'a') return toggleActivity();
-  if (k === 'T') return toggleTrash();
   if (k === 'o' || k === 'O') {
     if (e.repeat) return;
     return k === 'o' ? organize() : toggleAuto();
@@ -4089,7 +4128,9 @@ if (!CAPTURE_READONLY) setInterval(() => {
   renderMonitorAttentionStrip();
   renderProgramInspector();
   loadReadout();
+  loadSessions();
 }, 5000);
+if (!CAPTURE_READONLY) setInterval(heartbeatSelf, 20000);
 if (!CAPTURE_READONLY) setInterval(() => {
   if (S.page !== 'attention') return;
   const now = Date.now();
@@ -4117,6 +4158,8 @@ if (!CAPTURE_READONLY) try {
   S.lastVisit = Number(localStorage.getItem(localKey('lastvisit')) || 0) || 0;
   S.runs.showCompleted = localStorage.getItem(localKey('show-completed-runs')) === 'true';
 } catch {}
+// the human is a participant too: register presence so agents can see who is live
+if (!CAPTURE_READONLY) api('POST', '/api/sessions', { id: 'user', kind: 'human', actor: 'user' }).catch(() => {});
 
 // Keep a checkpoint for the next launch while retaining the immutable "since this visit" baseline.
 if (!CAPTURE_READONLY) setInterval(() => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { autoDisplay, lineSVG, renderChart, seriesOf } from '../web/views.js';
+import { autoDisplay, bulletSVG, lineSVG, renderChart, seriesOf, waterfallSVG } from '../web/views.js';
 
 const check = (condition, message) => assert.ok(condition, message);
 
@@ -94,3 +94,17 @@ const hostileBreakdown = renderChart('breakdown', {
 check(hostileBreakdown.includes('&lt;img') && !hostileBreakdown.includes('<img'), 'breakdown labels are escaped');
 
 console.log('PASS: semantic view selection, target/event overlays, null gaps, compatible series, null/zero tables and grids, pipeline metrics, and escaped user strings');
+
+// Bullet: value against its scale, warn/error ticks and a target; user strings stay escaped.
+const bullet = bulletSVG({ id: 'b', value: 72, max: 100, unit: 'ms', warnAbove: 60, errorAbove: 90, metric: { target: 80 } }, 320, 80, {});
+check(bullet.includes('class="v bullet"'), 'bullet renders');
+check(bullet.includes('72'), 'bullet shows the value');
+check((bullet.match(/stroke-width="1"/g) || []).length >= 2, 'bullet shows threshold ticks');
+check(bullet.includes('stroke-width="2"'), 'bullet shows the target');
+
+// Waterfall: signed contributions and a total bar.
+const waterfall = waterfallSVG({ id: 'w', meta: { categories: [{ name: 'in', value: 10 }, { name: 'cache', value: -3 }, { name: '<x>', value: 2 }] } }, 320, 100, { series: 'categories' });
+check(waterfall.includes('class="v waterfall"'), 'waterfall renders');
+check(waterfall.includes('total'), 'waterfall shows a total');
+check(waterfall.includes('&lt;x&gt;'), 'waterfall labels are escaped');
+check(!waterfall.includes('NaN'), 'waterfall coordinates stay finite');

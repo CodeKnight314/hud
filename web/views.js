@@ -25,7 +25,7 @@ export const DISPLAY_KINDS = [
   'auto', 'value', 'progress', 'status', 'text', 'log', 'spark',
   'composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline',
   'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut',
-  'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d',
+  'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d', 'bullet', 'waterfall',
 ];
 
 const EMPTY = '<div class="chart-empty faint">not enough readings yet</div>';
@@ -562,6 +562,51 @@ export function gaugeSVG(it, w, h, plot = {}) {
 
 // ---------------------------------------------------------------- semantic monitor views
 
+/** a value against its scale, threshold ticks and a target: the compact SLO reading */
+export function bulletSVG(it, w, h, plot = {}) {
+  const value = numberOf(valueOf(it));
+  if (value === null) return `<div class="big">${esc(fmt(it.value ?? '—'))}</div>`;
+  const W = Math.max(80, w), H = Math.max(40, h);
+  const max = Math.max(1, Number(plot.max ?? it.max ?? it.metric?.denominator ?? 0) || Math.max(value * 1.2, 1));
+  const x = (v) => 8 + clamp(v / max, 0, 1) * (W - 16);
+  const ticks = [
+    [it.warnAbove, '#8c8c8c'], [it.errorAbove, '#ff5c5c'],
+    [it.warnBelow, '#8c8c8c'], [it.errorBelow, '#ff5c5c'],
+  ].filter(([v]) => Number.isFinite(v)).map(([v, color]) => `<line x1="${x(v).toFixed(1)}" y1="${H / 2 - 13}" x2="${x(v).toFixed(1)}" y2="${H / 2 + 13}" stroke="${color}" stroke-width="1"/>`).join('');
+  const targets = [...(plot.targets || []).map((t) => Number(t.value)), Number(it.metric?.target)].filter(Number.isFinite);
+  const target = targets.map((v) => `<line x1="${(x(v) - 1).toFixed(1)}" y1="${H / 2 - 15}" x2="${(x(v) - 1).toFixed(1)}" y2="${H / 2 + 15}" stroke="#fff" stroke-width="2"/>`).join('');
+  const body = `<rect x="8" y="${H / 2 - 5}" width="${W - 16}" height="10" fill="#2c2c2c"/>`
+    + `<rect x="8" y="${H / 2 - 5}" width="${Math.max(0, x(value) - 8).toFixed(1)}" height="10" fill="#e8e8e8"/>`
+    + ticks + target
+    + `<text x="8" y="${H - 4}" fill="#8c8c8c" font-size="9">${esc(fmt(value))}${it.metric?.unit || it.unit ? ` ${esc(it.metric?.unit || it.unit)}` : ''} · ${esc(fmt(max))}</text>`;
+  return svg(it, 'bullet', W, H, body, [{ px: x(value), py: H / 2, value, label: 'value' }]);
+}
+
+/** signed contributions that build up to a total */
+export function waterfallSVG(it, w, h, plot = {}) {
+  const cats = categoriesOf(it, plot);
+  if (!cats.length) return EMPTY;
+  const W = Math.max(80, w), H = Math.max(44, h);
+  const values = cats.map((c) => (Number.isFinite(c.value) ? c.value : 0));
+  const starts = [];
+  let acc = 0;
+  for (const v of values) { starts.push(acc); acc += v; }
+  const lo = Math.min(0, ...starts, ...starts.map((s, i) => s + values[i]));
+  const hi = Math.max(0, ...starts, ...starts.map((s, i) => s + values[i]));
+  const y = (v) => 8 + (1 - (v - lo) / (hi - lo || 1)) * (H - 26);
+  const bw = W / (values.length + 1);
+  let body = '';
+  values.forEach((v, i) => {
+    const y0 = y(starts[i]), y1 = y(starts[i] + v);
+    body += `<rect x="${(i * bw + 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y1 - y0)).toFixed(1)}" fill="${v < 0 ? '#8c8c8c' : '#e8e8e8'}"/>`;
+    body += `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="#8c8c8c" font-size="8" text-anchor="middle">${esc(cats[i].name)}</text>`;
+  });
+  const ty = y(acc);
+  body += `<rect x="${(values.length * bw + 2).toFixed(1)}" y="${ty.toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y(0) - ty)).toFixed(1)}" fill="#fff"/>`;
+  body += `<text x="${(values.length * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="#fff" font-size="8" text-anchor="middle">total</text>`;
+  return svg(it, 'waterfall', W, H, body);
+}
+
 function valueOf(it) {
   return it?.value !== null && it?.value !== undefined ? it.value : it?.label;
 }
@@ -811,6 +856,8 @@ function drawChart(disp, it, w, h, plot) {
     case 'ridgeline': return ridgelineSVG(it, w, h, plot);
     case 'scatter3d': return scatter3dSVG(it, w, h, plot);
     case 'surface3d': return surface3dSVG(it, w, h, plot);
+    case 'bullet': return bulletSVG(it, w, h, plot);
+    case 'waterfall': return waterfallSVG(it, w, h, plot);
     default: return '';
   }
 }

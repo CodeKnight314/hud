@@ -55,7 +55,7 @@ export type DisplayKind =
   | 'auto' | 'value' | 'progress' | 'status' | 'text' | 'log' | 'spark'
   | 'line' | 'area' | 'bars' | 'gauge' | 'histogram' | 'scatter' | 'pie' | 'donut'
   | 'heatmap' | 'box' | 'ridgeline' | 'scatter3d' | 'surface3d'
-  | 'composite' | 'capacity' | 'breakdown' | 'table' | 'grid' | 'pipeline' | 'custom';
+  | 'composite' | 'capacity' | 'breakdown' | 'table' | 'grid' | 'pipeline' | 'bullet' | 'waterfall' | 'custom';
 
 /**
  * Options for a chart display. Where the numbers come from, how to draw them, and how to frame them.
@@ -372,6 +372,10 @@ export interface State {
   boards: Board[];
   /** id → item; a null-prototype object, always accessed by own key */
   items: Record<string, Item>;
+  /** append-only shared context, ordered by seq */
+  context: ContextEntry[];
+  /** attachment metadata; bytes live under <dataDir>/attachments */
+  attachments: Record<string, AttachmentRecord>;
   activity: Activity[];
   alerts: Alert[];
   trash: TrashEntry[];
@@ -405,6 +409,114 @@ export interface AttentionItem extends AttentionRecord {
   runTitle?: string;
 }
 
+// ---------- coordination: presence, claims, shared context ----------
+
+export const CONTEXT_KINDS = ['FACT', 'FAIL', 'SUMMARY', 'STATUS'] as const;
+export type ContextKind = (typeof CONTEXT_KINDS)[number];
+
+/** an immutable entry in the shared context; corrections are new entries that point at `corrects` */
+export interface ContextEntry {
+  /** global monotonic sequence, the cursor for delta reads */
+  seq: number;
+  id: string;
+  t: number;
+  actor: string;
+  session?: string;
+  board: string;
+  /** "run:<ticketId>" | "project:<projectId>" | "board:<boardId>" */
+  scope: string;
+  scopeType: 'run' | 'project' | 'board';
+  scopeId: string;
+  kind: ContextKind;
+  text: string;
+  data?: Record<string, unknown>;
+  refs?: string[];
+  attachments?: string[];
+  corrects?: string;
+}
+
+/** file bytes live outside state.json; this is the metadata record */
+export interface AttachmentRecord {
+  id: string;
+  board: string;
+  scope?: string;
+  name: string;
+  kind: 'file' | 'text' | 'diff';
+  mime?: string;
+  bytes: number;
+  sha256: string;
+  createdAt: number;
+  createdBy: string;
+  session?: string;
+  target?: string;
+  baseId?: string;
+  baseSha256?: string;
+  corrects?: string;
+  appliedAt?: number;
+  appliedTo?: string;
+}
+
+export type SessionKind = 'agent' | 'cli' | 'human' | 'unknown';
+
+export interface SessionView {
+  id: string;
+  name: string;
+  actor: string;
+  kind: SessionKind;
+  pid?: number;
+  run?: string;
+  startedAt: number;
+  lastSeenAt: number;
+  endedAt?: number;
+  /** not ended and seen within the presence TTL */
+  live: boolean;
+  claims: { ticket: string; ident: string; expiresAt: number }[];
+}
+
+export interface ClaimView {
+  ticket: string;
+  ident: string;
+  title: string;
+  board: string;
+  session: string;
+  actor: string;
+  claimedAt: number;
+  renewedAt: number;
+  expiresAt: number;
+  /** lease not expired */
+  live: boolean;
+  /** holder session still present */
+  sessionLive: boolean;
+}
+
+export interface QueueRow {
+  id: string;
+  ident: string;
+  title: string;
+  board: string;
+  status: string;
+  priority?: string;
+  project?: string;
+  assignee?: string;
+  blocked: boolean;
+  blockedBy: string[];
+  claim: ClaimView | null;
+  owner: string | null;
+  session: { id: string; live: boolean; lastSeenAt: number; kind: SessionKind } | null;
+  bucket: 'open' | 'claimed' | 'done';
+  /** open, unblocked and unclaimed */
+  ready: boolean;
+  updatedAt: number;
+}
+
+export interface QueueResult {
+  now: number;
+  board: string;
+  counts: { open: number; claimed: number; done: number; blocked: number; ready: number };
+  items: QueueRow[];
+}
+
+
 export interface RunOverview {
   id: string;
   uuid?: string;
@@ -431,4 +543,8 @@ export type HudEvent =
   | { kind: 'board'; board: Board }
   | { kind: 'board.deleted'; id: string }
   | { kind: 'activity'; activity: Activity }
-  | { kind: 'alert'; alert: Alert };
+  | { kind: 'alert'; alert: Alert }
+  | { kind: 'session'; action: 'started' | 'updated' | 'ended'; session: SessionView }
+  | { kind: 'claim'; action: 'claimed' | 'renewed' | 'released' | 'expired'; claim: ClaimView; reason?: string }
+  | { kind: 'context'; entry: ContextEntry }
+  | { kind: 'attachment'; action: 'added' | 'removed' | 'applied'; attachment: AttachmentRecord };

@@ -11,11 +11,13 @@ import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
-import type { Activity, Annotation, AttentionItem, AttentionRecord, Board, CanvasProgram, ComparisonRule, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, RunOverview, TextFormat } from './types.ts';
+import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
 
 export interface HudOptions {
   url?: string;
   actor?: string;
+  /** coordination session used for presence and claims (x-hud-session) */
+  session?: string;
   /** start the server in the background if it isn't running (default true) */
   autostart?: boolean;
 }
@@ -79,10 +81,15 @@ export type SearchQuery = {
 /** a failed request; `status` is the HTTP status, or 0 when the server was unreachable / timed out */
 export class HudRequestError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** machine-readable conflict code, e.g. claimed / one-claim / finished / assigned / blocked */
+  code?: string;
+  details?: Record<string, unknown>;
+  constructor(status: number, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = 'HudRequestError';
     this.status = status;
+    this.details = details;
+    this.code = typeof details?.code === 'string' ? details.code : undefined;
   }
 }
 
@@ -213,6 +220,7 @@ function isConnError(e: unknown): boolean {
 export class Hud {
   url: string;
   actor: string;
+  session?: string;
   autostart: boolean;
   timeout: number;
   private runtime: { verified: boolean; starting: Promise<void> | null; warned: boolean };
@@ -220,6 +228,7 @@ export class Hud {
   constructor(opts: HudOptions = {}) {
     this.url = (opts.url ?? (scratch ? process.env.HUD_URL : undefined) ?? `http://localhost:${config().port}`).replace(/\/$/, '');
     this.actor = opts.actor ?? process.env.HUD_ACTOR ?? 'api';
+    this.session = opts.session ?? process.env.HUD_SESSION ?? undefined;
     this.autostart = opts.autostart ?? true;
     const t = Number(process.env.HUD_TIMEOUT);
     this.timeout = t > 0 ? t : 15000;
@@ -312,7 +321,7 @@ export class Hud {
     const send = () =>
       fetch(this.url + path, {
         method,
-        headers: { 'content-type': 'application/json', 'x-hud-actor': enc(this.actor) },
+        headers: { 'content-type': 'application/json', 'x-hud-actor': enc(this.actor), ...(this.session ? { 'x-hud-session': enc(this.session) } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeout),
       });
@@ -340,10 +349,16 @@ export class Hud {
     }
     if (!res.ok) {
       let msg = text;
+      let details: Record<string, unknown> | undefined;
       try {
-        msg = JSON.parse(text).error ?? text;
+        const parsed = JSON.parse(text);
+        msg = parsed.error ?? text;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const { error: _e, ...rest } = parsed;
+          if (Object.keys(rest).length) details = rest;
+        }
       } catch {}
-      throw new HudRequestError(res.status, `${res.status}: ${msg}`);
+      throw new HudRequestError(res.status, `${res.status}: ${msg}`, details);
     }
     try {
       return JSON.parse(text);
@@ -354,7 +369,7 @@ export class Hud {
 
   /** Make an invocation-specific client so concurrent calls cannot change each other's actor header. */
   forActor(actor: string): Hud {
-    const client = new Hud({ url: this.url, actor, autostart: this.autostart });
+    const client = new Hud({ url: this.url, actor, session: this.session, autostart: this.autostart });
     client.timeout = this.timeout;
     client.runtime = this.runtime;
     return client;
@@ -386,8 +401,23 @@ export class Hud {
     return this.request('GET', '/api/guide');
   }
   /** the chart renderer modules agents can use (`display: 'view:<name>'`) */
-  views(): Promise<{ dir: string; views: { name: string; mtime: number; bytes: number }[] }> {
+  views(): Promise<{ dir: string; views: { name: string; mtime: number; bytes: number; sha256?: string; valid?: boolean; errors?: string[] }[] }> {
     return this.request('GET', '/api/views');
+  }
+  viewGet(name: string): Promise<{ name: string; code: string; sha256: string; validation: { ok: boolean; errors: string[]; warnings: string[]; sha256: string } }> {
+    return this.request('GET', `/api/views/${encodeURIComponent(name)}`);
+  }
+  viewGenerate(name: string, spec: Record<string, unknown>, opts: { write?: boolean; overwrite?: boolean } = {}): Promise<{ name: string; code: string; validation: { ok: boolean; errors: string[]; warnings: string[]; sha256: string }; written: boolean; sha256?: string; mtime?: number; path?: string }> {
+    return this.request('POST', '/api/views', { name, spec, ...opts });
+  }
+  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string }): Promise<{ name: string; sha256: string; mtime: number; path: string }> {
+    return this.request('PUT', `/api/views/${encodeURIComponent(name)}`, input);
+  }
+  viewValidate(name: string, code?: string): Promise<{ ok: boolean; errors: string[]; warnings: string[]; sha256: string; rendered: boolean; renderErrors?: string[]; image?: { mimeType: string; data: string } }> {
+    return this.request('POST', `/api/views/${encodeURIComponent(name)}/validate`, code === undefined ? {} : { code });
+  }
+  viewDelete(name: string, expectedSha256?: string): Promise<{ deleted: boolean }> {
+    return this.request('DELETE', `/api/views/${encodeURIComponent(name)}` + qs({ expectedSha256 }));
   }
   boards(): Promise<Board[]> {
     return this.request('GET', '/api/boards');
@@ -491,6 +521,88 @@ export class Hud {
   }
   changes(since: number): Promise<ChangesResponse> {
     return this.request('GET', '/api/changes' + qs({ since }));
+  }
+  // ---------- coordination ----------
+  sessions(): Promise<{ items: SessionView[]; now: number }> {
+    return this.request('GET', '/api/sessions');
+  }
+  sessionStart(name: string, opts: { actor?: string; kind?: SessionKind; run?: string; pid?: number } = {}): Promise<SessionView> {
+    return this.request('POST', '/api/sessions', { id: name, name, ...opts });
+  }
+  sessionHeartbeat(name = this.session): Promise<{ session: SessionView; renewed: ClaimView[] }> {
+    if (!name) throw new HudRequestError(0, 'this client has no session; pass a name or set HUD_SESSION');
+    return this.request('POST', `/api/sessions/${encodeURIComponent(name)}/heartbeat`);
+  }
+  sessionEnd(name = this.session): Promise<{ session: SessionView; released: ClaimView[] }> {
+    if (!name) throw new HudRequestError(0, 'this client has no session; pass a name or set HUD_SESSION');
+    return this.request('DELETE', `/api/sessions/${encodeURIComponent(name)}`);
+  }
+  claim(id: string, opts: { session?: string; ttl?: number; start?: boolean; takeover?: boolean } = {}): Promise<ClaimView> {
+    return this.request('POST', `/api/items/${encodeURIComponent(id)}/claim`, { session: opts.session ?? this.session, ttl: opts.ttl, start: opts.start, takeover: opts.takeover });
+  }
+  claimOf(id: string): Promise<ClaimView | null> {
+    return this.request('GET', `/api/items/${encodeURIComponent(id)}/claim`);
+  }
+  releaseClaim(id: string, session = this.session): Promise<ClaimView> {
+    if (!session) throw new HudRequestError(0, 'this client has no session; pass one or set HUD_SESSION');
+    return this.request('DELETE', `/api/items/${encodeURIComponent(id)}/claim?session=${encodeURIComponent(session)}`);
+  }
+  queue(q: { board?: string; status?: string; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): Promise<QueueResult> {
+    return this.request('GET', '/api/queue' + qs({ ...q, includeDone: q.includeDone ? 1 : undefined }));
+  }
+  /** block until a peer publishes context, claims the ticket, or ends; at most 25 s */
+  async wait(input: { scope?: string; ticket?: string; sessions?: string[]; kinds?: string[]; since?: number; timeoutSeconds?: number; includeSelf?: boolean; session?: string } = {}): Promise<{ woke: boolean; timeout?: boolean; reason?: string; event?: unknown; now?: number }> {
+    await this.ensureServer();
+    const seconds = Math.max(1, Math.min(25, Number(input.timeoutSeconds) || 20));
+    const res = await fetch(this.url + '/api/wait', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-hud-actor': enc(this.actor), ...(this.session ? { 'x-hud-session': enc(this.session) } : {}) },
+      body: JSON.stringify({ ...input, session: input.session ?? this.session, timeoutSeconds: seconds }),
+      signal: AbortSignal.timeout(seconds * 1000 + 5000),
+    });
+    const text = await res.text();
+    let parsed: any = text;
+    try { parsed = JSON.parse(text); } catch {}
+    if (!res.ok) throw new HudRequestError(res.status, `${res.status}: ${parsed?.error ?? text}`, parsed && typeof parsed === 'object' ? parsed : undefined);
+    return parsed;
+  }
+  contextPublish(input: { scope: string; kind: string; text: string; data?: Record<string, unknown>; refs?: string[]; attachments?: string[]; corrects?: string; session?: string }): Promise<ContextEntry> {
+    return this.request('POST', '/api/context', { ...input, session: input.session ?? this.session });
+  }
+  contextRead(q: { scope?: string; since?: number; kinds?: string[]; limit?: number; session?: string; mark?: boolean } = {}): Promise<{ entries: ContextEntry[]; cursor: number; oldest: number; complete: boolean; truncated: boolean; now: number }> {
+    return this.request('POST', '/api/context/read', { ...q, session: q.session ?? this.session });
+  }
+  contextScopes(board?: string): Promise<{ scope: string; scopeType: string; scopeId: string; board: string; count: number; lastAt: number }[]> {
+    return this.request('GET', '/api/context/scopes' + qs({ board }));
+  }
+  // ---------- attachments ----------
+  attachmentAdd(input: { board?: string; scope?: string; name: string; kind?: 'file' | 'text' | 'diff'; mime?: string; target?: string; baseId?: string; baseSha256?: string; corrects?: string; content: Buffer | string }): Promise<AttachmentRecord> {
+    const bytes = typeof input.content === 'string' ? Buffer.from(input.content) : input.content;
+    return this.request('POST', '/api/attachments', { ...input, content: undefined, contentBase64: bytes.toString('base64') });
+  }
+  attachments(q: { board?: string; scope?: string } = {}): Promise<AttachmentRecord[]> {
+    return this.request('GET', '/api/attachments' + qs(q));
+  }
+  attachment(id: string): Promise<AttachmentRecord> {
+    return this.request('GET', `/api/attachments/${encodeURIComponent(id)}`);
+  }
+  attachmentText(id: string): Promise<string> {
+    return this.request('GET', `/api/attachments/${encodeURIComponent(id)}/content?format=text`);
+  }
+  async attachmentBytes(id: string): Promise<Buffer> {
+    await this.ensureServer();
+    const res = await fetch(`${this.url}/api/attachments/${encodeURIComponent(id)}/content`, { headers: { 'x-hud-actor': enc(this.actor) }, signal: AbortSignal.timeout(this.timeout) });
+    if (!res.ok) throw new HudRequestError(res.status, `${res.status}: could not read attachment ${id}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  expandAttachment(id: string): Promise<{ text: string; added: number | null; removed: number | null; truncated: boolean; kind: string }> {
+    return this.request('GET', `/api/attachments/${encodeURIComponent(id)}/expand`);
+  }
+  attachmentApplied(id: string, target: string): Promise<AttachmentRecord> {
+    return this.request('POST', `/api/attachments/${encodeURIComponent(id)}/applied`, { target });
+  }
+  deleteAttachment(id: string, force = false): Promise<AttachmentRecord> {
+    return this.request('DELETE', `/api/attachments/${encodeURIComponent(id)}` + (force ? '?force=1' : ''));
   }
   readout(board?: string): Promise<ReadoutResponse> {
     return this.request('GET', '/api/readout' + qs({ board }));

@@ -211,7 +211,7 @@ async function dragElement(win, selector, dx, dy = 0) {
 
 async function navbarSnapshot(win) {
   return browserEval(win, `(() => {
-    const selectors = ['.brand', '#btn-attention', '#btn-runs', '#board-switcher', '#btn-search', '#tabs', '#who', '#btn-alerts', '#btn-organize', '#btn-auto', '#btn-dashboard', '#btn-view', '#btn-trash', '#btn-activity', '#btn-help', '#conn'];
+    const selectors = ['.brand', '#btn-search', '#btn-attention', '#btn-runs', '#board-list', '#btn-new-board', '#btn-organize', '#btn-auto', '#btn-source', '#btn-trash', '#btn-activity', '#btn-help', '#btn-view', '#conn'];
     const visible = selectors.map((selector) => document.querySelector(selector)).filter((el) => el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0).map((el) => {
       const r = el.getBoundingClientRect();
       return { id: el.id || el.className, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
@@ -251,17 +251,16 @@ async function runUI(seed, artifactDir) {
 
   try {
     await win.loadURL(base.href);
-    await waitForDOM(win, `(() => document.querySelector('#supervision-head h1')?.textContent?.trim() === 'attention')()`, 'default Attention landing');
-    const landing = await browserEval(win, `(() => ({ hash: location.hash, page: document.querySelector('#supervision-head h1')?.textContent?.trim(), supervision: document.body.classList.contains('supervision') }))()`);
-    assert.ok(landing.hash === '' || landing.hash === '#attention', 'default landing has no board hash');
-    assert.equal(landing.page, 'attention', 'default landing is Attention');
-    assert.equal(landing.supervision, true, 'supervision shell is active');
-    assert.ok(await browserEval(win, `document.querySelectorAll('.attention-card').length >= 5`), 'attention shows issue cards');
+    await waitForDOM(win, `(() => document.querySelector('#rail') !== null && document.querySelector('#board-list .board-row') !== null)()`, 'default board landing');
+    const landing = await browserEval(win, `(() => ({ hash: location.hash, supervision: document.body.classList.contains('supervision'), rail: !!document.querySelector('#rail'), inspector: !!document.querySelector('#drawer') }))()`);
+    assert.ok(landing.hash === '' || landing.hash === '#board', 'default landing is the board');
+    assert.equal(landing.supervision, false, 'board shell is active by default');
+    assert.equal(landing.rail, true, 'left rail is present');
     await settlePaint(win);
-    const attentionScreenshot = await screenshot(win, artifactDir, 'supervision-1440x960.png');
+    const boardScreenshot = await screenshot(win, artifactDir, 'supervision-1440x960.png');
 
     await click(win, '#btn-attention');
-    assert.ok(await browserEval(win, `document.querySelector('#supervision-head h1')?.textContent?.trim() === 'attention'`), 'issue sidebar opens Attention');
+    await waitForDOM(win, `(() => document.querySelector('#supervision-head h1')?.textContent?.trim() === 'attention' && document.querySelectorAll('.attention-card').length > 0)()`, 'issue sidebar opens Attention');
     const firstAttention = await browserEval(win, `(() => { const c = document.querySelector('.attention-card'); return c ? { id: c.dataset.attentionId, kind: c.querySelector('.ac-kind')?.textContent || '', title: c.querySelector('.ac-open')?.textContent || '' } : null; })()`);
     assert.ok(firstAttention?.id, 'first issue has an attention id');
     await click(win, `.attention-card[data-attention-id="${firstAttention.id}"] [data-attention-open]`);
@@ -321,24 +320,15 @@ async function runUI(seed, artifactDir) {
     await waitForDOM(win, `(() => { const rows = [...document.querySelectorAll('#drawer .comment .txt')].filter((el) => el.textContent.trim() === ${JSON.stringify(commentText)}); return rows.length === 1 && document.querySelector('#drawer #comment-in')?.value === ''; })()`, 'comment POST rendering and input clear');
     const fullAfterComment = await jsonRequest(`/api/items/${encodeURIComponent(seed.root.id)}`);
     assert.equal((fullAfterComment.comments || []).filter((comment) => comment.text === commentText).length, 1, 'comment POST stores exactly one comment');
-    await click(win, '#drawer .drawer-tab[data-dtab="history"]');
-    await waitForDOM(win, `(() => document.querySelector('#drawer .drawer-tab.on[data-dtab="history"]') !== null)()`, 'comment History tab');
-    const historyCommentCount = await browserEval(win, `(() => [...document.querySelectorAll('#drawer .history-record')].filter((row) => row.querySelector(':scope > div')?.textContent.trim() === ${JSON.stringify(commentText)}).length)()`);
-    assert.equal(historyCommentCount, 1, 'comment appears once in History');
-    await click(win, '#drawer .drawer-tab[data-dtab="overview"]');
-    await waitForDOM(win, `(() => [...document.querySelectorAll('#drawer .comment .txt')].filter((el) => el.textContent.trim() === ${JSON.stringify(commentText)}).length === 1 && document.querySelector('#drawer #comment-in')?.value === '')()`, 'comment Overview tab');
+    await waitForDOM(win, `(() => [...document.querySelectorAll('#drawer .comment .txt')].filter((el) => el.textContent.trim() === ${JSON.stringify(commentText)}).length === 1 && document.querySelector('#drawer #comment-in')?.value === '')()`, 'comment rendered once in the inspector');
     const sseTitle = `${seed.root.title} · SSE`;
     await jsonRequest(`/api/items/${encodeURIComponent(seed.root.id)}`, { method: 'PATCH', body: { title: sseTitle } });
     await waitForDOM(win, `(() => document.querySelector('#drawer .detail-title')?.textContent === ${JSON.stringify(sseTitle)} && [...document.querySelectorAll('#drawer .comment .txt')].filter((el) => el.textContent.trim() === ${JSON.stringify(commentText)}).length === 1 && document.querySelector('#drawer #comment-in')?.value === '')()`, 'comment after SSE item update');
 
-    const tabs = await browserEval(win, `([...document.querySelectorAll('#drawer .drawer-tab')]).map((el) => el.dataset.dtab)`);
-    assert.deepEqual(tabs, ['overview', 'history', 'settings'], 'details sidebar has Overview/History/Settings tabs');
-    await click(win, '#drawer .drawer-tab[data-dtab="history"]');
-    await waitForDOM(win, `(() => document.querySelector('#drawer .drawer-tab.on[data-dtab="history"]') !== null)()`, 'History tab');
-    await click(win, '#drawer .drawer-tab[data-dtab="settings"]');
-    await waitForDOM(win, `(() => document.querySelector('#drawer .drawer-tab.on[data-dtab="settings"]') !== null)()`, 'Settings tab');
-    await click(win, '#drawer .drawer-tab[data-dtab="overview"]');
-    await waitForDOM(win, `(() => document.querySelector('#drawer .drawer-tab.on[data-dtab="overview"]') !== null)()`, 'Overview tab');
+    const sections = await browserEval(win, `([...document.querySelectorAll('#drawer [data-section]')]).map((el) => el.dataset.section)`);
+    assert.deepEqual(sections, ['overview', 'activity', 'settings'], 'inspector is one scroll with three sections');
+    assert.equal(await browserEval(win, `document.querySelectorAll('#drawer .drawer-tab').length`), 0, 'inspector has no tabs');
+    assert.equal(await browserEval(win, `document.querySelectorAll('#drawer .comment .txt').length`), 1, 'comment appears once in the inspector');
     const gripLimits = await browserEval(win, `(() => ({ min: Number(document.querySelector('#drawer-grip')?.getAttribute('aria-valuemin')), max: Number(document.querySelector('#drawer-grip')?.getAttribute('aria-valuemax')) }))()`);
     assert.ok(gripLimits.min >= 360 && gripLimits.max <= 900 && gripLimits.max >= gripLimits.min, 'drawer handle exposes bounded limits');
     await dragElement(win, '#drawer-grip', -5000);
@@ -363,7 +353,7 @@ async function runUI(seed, artifactDir) {
     await settlePaint(win);
     await screenshot(win, artifactDir, 'supervision-sidebar.png');
 
-    await click(win, '#btn-view');
+    await browserEval(win, `(() => { if (!document.body.classList.contains('list')) document.querySelector('#btn-view').click(); return true; })()`);
     await waitForDOM(win, `(() => document.body.classList.contains('list'))()`, 'ticket list');
     const activeText = await browserEval(win, `document.querySelector('#list')?.textContent || ''`);
     assert.equal(activeText.includes(seed.doneChildTitle), false, 'completed ticket is hidden by default');
@@ -372,7 +362,7 @@ async function runUI(seed, artifactDir) {
 
     await win.loadURL(`${base.href}#item=${encodeURIComponent(seed.root.id)}`);
     await waitForDOM(win, `(() => document.querySelector('#drawer.open') !== null)()`, 'live-update drawer');
-    await click(win, '#drawer .drawer-tab[data-dtab="settings"]');
+    await click(win, '#drawer [data-jump="settings"]');
     await waitForDOM(win, `(() => document.querySelector('#drawer [data-k="title"]') !== null)()`, 'focused settings input');
     const focusBefore = await browserEval(win, `(() => { const input = document.querySelector('#drawer [data-k="title"]'); const drawer = document.querySelector('#drawer'); input.focus(); input.value = 'preserve this typed value'; drawer.scrollTop = 123; return { top: drawer.scrollTop, value: input.value }; })()`);
     await jsonRequest(`/api/items/${encodeURIComponent(seed.root.id)}`, { method: 'PATCH', body: { priority: 'high' } });
@@ -382,7 +372,7 @@ async function runUI(seed, artifactDir) {
     assert.equal(focusAfter.value, focusBefore.value, 'live update preserves unsaved input text');
     assert.ok(focusAfter.top >= focusBefore.top - 2, 'live update preserves sidebar scroll');
 
-    return { attentionScreenshot, runScreenshot, consoleErrors };
+    return { boardScreenshot, runScreenshot, consoleErrors };
   } catch (error) {
     try {
       await settlePaint(win);
@@ -402,8 +392,8 @@ app.whenReady().then(async () => {
     const seed = await seedBoard();
     const result = await runUI(seed, artifactDir);
     assert.deepEqual(result.consoleErrors, [], `renderer errors: ${result.consoleErrors.join(' | ')}`);
-    console.log(`PASS: supervision UI landing, attention review, runs/progress, compact navbar fit, UUID/deep-link copy, safe Markdown details, monitor label/progress, sidebar tabs/mouse limits/persistence, comments across tabs/SSE, completed filtering, clipboard mock, and live-update focus/scroll`);
-    console.log(`artifacts: ${result.attentionScreenshot}, ${result.runScreenshot}`);
+    console.log(`PASS: supervision UI landing, attention review, runs/progress, compact navbar fit, UUID/deep-link copy, safe Markdown details, monitor label/progress, inspector sections/mouse limits/persistence, comments across sections/SSE, completed filtering, clipboard mock, and live-update focus/scroll`);
+    console.log(`artifacts: ${result.boardScreenshot}, ${result.runScreenshot}`);
     console.log(`seed: ${seed.boardName} (${seed.roots.length} runs, ${seed.detailMonitor.id} details monitor)`);
     app.exit(0);
   } catch (error) {

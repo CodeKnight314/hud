@@ -1,5 +1,5 @@
 // Generates the app + tray icons with no dependencies: a minimal PNG encoder over node:zlib.
-// Run via `npm run icons`; the outputs are committed under build/.
+// Run via `npm run icons`; the outputs are committed under build/ and web/.
 import { deflateSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'build');
+const WEB = join(ROOT, 'web');
 
 const CRC = (() => {
   const t = new Int32Array(256);
@@ -60,36 +61,73 @@ function png(size, pixel) {
   ]);
 }
 
-/** the hud mark: a tall bar and a square, on a 16x16 grid, scaled up */
-const mark = (x, y, s) => {
-  const u = s / 16;
-  const inBar = x >= 3 * u && x < 7 * u && y >= 3 * u && y < 13 * u;
-  const inBox = x >= 9 * u && x < 13 * u && y >= 3 * u && y < 7 * u;
-  return inBar || inBox;
-};
+// The mark is defined on a 16x16 unit grid: a board frame around a tall bar and a block.
+// The tray glyph drops the frame so it stays legible at 16 px.
+const BAR = { x: 3, y: 3, w: 4, h: 10 };
+const BLOCK = { x: 9, y: 3, w: 4, h: 4 };
+const FRAME = { x: 0, y: 0, w: 16, h: 16, t: 0.6 };
+const inRect = (u, r) => u.x >= r.x && u.x < r.x + r.w && u.y >= r.y && u.y < r.y + r.h;
+const inFrame = (u) => inRect(u, FRAME) && !(u.x >= FRAME.x + FRAME.t && u.x < FRAME.x + FRAME.w - FRAME.t
+  && u.y >= FRAME.y + FRAME.t && u.y < FRAME.y + FRAME.h - FRAME.t);
+
+/** map a pixel in an s×s image back onto the 16-unit grid */
+const unit = (x, y, s) => ({ x: (x * 16) / s, y: (y * 16) / s });
+
+function markAt(x, y, s, { frame = true } = {}) {
+  const u = unit(x, y, s);
+  if (inRect(u, BAR) || inRect(u, BLOCK)) return true;
+  return frame && inFrame(u);
+}
+
+/** SVG source, generated from the same geometry as the PNGs */
+function svg(size, { frame = true, background = true } = {}) {
+  const r = (rect) => `<rect x="${rect.x}" y="${rect.y}" width="${rect.w}" height="${rect.h}"/>`;
+  const framePath = frame
+    ? `<path fill-rule="evenodd" d="M${FRAME.x} ${FRAME.y}h${FRAME.w}v${FRAME.h}H${FRAME.x}z M${FRAME.x + FRAME.t} ${FRAME.y + FRAME.t}h${FRAME.w - FRAME.t * 2}v${FRAME.h - FRAME.t * 2}H${FRAME.x + FRAME.t}z"/>`
+    : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}">`
+    + (background ? `<rect width="${size}" height="${size}" fill="#000"/>` : '')
+    + `<g fill="#fff">${framePath}${r(BAR)}${r(BLOCK)}</g></svg>`;
+}
 
 mkdirSync(OUT, { recursive: true });
 
-// app icon: white mark on black, with padding so macOS/Windows mask it nicely
+// app icon: white framed mark on black, with padding so macOS/Windows mask it nicely
 const S = 1024;
+const pad = S * 0.14;
+const inner = S - pad * 2;
 writeFileSync(
   join(OUT, 'icon.png'),
   png({ width: S, height: S }, (x, y) => {
-    const pad = S * 0.14;
-    const inner = S - pad * 2;
-    const on = x >= pad && x < pad + inner && y >= pad && y < pad + inner && mark(x - pad, y - pad, inner);
+    const on = x >= pad && x < pad + inner && y >= pad && y < pad + inner && markAt(x - pad, y - pad, inner);
+    return on ? [255, 255, 255, 255] : [0, 0, 0, 255];
+  }),
+);
+writeFileSync(join(OUT, 'icon.svg'), svg(16));
+
+// tray: black mark on transparent, no frame — macOS template images invert automatically
+writeFileSync(
+  join(OUT, 'trayTemplate.png'),
+  png({ width: 16, height: 16 }, (x, y) => (markAt(x, y, 16, { frame: false }) ? [0, 0, 0, 255] : [0, 0, 0, 0])),
+);
+writeFileSync(
+  join(OUT, 'trayTemplate@2x.png'),
+  png({ width: 32, height: 32 }, (x, y) => (markAt(x, y, 32, { frame: false }) ? [0, 0, 0, 255] : [0, 0, 0, 0])),
+);
+
+// web favicons
+writeFileSync(join(WEB, 'favicon.svg'), svg(16));
+writeFileSync(join(WEB, 'mark.svg'), svg(16, { frame: false, background: false }));
+writeFileSync(join(WEB, 'favicon.png'), png({ width: 32, height: 32 }, (x, y) => (markAt(x, y, 32) ? [255, 255, 255, 255] : [0, 0, 0, 255])));
+const A = 180;
+const apad = A * 0.14;
+const ainner = A - apad * 2;
+writeFileSync(
+  join(WEB, 'apple-touch-icon.png'),
+  png({ width: A, height: A }, (x, y) => {
+    const on = x >= apad && x < apad + ainner && y >= apad && y < apad + ainner && markAt(x - apad, y - apad, ainner);
     return on ? [255, 255, 255, 255] : [0, 0, 0, 255];
   }),
 );
 
-// tray: black mark on transparent — macOS template images invert automatically
-writeFileSync(
-  join(OUT, 'trayTemplate.png'),
-  png({ width: 16, height: 16 }, (x, y) => (mark(x, y, 16) ? [0, 0, 0, 255] : [0, 0, 0, 0])),
-);
-writeFileSync(
-  join(OUT, 'trayTemplate@2x.png'),
-  png({ width: 32, height: 32 }, (x, y) => (mark(x, y, 32) ? [0, 0, 0, 255] : [0, 0, 0, 0])),
-);
-
-console.log('wrote build/icon.png, build/trayTemplate.png, build/trayTemplate@2x.png');
+console.log('wrote build/icon.{png,svg}, build/trayTemplate{,@2x}.png, web/favicon.{svg,png}, web/apple-touch-icon.png');

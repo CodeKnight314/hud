@@ -11,7 +11,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as deadline } from 'node:timers/promises';
 
 const USAGE = 'usage: node scripts/check-packaged.mjs <output-dir> [arch]';
-const STATE_VERSION = 9;
+const STATE_VERSION = 10;
 const LIVE_PORT = 7317;
 const SERVER_START_TIMEOUT = 30_000;
 const COMMAND_TIMEOUT = 30_000;

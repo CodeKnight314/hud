@@ -1,8 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { asset, isElectron } from './assets.ts';
 import { Hud } from './client.ts';
+import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
 import { line } from './summary.ts';
@@ -66,6 +67,22 @@ usage:
   hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n]
                                      list or review human-attention items (separate from agent alert ack)
   hud runs                           list run summaries and linked monitors/tickets
+  hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n]
+                                     work queue: open, claimed and done tickets with owner and session state
+  hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1]
+                                     register presence for coordination (default: list)
+  hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]
+                                     take an exclusive lease on a ticket; --start also moves it to doing
+  hud release <id> [--session s] [--reason text]   release a claim
+  hud context read [--scope run:EGO-1] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
+  hud context publish --scope run:EGO-1 --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
+                                     append a typed finding to the shared context (never edit; publish a correction)
+  hud context scopes [--board b]     list scopes with entries and last activity
+  hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id]
+  hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create]
+  hud attach rm <id> [--force]        share files by reference; apply writes a local file with conflict checks
+  hud wait [--scope run:EGO-1] [--ticket EGO-3] [--sessions peer] [--kinds context,claim,session]
+           [--since n] [--timeout 20] [--include-self]   block until a peer publishes, claims or ends
   hud changes --since ms             list changes after a timestamp (for incremental sync)
   hud readout [board]                text and metric readout for one board or all boards
   hud snapshot [board] [--format auto|png|text] [--out path]
@@ -106,6 +123,9 @@ usage:
                                      clear keeps the board/settings; rm deletes the board
   hud guide                          full guide (for agents)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
+  hud view list | show <name> | generate <name> --spec '<json>' [--write] [--display monitor]
+           | set <name> --code-file path [--overwrite] | validate <name> | rm <name>
+                                     agent-authored chart modules (trusted local code; see GUIDE)
   hud mcp                            run the MCP server on stdio (what agents connect to)
   hud mcp install [clients...] [--dry-run]   wire hud into claude / codex / opencode / all
   hud mcp uninstall [clients...]     remove the hud MCP entry again
@@ -127,8 +147,8 @@ examples:
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help']);
-const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision']);
+const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite']);
+const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
@@ -196,6 +216,13 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   alerts: { u: 'hud alerts [--ack] [--all] [--json]', max: 0, f: ['ack', 'all', 'json'] },
   attention: { u: 'hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n] [--json]', max: 2, f: ['revision', 'until', 'minutes', 'json'] },
   runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
+  queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'all', 'limit', 'board', 'json'] },
+  session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
+  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--json]', min: 1, max: 1, f: ['session', 'ttl', 'start', 'takeover', 'json'] },
+  release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
+  context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b]', max: 2, f: '*' },
+  attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
+  wait: { u: 'hud wait [--scope s] [--ticket id] [--sessions a,b] [--kinds context,claim,session] [--since n] [--timeout sec] [--include-self] [--json]', max: 0, f: ['scope', 'ticket', 'sessions', 'kinds', 'since', 'timeout', 'include-self', 'session', 'json'] },
   changes: { u: 'hud changes --since ms [--json]', max: 0, f: ['since', 'json'] },
   readout: { u: 'hud readout [board] [--json]', max: 1, f: ['board', 'json'] },
   snapshot: { u: 'hud snapshot [board] [--format auto|png|text] [--out path] [--json]', max: 1, f: ['board', 'format', 'out', 'json'] },
@@ -224,6 +251,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   board: { u: 'hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]', f: ['json'] },
   guide: { u: 'hud guide', max: 0, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
+  view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | validate <name> | rm <name>', max: 2, f: '*' },
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
   cli: { u: 'hud cli [install|uninstall|status]', max: 1, f: [] },
 };
@@ -306,7 +334,8 @@ async function main() {
   }
   if (rest.length < (spec.min ?? 0) || (spec.max !== undefined && rest.length > spec.max)) throw new UsageError(rest.length < (spec.min ?? 0) ? `missing argument for "hud ${cmd}"` : `too many arguments for "hud ${cmd}"`);
 
-  const hud = new Hud({ actor });
+  const hud = new Hud({ actor, session: typeof flags.session === 'string' ? flags.session : undefined });
+  const session = (typeof flags.session === 'string' ? flags.session : undefined) ?? process.env.HUD_SESSION ?? `${actor}-cli`;
   /** print text (control characters stripped), or the data as JSON under --json */
   const emit = (data: unknown, text?: string) => console.log(json || text === undefined ? (typeof data === 'string' ? data : JSON.stringify(data, null, 2)) : clean(text));
   const raw = (s: string) => console.log(s);
@@ -465,6 +494,117 @@ async function main() {
         return `${run.id}  ${run.title}  [${run.status}]  progress=${progress}  issues=${run.issues}  monitors=${run.monitors.length}  tickets=${run.tickets.length}`;
       });
       return emit(r, lines.length ? lines.join('\n') : 'no runs');
+    }
+    case 'queue': {
+      const r = await hud.queue({ board: rest[0] ?? flags.board, status: flags.status, project: flags.project, assignee: flags.assignee, includeDone: !!flags.all, limit: flags.limit === undefined ? undefined : Number(flags.limit) });
+      const { counts } = r;
+      const lines = r.items.map((t) => {
+        const marks = [t.ready ? 'ready' : '', t.blocked ? 'blocked' : '', t.claim ? 'claimed' : ''].filter(Boolean).join(',');
+        return `${t.ident.padEnd(8)} ${t.status.padEnd(9)} ${(t.owner ?? '—').padEnd(12)} ${marks.padEnd(18)} ${t.title}`;
+      });
+      return emit(r, `${r.board}: ${counts.ready} ready · ${counts.open} open · ${counts.claimed} claimed · ${counts.blocked} blocked · ${counts.done} done\n${lines.join('\n')}`.trimEnd());
+    }
+    case 'session': {
+      const sub = rest[0] ?? 'list';
+      if (sub === 'list') {
+        const r = await hud.sessions();
+        return emit(r, r.items.length
+          ? r.items.map((s) => `${s.id}  ${s.kind}  ${s.live ? 'live' : 'ended'}  age=${Math.round((r.now - s.lastSeenAt) / 1000)}s  claims=${s.claims.map((c) => c.ident).join(',') || '—'}`).join('\n')
+          : 'no sessions; start one with: hud session start <name>');
+      }
+      const name = rest[1] ?? session;
+      if (sub === 'start') {
+        const s = await hud.sessionStart(name, { kind: flags.kind as 'agent' | 'cli' | 'human' | 'unknown' | undefined, run: flags.run as string | undefined });
+        return emit(s, `session ${s.id} started (${s.kind})${s.run ? ` for ${s.run}` : ''}`);
+      }
+      if (sub === 'heartbeat') {
+        const r = await hud.sessionHeartbeat(name);
+        return emit(r, `session ${r.session.id} live; ${r.renewed.length} claims renewed`);
+      }
+      if (sub === 'end') {
+        const r = await hud.sessionEnd(name);
+        return emit(r, `session ${r.session.id} ended; released ${r.released.length} claims`);
+      }
+      throw new UsageError(`unknown session command "${sub}" — try: hud session start|heartbeat|end|list`);
+    }
+    case 'claim': {
+      const c = await hud.claim(rest[0]!, { session, ttl: flags.ttl === undefined ? undefined : Number(flags.ttl), start: !!flags.start, takeover: !!flags.takeover });
+      return emit(c, `${c.ident} "${c.title}" claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleTimeString()}${flags.start ? '; ticket moved to doing' : ''}`);
+    }
+    case 'release': {
+      const c = await hud.releaseClaim(rest[0]!, flags.session);
+      return emit(c, `released ${c.ident}`);
+    }
+    case 'attach': {
+      const sub = rest[0] ?? 'list';
+      if (sub === 'list') {
+        const rows = await hud.attachments({ board: flags.board as string | undefined, scope: flags.scope as string | undefined });
+        return emit(rows, rows.length
+          ? rows.map((a) => `${a.id}  ${a.name}  ${a.bytes}b  ${a.scope ?? '—'}  ${a.appliedTo ? `applied→${a.appliedTo}` : ''}`).join('\n')
+          : 'no attachments');
+      }
+      const id = rest[1];
+      if (sub === 'add') {
+        if (!id) throw new UsageError('attach add requires a file path');
+        const name = (flags.name as string | undefined) ?? basename(id);
+        const a = await hud.attachmentAdd({ board: flags.board as string | undefined, scope: flags.scope as string | undefined, name, kind: flags.kind as 'file' | 'text' | 'diff' | undefined, mime: flags.mime as string | undefined, target: flags.target as string | undefined, baseId: flags.base as string | undefined, content: readFileSync(id) });
+        return emit(a, `attachment ${a.id} ${a.name} (${a.bytes}b, sha256 ${a.sha256})`);
+      }
+      if (!id) throw new UsageError(`attach ${sub} requires an attachment id`);
+      if (sub === 'get') {
+        const a = await hud.attachment(id);
+        return emit(a, JSON.stringify(a, null, 2));
+      }
+      if (sub === 'content') {
+        const text = await hud.attachmentText(id);
+        return emit(text, text);
+      }
+      if (sub === 'expand') {
+        const d = await hud.expandAttachment(id);
+        return emit(d, `+${d.added ?? '?'} -${d.removed ?? '?'}${d.truncated ? ' (truncated)' : ''}\n${d.text}`);
+      }
+      if (sub === 'apply') {
+        if (!flags.target) throw new UsageError('attach apply requires --target <absolute path>');
+        const r = await applyAttachment(hud, id, { target: String(flags.target), expectedSha256: flags.expected as string | undefined, mode: flags.create ? 'create' : 'overwrite' });
+        return emit(r, `applied to ${r.path}${r.backup ? ` (backup ${r.backup})` : ''}`);
+      }
+      if (sub === 'rm' || sub === 'delete') {
+        const a = await hud.deleteAttachment(id, !!flags.force);
+        return emit(a, `deleted attachment ${a.id}`);
+      }
+      throw new UsageError(`unknown attach command "${sub}" — try: hud attach list|add|get|content|expand|apply|rm`);
+    }
+    case 'wait': {
+      const r = await hud.wait({
+        scope: flags.scope as string | undefined,
+        ticket: flags.ticket as string | undefined,
+        sessions: flags.sessions === undefined ? undefined : String(flags.sessions).split(',').map(s => s.trim()).filter(Boolean),
+        kinds: flags.kinds === undefined ? undefined : String(flags.kinds).split(',').map(s => s.trim()).filter(Boolean),
+        since: flags.since === undefined ? undefined : Number(flags.since),
+        timeoutSeconds: flags.timeout === undefined ? undefined : Number(flags.timeout),
+        includeSelf: !!flags['include-self'],
+        session,
+      });
+      return emit(r, r.woke ? `woke: ${r.reason}\n${JSON.stringify(r.event, null, 2)}` : `no matching event within ${flags.timeout ?? 20}s`);
+    }
+    case 'context': {
+      const sub = rest[0] ?? 'read';
+      if (sub === 'scopes') {
+        const rows = await hud.contextScopes(flags.board);
+        return emit(rows, rows.length ? rows.map((s) => `${s.scope}  board=${s.board}  entries=${s.count}  last=${new Date(s.lastAt).toLocaleString()}`).join('\n') : 'no shared context yet');
+      }
+      if (sub === 'publish') {
+        if (!flags.scope || !flags.kind || !flags.text) throw new UsageError('publish requires --scope, --kind and --text');
+        const data = flags.data === undefined ? undefined : JSON.parse(String(flags.data));
+        const refs = flags.refs === undefined ? undefined : String(flags.refs).split(',').map(s => s.trim()).filter(Boolean);
+        const attachments = flags.attach === undefined ? undefined : String(flags.attach).split(',').map(s => s.trim()).filter(Boolean);
+        const e = await hud.contextPublish({ scope: String(flags.scope), kind: String(flags.kind), text: String(flags.text), data, refs, attachments, corrects: flags.corrects as string | undefined, session });
+        return emit(e, `published ${e.kind} #${e.seq} ${e.scope} id=${e.id}`);
+      }
+      if (sub !== 'read') throw new UsageError(`unknown context command "${sub}" — try: hud context read|publish|scopes`);
+      const r = await hud.contextRead({ scope: flags.scope as string | undefined, since: flags.since === undefined ? undefined : Number(flags.since), kinds: flags.kind === undefined ? undefined : String(flags.kind).split(','), limit: flags.limit === undefined ? undefined : Number(flags.limit), session, mark: !flags.peek });
+      const lines = r.entries.map((e) => `#${e.seq} ${e.kind.padEnd(7)} ${e.actor.padEnd(10)} ${e.text}${e.corrects ? `  (corrects ${e.corrects})` : ''}`);
+      return emit(r, `cursor=${r.cursor}${r.truncated ? ' (older entries pruned)' : ''}${r.complete ? '' : ' (more remain)'}\n${lines.join('\n')}`.trimEnd());
     }
     case 'changes': {
       if (flags.since === undefined) throw new UsageError('usage: hud changes --since timestamp');
@@ -767,6 +907,40 @@ async function main() {
       if (json) return emit(views);
       if (!views.length) return emit(views, `no renderer modules in ${dir}\nadd an ES module exporting render(ctx), then use display: "view:<name>"`);
       return emit(views, `renderer modules in ${dir}:\n` + views.map((v) => `  ${v.name.replace(/\.js$/, '')}  ${new Date(v.mtime).toLocaleString()}  ${v.bytes}b`).join('\n'));
+    }
+    case 'view': {
+      const sub = rest[0] ?? 'list';
+      const name = rest[1];
+      if (sub === 'list') {
+        const { dir, views } = await hud.views();
+        return emit(views, views.length ? views.map((v) => `${v.name}  ${v.bytes}b  ${v.valid === false ? `invalid: ${(v.errors || []).join('; ')}` : 'valid'}`).join('\n') + `\n${dir}` : `no renderer modules in ${dir}`);
+      }
+      if (!name) throw new UsageError(`view ${sub} requires a name`);
+      if (sub === 'show') {
+        const v = await hud.viewGet(name);
+        return emit(v, `// ${v.name} sha256=${v.sha256}\n${v.code}`);
+      }
+      if (sub === 'generate') {
+        if (!flags.spec) throw new UsageError('generate requires --spec JSON');
+        const r = await hud.viewGenerate(name, JSON.parse(String(flags.spec)), { write: !!flags.write, overwrite: !!flags.overwrite });
+        if (flags.display && r.written) await hud.update(String(flags.display), { display: `view:${name}` });
+        return emit(r, `${r.written ? 'wrote' : 'generated (not written)'} ${name}${r.written ? ` at ${r.path}` : ''}\nvalidation: ${r.validation.ok ? 'ok' : r.validation.errors.join('; ')}\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`);
+      }
+      if (sub === 'set') {
+        if (!flags['code-file']) throw new UsageError('set requires --code-file path');
+        const r = await hud.viewWrite(name, { code: readFileSync(String(flags['code-file']), 'utf8'), overwrite: !!flags.overwrite, expectedSha256: flags['expected-sha'] as string | undefined });
+        return emit(r, `wrote ${name} (${r.sha256})\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`);
+      }
+      if (sub === 'validate') {
+        const code = flags['code-file'] ? readFileSync(String(flags['code-file']), 'utf8') : undefined;
+        const r = await hud.viewValidate(name, code);
+        return emit(r, `${r.ok ? 'valid' : 'invalid'}${r.rendered ? ' · rendered' : ''}${r.errors.length ? `\n${r.errors.join('\n')}` : ''}${r.renderErrors?.length ? `\nrender: ${r.renderErrors.join(' | ')}` : ''}`);
+      }
+      if (sub === 'rm' || sub === 'delete') {
+        const r = await hud.viewDelete(name, flags['expected-sha'] as string | undefined);
+        return emit(r, `deleted ${name}`);
+      }
+      throw new UsageError(`unknown view command "${sub}" — try: hud view list|show|generate|set|validate|rm`);
     }
     case 'mcp': {
       const sub = rest[0];

@@ -2,21 +2,24 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec } from './types.ts';
-import { TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
+import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord } from './types.ts';
+import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
 
 export class HudError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** machine-readable subclass of an error, e.g. a claim conflict `code` */
+  details?: Record<string, unknown>;
+  constructor(status: number, message: string, details?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    this.details = details;
   }
 }
 
 /** bump with a migration in the Store constructor whenever the meaning of stored data changes */
-export const STATE_VERSION = 9;
+export const STATE_VERSION = 10;
 
 const TYPES: ItemType[] = ['ticket', 'monitor', 'note', 'frame', 'util', 'project'];
 const PREFIX: Record<ItemType, string> = { ticket: 't', monitor: 'm', note: 'n', frame: 'f', util: 'u', project: 'p' };
@@ -46,7 +49,7 @@ const DISPLAYS = [
   'auto', 'value', 'progress', 'status', 'text', 'log', 'spark',
   'line', 'area', 'bars', 'gauge', 'histogram', 'scatter', 'pie', 'donut',
   'heatmap', 'box', 'ridgeline', 'scatter3d', 'surface3d',
-  'composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'custom',
+  'composite', 'capacity', 'breakdown', 'table', 'grid', 'pipeline', 'bullet', 'waterfall', 'custom',
 ] as const;
 /** utility kinds the canvas knows how to draw (web/utils.js) */
 const UTIL_KINDS = ['timer', 'stopwatch', 'clock', 'counter', 'calculator', 'sheet', 'markdown', 'dice'] as const;
@@ -67,6 +70,47 @@ const READING_KEYS = ['value', 'state', 'message', 'messageFormat', 'details', '
 const LIMIT = { title: 300, body: 200_000, comment: 20_000, message: 2048, value: 10_000, label: 200, unit: 32, person: 80, tags: 50, tag: 50, json: 256_000, depth: 20 };
 const FANOUT_MAX = 1000;
 const FANOUT_DEPTH = 4;
+
+// coordination limits
+export const SESSION_TTL_MS = 90_000;
+export const CLAIM_TTL_SEC = 120;
+const CLAIM_TTL_MIN_SEC = 15;
+const CLAIM_TTL_MAX_SEC = 900;
+const SESSION_KEEP_MS = 10 * 60_000;
+const CONTEXT_TEXT_MAX = 4096;
+const CONTEXT_DATA_MAX = 8192;
+const CONTEXT_MAX = 10_000;
+const CONTEXT_SCOPE_MAX = 2000;
+const CONTEXT_REF_MAX = 50;
+const CONTEXT_PUBLISH_PER_MIN = 60;
+const ATTACHMENT_MAX_BYTES = 2 * 1024 * 1024;
+const ATTACHMENT_MAX_PER_BOARD = 500;
+const ATTACHMENT_MAX_PER_SCOPE = 100;
+const SCOPE_RE = /^(run|project|board):([A-Za-z0-9._-]{1,64})$/;
+
+/** one live agent/CLI session; runtime only, never persisted */
+interface SessionRecord {
+  id: string;
+  name: string;
+  actor: string;
+  kind: SessionKind;
+  pid?: number;
+  run?: string;
+  startedAt: number;
+  lastSeenAt: number;
+  endedAt?: number;
+  /** context publish timestamps for the rate limit */
+  publishes: number[];
+}
+/** an exclusive lease on a ticket; runtime only */
+interface ClaimRecord {
+  ticket: string;
+  session: string;
+  actor: string;
+  claimedAt: number;
+  renewedAt: number;
+  expiresAt: number;
+}
 
 const COMMON_KEYS = ['title', 'board', 'x', 'y', 'w', 'h', 'meta', 'group'];
 const TYPE_KEYS: Record<ItemType, string[]> = {
@@ -292,12 +336,17 @@ export class Store extends EventEmitter {
   private idx: TicketIndex | null = null;
   private backupTimer: NodeJS.Timeout | null = null;
   private transactionEvents: HudEvent[] | null = null;
+  /** live sessions and claim leases: runtime only, so a restart never resurrects presence */
+  private liveSessions = new Map<string, SessionRecord>();
+  private claims = new Map<string, ClaimRecord>();
+  /** session → scope → last context seq read */
+  private cursors = new Map<string, Map<string, number>>();
 
   constructor(file: string) {
     super();
     this.file = file;
     this.dir = dirname(file);
-    this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [], attention: dict() };
+    this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), context: [], attachments: dict(), activity: [], alerts: [], trash: [], attention: dict() };
     let fileText: string | undefined;
     let raw: Record<string, any> | undefined;
     this.cleanTmp();
@@ -367,6 +416,10 @@ export class Store extends EventEmitter {
         s.attention[id] = a as AttentionRecord;
     }
     if (Array.isArray(raw.trash)) s.trash = raw.trash.filter((e) => isObj(e) && isObj(e.item) && typeof e.item.id === 'string');
+    if (Array.isArray(raw.context)) s.context = raw.context.filter((e) => isObj(e) && typeof e.id === 'string' && Number.isFinite(e.seq) && typeof e.scope === 'string') as ContextEntry[];
+    if (isObj(raw.attachments)) for (const [id, a] of Object.entries(raw.attachments)) {
+      if (isObj(a) && a.id === id && typeof a.name === 'string' && typeof a.sha256 === 'string' && Number.isFinite(a.bytes)) s.attachments[id] = a as AttachmentRecord;
+    }
   }
 
   /** v1 → current. Each step is additive or rewrites in place; the file was copied to backups/ first. */
@@ -444,6 +497,12 @@ export class Store extends EventEmitter {
         it.freshness ??= { mode: 'live' };
       }
       s.version = 9;
+    }
+    if (s.version < 10) {
+      // v10 adds the shared coordination context and attachment metadata. Presence and claims are runtime-only.
+      s.context ??= [];
+      s.attachments ??= dict();
+      s.version = 10;
     }
     for (const b of s.boards) { b.width = BOARD_WIDTH; b.height = BOARD_HEIGHT; }
     for (const it of Object.values(s.items)) Object.assign(it, bounded(it));
@@ -539,6 +598,54 @@ export class Store extends EventEmitter {
         this.addComment(it, 'hud', `renumbered ${old} → ${this.ident(it)} (duplicate identifier)`);
       });
     }
+    // shared context: valid scopes/kinds, unique seq, caps. Oldest entries drop first.
+    const seenSeq = new Set<number>();
+    const scopeCount = new Map<string, number>();
+    const kept: ContextEntry[] = [];
+    for (const e of [...(this.state.context ?? [])].sort((a, b) => b.seq - a.seq)) {
+      const m = isObj(e) ? SCOPE_RE.exec(String(e.scope ?? '')) : null;
+      if (!isObj(e) || !Number.isFinite(e.seq) || seenSeq.has(e.seq) || !m || !boards.has(e.board)
+        || !(CONTEXT_KINDS as readonly string[]).includes(e.kind) || typeof e.text !== 'string' || typeof e.id !== 'string') {
+        fixed++;
+        continue;
+      }
+      const n = (scopeCount.get(e.scope) ?? 0) + 1;
+      if (n > CONTEXT_SCOPE_MAX) {
+        fixed++;
+        continue;
+      }
+      scopeCount.set(e.scope, n);
+      seenSeq.add(e.seq);
+      e.scopeType = m[1] as ContextEntry['scopeType'];
+      e.scopeId = m[2]!;
+      if (e.text.length > CONTEXT_TEXT_MAX) { e.text = e.text.slice(0, CONTEXT_TEXT_MAX); fixed++; }
+      if (e.refs && (!Array.isArray(e.refs) || e.refs.length > CONTEXT_REF_MAX)) { delete e.refs; fixed++; }
+      if (e.attachments && !Array.isArray(e.attachments)) { delete e.attachments; fixed++; }
+      if (e.data !== undefined) {
+        let size = 0;
+        try { size = JSON.stringify(e.data).length; } catch { size = Infinity; }
+        if (!isObj(e.data) || size > CONTEXT_DATA_MAX) { delete e.data; fixed++; }
+      }
+      kept.push(e);
+    }
+    if (kept.length > CONTEXT_MAX) { kept.length = CONTEXT_MAX; fixed++; }
+    kept.reverse();
+    this.state.context = kept;
+    this.state.seq.context = Math.max(this.state.seq.context ?? 0, ...kept.map(e => e.seq), 0);
+    // attachment metadata: files are checked only when read
+    const perBoard = new Map<string, number>();
+    const atts = dict<AttachmentRecord>();
+    for (const a of Object.values(this.state.attachments ?? {}).sort((x, y) => y.createdAt - x.createdAt)) {
+      const n = (perBoard.get(a.board) ?? 0) + 1;
+      if (!isObj(a) || typeof a.id !== 'string' || typeof a.name !== 'string' || !/^[0-9a-f]{64}$/.test(a.sha256)
+        || !Number.isFinite(a.bytes) || a.bytes > ATTACHMENT_MAX_BYTES || !boards.has(a.board) || n > ATTACHMENT_MAX_PER_BOARD) {
+        fixed++;
+        continue;
+      }
+      perBoard.set(a.board, n);
+      atts[a.id] = a;
+    }
+    this.state.attachments = atts;
     return fixed;
   }
 
@@ -829,6 +936,472 @@ export class Store extends EventEmitter {
     return { since, now: now(), complete: !(all.length && all[0]!.id > 1 && since < all[0]!.t) && events.length <= 500, events: events.slice(-500) };
   }
 
+  // ---------- coordination: presence, claims, queue ----------
+
+  private sessionId(v: unknown): string {
+    const id = String(v ?? '').trim();
+    if (!/^[A-Za-z0-9][\w.:@ -]{0,63}$/.test(id)) throw new HudError(400, 'session must be 1-64 characters: letters, digits, . _ : @ - or space');
+    return id;
+  }
+
+  private sessionLive(s: SessionRecord, at = now()): boolean {
+    return !s.endedAt && at - s.lastSeenAt <= SESSION_TTL_MS;
+  }
+
+  private sessionView(s: SessionRecord, at = now()): SessionView {
+    const claims: SessionView['claims'] = [];
+    for (const c of this.claims.values()) {
+      if (c.session !== s.id) continue;
+      const tk = this.state.items[c.ticket];
+      if (tk) claims.push({ ticket: c.ticket, ident: this.ident(tk), expiresAt: c.expiresAt });
+    }
+    return {
+      id: s.id, name: s.name, actor: s.actor, kind: s.kind,
+      ...(s.pid === undefined ? {} : { pid: s.pid }), ...(s.run === undefined ? {} : { run: s.run }),
+      startedAt: s.startedAt, lastSeenAt: s.lastSeenAt, ...(s.endedAt === undefined ? {} : { endedAt: s.endedAt }),
+      live: this.sessionLive(s, at), claims,
+    };
+  }
+
+  private claimView(c: ClaimRecord): ClaimView {
+    const tk = this.state.items[c.ticket];
+    const s = this.liveSessions.get(c.session);
+    return {
+      ticket: c.ticket, ident: tk ? this.ident(tk) : c.ticket, title: tk?.title ?? '', board: tk?.board ?? '',
+      session: c.session, actor: c.actor, claimedAt: c.claimedAt, renewedAt: c.renewedAt, expiresAt: c.expiresAt,
+      live: c.expiresAt > now(), sessionLive: !!s && this.sessionLive(s),
+    };
+  }
+
+  private claimTtl(sec?: number): number {
+    if (sec === undefined || sec === null) return CLAIM_TTL_SEC * 1000;
+    const n = Number(sec);
+    if (!Number.isFinite(n)) throw new HudError(400, 'ttl must be a number of seconds');
+    return clamp(Math.round(n), CLAIM_TTL_MIN_SEC, CLAIM_TTL_MAX_SEC) * 1000;
+  }
+
+  /** internal release: no permission check, used by every automatic path */
+  private releaseClaimRecord(id: string, reason: string, actor: string, expired = false): ClaimView | null {
+    const c = this.claims.get(id);
+    if (!c) return null;
+    this.claims.delete(id);
+    const view = this.claimView(c);
+    this.emitEvent({ kind: 'claim', action: expired ? 'expired' : 'released', claim: view, reason });
+    this.log(actor, expired ? 'claim.expired' : 'claim.release', `${view.ident} ${reason}`, this.state.items[id]);
+    return view;
+  }
+
+  sessionStart(input: { id: string; name?: string; actor?: string; kind?: SessionKind; pid?: number; run?: string }, actor: string): SessionView {
+    const id = this.sessionId(input.id);
+    const t = now();
+    const kind: SessionKind = input.kind && ['agent', 'cli', 'human', 'unknown'].includes(input.kind) ? input.kind : 'unknown';
+    let s = this.liveSessions.get(id);
+    let started = false;
+    if (!s) {
+      s = { id, name: String(input.name ?? id).slice(0, 80) || id, actor: String(input.actor || actor).slice(0, 80) || actor, kind, startedAt: t, lastSeenAt: t, publishes: [] };
+      this.liveSessions.set(id, s);
+      started = true;
+    } else {
+      started = !!s.endedAt;
+      s.lastSeenAt = t;
+      delete s.endedAt;
+      if (input.name) s.name = String(input.name).slice(0, 80);
+      if (input.actor) s.actor = String(input.actor).slice(0, 80);
+      if (input.kind) s.kind = kind;
+    }
+    if (input.pid !== undefined && Number.isFinite(input.pid)) s.pid = Math.floor(input.pid);
+    if (input.run !== undefined) s.run = String(input.run).slice(0, 64);
+    const view = this.sessionView(s);
+    this.emitEvent({ kind: 'session', action: started ? 'started' : 'updated', session: view });
+    if (started) {
+      this.log(s.actor, 'session.start', `${id} started`, undefined);
+      this.save();
+    }
+    return view;
+  }
+
+  sessionHeartbeat(id: string): { session: SessionView; renewed: ClaimView[] } {
+    const sid = this.sessionId(id);
+    let s = this.liveSessions.get(sid);
+    if (!s) {
+      this.sessionStart({ id: sid, kind: 'unknown' }, sid);
+      s = this.liveSessions.get(sid)!;
+    }
+    if (s.endedAt) throw new HudError(409, 'session ended; start a new session', { code: 'session-ended' });
+    const t = now();
+    s.lastSeenAt = t;
+    const renewed: ClaimView[] = [];
+    for (const c of this.claims.values()) {
+      if (c.session !== sid || c.expiresAt - t > (CLAIM_TTL_SEC * 1000) / 2) continue;
+      c.renewedAt = t;
+      c.expiresAt = t + CLAIM_TTL_SEC * 1000;
+      const view = this.claimView(c);
+      renewed.push(view);
+      this.emitEvent({ kind: 'claim', action: 'renewed', claim: view });
+    }
+    return { session: this.sessionView(s), renewed };
+  }
+
+  sessionEnd(id: string, actor: string): { session: SessionView; released: ClaimView[] } {
+    const sid = this.sessionId(id);
+    const s = this.liveSessions.get(sid);
+    if (!s) throw new HudError(404, 'no such session');
+    const released: ClaimView[] = [];
+    if (!s.endedAt) {
+      s.endedAt = now();
+      for (const c of [...this.claims.values()]) if (c.session === sid) {
+        const view = this.releaseClaimRecord(c.ticket, 'session-ended', actor);
+        if (view) released.push(view);
+      }
+      this.log(s.actor, 'session.end', `${sid} ended`, undefined);
+      this.emitEvent({ kind: 'session', action: 'ended', session: this.sessionView(s) });
+      this.save();
+    }
+    return { session: this.sessionView(s), released };
+  }
+
+  sessions(): { items: SessionView[]; now: number } {
+    const at = now();
+    return { items: [...this.liveSessions.values()].map(s => this.sessionView(s, at)).sort((a, b) => b.lastSeenAt - a.lastSeenAt || a.id.localeCompare(b.id)), now: at };
+  }
+
+  /** end silent sessions and expire leases; called on a timer by the server */
+  pruneCoordination(at = now()): { ended: string[]; released: string[] } {
+    const ended: string[] = [];
+    const released: string[] = [];
+    for (const s of this.liveSessions.values()) {
+      if (s.endedAt || at - s.lastSeenAt <= SESSION_TTL_MS) continue;
+      s.endedAt = at;
+      ended.push(s.id);
+      for (const c of [...this.claims.values()]) if (c.session === s.id) {
+        const view = this.releaseClaimRecord(c.ticket, 'session-expired', 'hud');
+        if (view) released.push(view.ticket);
+      }
+      this.log(s.actor, 'session.expire', `${s.id} expired`, undefined);
+      this.emitEvent({ kind: 'session', action: 'ended', session: this.sessionView(s, at) });
+    }
+    for (const c of [...this.claims.values()]) if (c.expiresAt <= at) {
+      const view = this.releaseClaimRecord(c.ticket, 'expired', 'hud', true);
+      if (view) released.push(view.ticket);
+    }
+    for (const [id, s] of [...this.liveSessions]) if (s.endedAt && at - s.endedAt > SESSION_KEEP_MS) this.liveSessions.delete(id);
+    if (ended.length || released.length) this.save();
+    return { ended, released };
+  }
+
+  claim(ref: string, input: { session: string; ttl?: number; start?: boolean; takeover?: boolean }, actor: string): ClaimView {
+    const id = this.resolveId(String(ref ?? ''));
+    const tk = this.state.items[id];
+    if (!tk || tk.type !== 'ticket') throw new HudError(400, `${String(ref)} is not a ticket`);
+    const sid = this.sessionId(input.session);
+    let s = this.liveSessions.get(sid);
+    if (!s) {
+      this.sessionStart({ id: sid, actor }, actor);
+      s = this.liveSessions.get(sid)!;
+    }
+    if (s.endedAt) throw new HudError(409, 'session ended; start a new session', { code: 'session-ended' });
+    const t = now();
+    s.lastSeenAt = t;
+    if (this.isFinished(tk)) throw new HudError(409, `${this.ident(tk)} is ${tk.status}`, { code: 'finished' });
+    const existing = this.claims.get(id);
+    if (existing?.session === sid) {
+      existing.renewedAt = t;
+      existing.expiresAt = t + this.claimTtl(input.ttl);
+      const view = this.claimView(existing);
+      this.emitEvent({ kind: 'claim', action: 'renewed', claim: view });
+      return view;
+    }
+    if (existing) {
+      const holder = this.liveSessions.get(existing.session);
+      const holderLive = !!holder && this.sessionLive(holder, t);
+      const expired = existing.expiresAt <= t;
+      // a live lease is never stolen; a stale one needs the explicit takeover flag
+      if (!expired && holderLive)
+        throw new HudError(409, `${this.ident(tk)} is claimed by ${existing.session}`, { code: 'claimed', session: existing.session, expiresAt: existing.expiresAt });
+      if (!expired && !input.takeover)
+        throw new HudError(409, `${this.ident(tk)} is claimed by ${existing.session}, which is no longer live; retry with takeover`, { code: 'claimed', session: existing.session, expiresAt: existing.expiresAt, stale: true });
+      this.releaseClaimRecord(id, expired ? 'expired' : 'takeover', actor, expired);
+    }
+    // one unfinished claim per worker: validate before releasing anything, then drop stale claims on finished work
+    const others: ClaimRecord[] = [];
+    for (const c of this.claims.values()) if (c.session === sid) others.push(c);
+    for (const c of others) {
+      const other = this.state.items[c.ticket];
+      if (other && !this.isFinished(other))
+        throw new HudError(409, `${sid} already holds ${this.ident(other)}`, { code: 'one-claim', ticket: c.ticket, ident: this.ident(other) });
+    }
+    for (const c of others) this.releaseClaimRecord(c.ticket, 'done', actor);
+    if (tk.assignee && tk.assignee !== actor && tk.assignee !== s.actor)
+      throw new HudError(409, `${this.ident(tk)} is assigned to ${tk.assignee}`, { code: 'assigned', assignee: tk.assignee });
+    if (input.start && (tk.status === 'blocked' || tk.autoBlocked || this.openBlockers(tk).length))
+      throw new HudError(409, `${this.ident(tk)} is blocked`, { code: 'blocked' });
+    const record: ClaimRecord = { ticket: id, session: sid, actor: s.actor || actor, claimedAt: t, renewedAt: t, expiresAt: t + this.claimTtl(input.ttl) };
+    this.claims.set(id, record);
+    const view = this.claimView(record);
+    this.emitEvent({ kind: 'claim', action: 'claimed', claim: view });
+    this.log(view.actor, 'claim.take', `${view.ident} claimed by ${sid}`, tk);
+    if (input.start && !['doing', 'review'].includes(tk.status ?? '')) {
+      try {
+        this.update(id, { status: 'doing' }, actor);
+      } catch (e) {
+        this.releaseClaimRecord(id, 'start-failed', actor);
+        throw e;
+      }
+    }
+    this.save();
+    return view;
+  }
+
+  releaseClaim(ref: string, input: { session?: string; reason?: string }, actor: string): ClaimView {
+    const id = this.resolveId(String(ref ?? ''));
+    const c = this.claims.get(id);
+    if (!c) throw new HudError(404, 'no active claim');
+    const sid = input.session ? this.sessionId(input.session) : '';
+    if (c.session !== sid && actor !== 'user' && actor !== 'hud')
+      throw new HudError(403, 'only the holder, user or hud can release a claim');
+    const view = this.releaseClaimRecord(id, String(input.reason ?? 'released').slice(0, 40), actor);
+    this.save();
+    return view!;
+  }
+
+  claimOf(ref: string): ClaimView | null {
+    const c = this.claims.get(this.resolveId(String(ref ?? '')));
+    return c ? this.claimView(c) : null;
+  }
+
+  queue(board = 'main', filter: { status?: string | string[]; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): QueueResult {
+    const b = this.requireBoard(board).id;
+    const at = now();
+    const statuses = filter.status === undefined ? null
+      : new Set((Array.isArray(filter.status) ? filter.status : String(filter.status).split(',')).map(s => normStatus(s)));
+    let project = '';
+    if (filter.project) {
+      const p = this.project(filter.project, b);
+      if (!p) throw new HudError(404, `no project ${filter.project}`);
+      project = p.id;
+    }
+    const rows: QueueRow[] = [];
+    let blockedCount = 0;
+    let readyCount = 0;
+    for (const it of Object.values(this.state.items)) {
+      if (it.type !== 'ticket' || it.board !== b) continue;
+      if (statuses && !statuses.has(normStatus(it.status ?? 'todo'))) continue;
+      if (project && it.project !== project) continue;
+      if (filter.assignee && it.assignee !== filter.assignee) continue;
+      const done = this.isFinished(it);
+      if (done && !filter.includeDone) continue;
+      const blockedBy = this.openBlockers(it).map(x => this.ident(x));
+      const blocked = it.status === 'blocked' || !!it.autoBlocked || blockedBy.length > 0;
+      const c = this.claims.get(it.id);
+      const claim = c ? this.claimView(c) : null;
+      const session = claim ? this.liveSessions.get(claim.session) : undefined;
+      const bucket: QueueRow['bucket'] = claim ? 'claimed' : done ? 'done' : 'open';
+      const row: QueueRow = {
+        id: it.id, ident: this.ident(it), title: it.title, board: it.board, status: normStatus(it.status ?? 'todo'),
+        ...(it.priority ? { priority: it.priority } : {}), ...(it.project ? { project: it.project } : {}), ...(it.assignee ? { assignee: it.assignee } : {}),
+        blocked, blockedBy, claim, owner: claim?.actor ?? it.assignee ?? null,
+        session: session ? { id: session.id, live: this.sessionLive(session, at), lastSeenAt: session.lastSeenAt, kind: session.kind } : null,
+        bucket, ready: !done && !claim && !blocked, updatedAt: it.updatedAt,
+      };
+      if (blocked && !done) blockedCount++;
+      if (row.ready) readyCount++;
+      rows.push(row);
+    }
+    const group = (r: QueueRow) => (r.ready ? 0 : r.bucket === 'open' ? 1 : r.bucket === 'claimed' ? 2 : 3);
+    const rank: Record<string, number> = { urgent: 0, high: 1, med: 2, low: 3 };
+    rows.sort((a, b) => group(a) - group(b)
+      || (rank[a.priority ?? ''] ?? 4) - (rank[b.priority ?? ''] ?? 4)
+      || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    const counts = {
+      open: rows.filter(r => r.bucket === 'open').length,
+      claimed: rows.filter(r => r.bucket === 'claimed').length,
+      done: rows.filter(r => r.bucket === 'done').length,
+      blocked: blockedCount,
+      ready: readyCount,
+    };
+    const limit = filter.limit === undefined ? rows.length : Math.max(0, Math.min(1000, Math.floor(Number(filter.limit) || 0)));
+    return { now: at, board: b, counts, items: rows.slice(0, limit) };
+  }
+
+  // ---------- shared context ----------
+
+  private contextScope(scope: string): { type: ContextEntry['scopeType']; id: string; board: string } {
+    const m = SCOPE_RE.exec(String(scope ?? ''));
+    if (!m) throw new HudError(400, 'scope must be run:<ticket>, project:<project> or board:<board>');
+    const type = m[1] as ContextEntry['scopeType'];
+    const id = m[2]!;
+    if (type === 'board') {
+      const b = this.state.boards.find(x => x.id === id);
+      if (!b) throw new HudError(404, `board "${id}" does not exist`);
+      return { type, id, board: b.id };
+    }
+    const it = this.state.items[id];
+    if (!it) throw new HudError(404, `no item "${id}" for scope ${scope}`);
+    if (type === 'run') {
+      if (it.type !== 'ticket') throw new HudError(400, `scope run:${id} must name a ticket`);
+      if (!it.tags?.some(t => t.toLowerCase() === 'run')) throw new HudError(400, `scope run:${id} must name a ticket tagged run`);
+    } else if (it.type !== 'project') throw new HudError(400, `scope project:${id} must name a project`);
+    return { type, id, board: it.board };
+  }
+
+  contextPublish(input: { scope: string; kind: ContextKind; text: string; data?: Record<string, unknown>; refs?: string[]; attachments?: string[]; corrects?: string; session?: string }, actor: string): ContextEntry {
+    const scope = this.contextScope(input.scope);
+    const kind = String(input.kind ?? '').toUpperCase() as ContextKind;
+    if (!(CONTEXT_KINDS as readonly string[]).includes(kind)) throw new HudError(400, `kind must be one of ${CONTEXT_KINDS.join('|')}`);
+    if (typeof input.text !== 'string' || !input.text.trim()) throw new HudError(400, 'text is required');
+    if (input.text.length > CONTEXT_TEXT_MAX) throw new HudError(400, `text is too long (${input.text.length} > ${CONTEXT_TEXT_MAX} characters)`);
+    const refs = input.refs?.length ? [...new Set(input.refs.map(r => this.resolveId(String(r))))] : undefined;
+    if (refs?.length) {
+      if (refs.length > CONTEXT_REF_MAX) throw new HudError(400, `refs has too many entries (> ${CONTEXT_REF_MAX})`);
+      for (const id of refs) if (!this.state.items[id]) throw new HudError(404, `ref "${id}" does not exist`);
+    }
+    const attachments = input.attachments?.length ? [...new Set(input.attachments.map(String))] : undefined;
+    if (attachments?.length) {
+      if (attachments.length > CONTEXT_REF_MAX) throw new HudError(400, `attachments has too many entries (> ${CONTEXT_REF_MAX})`);
+      for (const id of attachments) if (!this.state.attachments[id]) throw new HudError(404, `attachment "${id}" does not exist`);
+    }
+    let data: Record<string, unknown> | undefined;
+    if (input.data !== undefined) {
+      if (!isObj(input.data)) throw new HudError(400, 'data must be an object');
+      let size = 0;
+      try { size = JSON.stringify(input.data).length; } catch { throw new HudError(400, 'data is not valid JSON'); }
+      if (size > CONTEXT_DATA_MAX) throw new HudError(400, `data is too large (${size} > ${CONTEXT_DATA_MAX} bytes)`);
+      data = input.data;
+    }
+    if (input.corrects && !this.state.context.some(e => e.id === input.corrects)) throw new HudError(404, `entry "${input.corrects}" does not exist`);
+    const sess = input.session ? this.liveSessions.get(this.sessionId(input.session)) : undefined;
+    if (sess) {
+      const t = now();
+      sess.lastSeenAt = t;
+      sess.publishes = sess.publishes.filter(x => t - x < 60_000);
+      if (sess.publishes.length >= CONTEXT_PUBLISH_PER_MIN) throw new HudError(429, 'too many context publications; wait a minute');
+      sess.publishes.push(t);
+    }
+    const entry: ContextEntry = {
+      seq: (this.state.seq.context = (this.state.seq.context ?? 0) + 1),
+      id: randomUUID(), t: now(), actor, board: scope.board, scope: input.scope,
+      scopeType: scope.type, scopeId: scope.id, kind, text: input.text.trim(),
+      ...(data ? { data } : {}), ...(refs?.length ? { refs } : {}), ...(attachments?.length ? { attachments } : {}),
+      ...(input.corrects ? { corrects: input.corrects } : {}), ...(input.session ? { session: input.session } : {}),
+    };
+    this.state.context.push(entry);
+    // retention: per scope first, then global; readers see `truncated: true`
+    const inScope = this.state.context.filter(e => e.scope === entry.scope);
+    if (inScope.length > CONTEXT_SCOPE_MAX) {
+      const drop = new Set(inScope.slice(0, inScope.length - CONTEXT_SCOPE_MAX).map(e => e.id));
+      this.state.context = this.state.context.filter(e => !drop.has(e.id));
+    }
+    if (this.state.context.length > CONTEXT_MAX) this.state.context.splice(0, this.state.context.length - CONTEXT_MAX);
+    this.emitEvent({ kind: 'context', entry });
+    this.log(actor, 'context.publish', `context ${entry.kind} ${entry.scope} ${entry.id}`, scope.type === 'board' ? undefined : this.state.items[scope.id]);
+    this.save();
+    return entry;
+  }
+
+  contextRead(input: { scope?: string; since?: number; kinds?: ContextKind[]; limit?: number }, reader: { session?: string; mark?: boolean } = {}) {
+    const scope = input.scope ? this.contextScope(input.scope) : undefined;
+    const kinds = input.kinds?.length ? new Set(input.kinds.map(k => String(k).toUpperCase())) : undefined;
+    for (const k of kinds ?? []) if (!(CONTEXT_KINDS as readonly string[]).includes(k as ContextKind)) throw new HudError(400, `kind must be one of ${CONTEXT_KINDS.join('|')}`);
+    const oldest = this.state.context[0]?.seq ?? (this.state.seq.context ?? 0) + 1;
+    let since = input.since;
+    if (since !== undefined && (!Number.isFinite(since) || since < 0)) throw new HudError(400, 'since must be a non-negative sequence number');
+    if (since === undefined && reader.session && input.scope) since = this.cursors.get(reader.session)?.get(input.scope) ?? oldest - 1;
+    if (since === undefined) since = oldest - 1;
+    const limit = Math.max(1, Math.min(1000, Math.floor(Number(input.limit) || 200)));
+    const all = this.state.context.filter(e => e.seq > since! && (!scope || e.scope === input.scope) && (!kinds || kinds.has(e.kind)));
+    const entries = all.slice(0, limit);
+    const cursor = entries.length ? entries[entries.length - 1]!.seq : since!;
+    const truncated = since! < oldest - 1;
+    if (reader.mark !== false && reader.session && input.scope) {
+      let m = this.cursors.get(reader.session);
+      if (!m) this.cursors.set(reader.session, (m = new Map()));
+      m.set(input.scope, cursor);
+    }
+    return { entries, cursor, oldest, complete: !truncated && entries.length === all.length, truncated, now: now() };
+  }
+
+  contextScopes(board?: string) {
+    const rows = new Map<string, { scope: string; scopeType: string; scopeId: string; board: string; count: number; lastAt: number }>();
+    for (const e of this.state.context) {
+      if (board && e.board !== board) continue;
+      const row = rows.get(e.scope);
+      if (row) { row.count++; row.lastAt = Math.max(row.lastAt, e.t); }
+      else rows.set(e.scope, { scope: e.scope, scopeType: e.scopeType, scopeId: e.scopeId, board: e.board, count: 1, lastAt: e.t });
+    }
+    return [...rows.values()].sort((a, b) => b.lastAt - a.lastAt || a.scope.localeCompare(b.scope));
+  }
+
+  // ---------- attachment metadata (bytes are handled by attachments.ts) ----------
+
+  attachmentAdd(input: { id?: string; board: string; scope?: string; name: string; kind?: AttachmentRecord['kind']; mime?: string; bytes: number; sha256: string; session?: string; target?: string; baseId?: string; baseSha256?: string; corrects?: string }, actor: string): AttachmentRecord {
+    const board = this.requireBoard(input.board).id;
+    if (input.scope) this.contextScope(input.scope);
+    const name = String(input.name ?? '');
+    if (!/^[\w.@+-][\w.@+-]{0,119}$/.test(name)) throw new HudError(400, 'name must be a plain file name (letters, digits, . _ @ + -)');
+    const kind = input.kind ?? 'file';
+    if (!['file', 'text', 'diff'].includes(kind)) throw new HudError(400, 'kind must be file, text or diff');
+    if (!Number.isFinite(input.bytes) || input.bytes <= 0 || input.bytes > ATTACHMENT_MAX_BYTES) throw new HudError(413, 'attachment size is out of range');
+    if (!/^[0-9a-f]{64}$/.test(input.sha256)) throw new HudError(400, 'sha256 must be 64 hex characters');
+    if (input.baseId && !this.state.attachments[input.baseId]) throw new HudError(404, `base attachment "${input.baseId}" does not exist`);
+    if (input.corrects && !this.state.attachments[input.corrects]) throw new HudError(404, `attachment "${input.corrects}" does not exist`);
+    const perBoard = Object.values(this.state.attachments).filter(a => a.board === board).length;
+    if (perBoard >= ATTACHMENT_MAX_PER_BOARD) throw new HudError(409, `board ${board} already has ${ATTACHMENT_MAX_PER_BOARD} attachments`);
+    if (input.scope) {
+      const perScope = Object.values(this.state.attachments).filter(a => a.scope === input.scope).length;
+      if (perScope >= ATTACHMENT_MAX_PER_SCOPE) throw new HudError(409, `scope ${input.scope} already has ${ATTACHMENT_MAX_PER_SCOPE} attachments`);
+    }
+    const record: AttachmentRecord = {
+      id: input.id ?? randomUUID(), board, ...(input.scope ? { scope: input.scope } : {}), name, kind,
+      ...(input.mime ? { mime: String(input.mime).slice(0, 120) } : {}), bytes: input.bytes, sha256: input.sha256,
+      createdAt: now(), createdBy: actor, ...(input.session ? { session: input.session } : {}),
+      ...(input.target ? { target: String(input.target).slice(0, 400) } : {}),
+      ...(input.baseId ? { baseId: input.baseId } : {}), ...(input.baseSha256 ? { baseSha256: input.baseSha256 } : {}),
+      ...(input.corrects ? { corrects: input.corrects } : {}),
+    };
+    this.state.attachments[record.id] = record;
+    this.emitEvent({ kind: 'attachment', action: 'added', attachment: record });
+    this.log(actor, 'attachment.add', `attachment ${record.name} (${record.bytes}b)${record.scope ? ` for ${record.scope}` : ''}`, input.scope && !input.scope.startsWith('board:') ? this.state.items[input.scope.split(':')[1]!] : undefined);
+    this.save();
+    return record;
+  }
+
+  attachments(filter: { board?: string; scope?: string } = {}): AttachmentRecord[] {
+    return Object.values(this.state.attachments)
+      .filter(a => (!filter.board || a.board === filter.board) && (!filter.scope || a.scope === filter.scope))
+      .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  }
+
+  attachment(id: string): AttachmentRecord {
+    const a = this.state.attachments[id];
+    if (!a) throw new HudError(404, `no attachment "${id}"`);
+    return a;
+  }
+
+  /** remove metadata; the server deletes the file after this returns */
+  attachmentRemove(id: string, actor: string, opts: { force?: boolean } = {}): AttachmentRecord {
+    const a = this.attachment(id);
+    if (!opts.force) {
+      const ref = this.state.context.find(e => e.attachments?.includes(id));
+      if (ref) throw new HudError(409, `attachment is referenced by context entry ${ref.id}`, { code: 'referenced', entry: ref.id });
+    }
+    delete this.state.attachments[id];
+    this.emitEvent({ kind: 'attachment', action: 'removed', attachment: a });
+    this.log(actor, 'attachment.remove', `removed attachment ${a.name}`, undefined);
+    this.save();
+    return a;
+  }
+
+  /** record that an agent applied this attachment to a local path */
+  attachmentApplied(id: string, target: string, actor: string): AttachmentRecord {
+    const a = this.attachment(id);
+    a.appliedAt = now();
+    a.appliedTo = String(target).slice(0, 400);
+    this.emitEvent({ kind: 'attachment', action: 'applied', attachment: a });
+    this.log(actor, 'attachment.apply', `applied ${a.name} to ${a.appliedTo}`, undefined);
+    this.save();
+    return a;
+  }
+
   private log(actor: string, action: string, text: string, item?: Item) {
     const a: Activity = {
       id: (this.state.seq.activity = (this.state.seq.activity ?? 0) + 1),
@@ -901,6 +1474,7 @@ export class Store extends EventEmitter {
       const removed: string[] = [];
       for (const item of Object.values(this.state.items)) {
         if (item.board !== board.id) continue;
+        if (item.type === 'ticket') this.releaseClaimRecord(item.id, 'board-cleared', actor);
         this.state.trash.push({ item, t, actor, board: snapshot });
         delete this.state.items[item.id];
         this.syncAttention(item.id);
@@ -929,6 +1503,7 @@ export class Store extends EventEmitter {
     const snapshot = JSON.parse(JSON.stringify(b)) as Board;
     for (const it of Object.values(this.state.items)) {
       if (it.board !== b.id) continue;
+      if (it.type === 'ticket') this.releaseClaimRecord(it.id, 'board-deleted', actor);
       this.state.trash.push({ item: it, t, actor, board: snapshot });
       delete this.state.items[it.id];
       this.syncAttention(it.id);
@@ -1470,6 +2045,8 @@ export class Store extends EventEmitter {
       // a ticket that moved may free or block the tickets that declare it
       this.statusMoved(item, wasFinished, actor);
     }
+    if (item.type === 'ticket' && this.isFinished(item)) this.releaseClaimRecord(item.id, 'done', actor);
+    if (item.type === 'ticket' && changed.includes('assignee')) this.releaseClaimRecord(item.id, 'reassigned', actor);
     if (item.type === 'monitor') this.afterReading(item, prevState, actor);
     else this.emitEvent({ kind: 'item', item, actor });
     if (item.type === 'ticket' && changed.includes('monitors') && item.autoStatus) {
@@ -1522,6 +2099,7 @@ export class Store extends EventEmitter {
   remove(id: string, actor: string) {
     const item = this.get(id);
     this.touchDashboard(item);
+    if (item.type === 'ticket') this.releaseClaimRecord(item.id, 'trashed', actor);
     const touched = this.detach(item, actor);
     delete this.state.items[id];
     this.state.trash.push({ item, t: now(), actor });
@@ -1761,6 +2339,7 @@ export class Store extends EventEmitter {
         const wasFinished = this.isFinished(it);
         this.setStatus(it, 'done', actor);
         this.addComment(it, actor, `finished${note ? `: ${note}` : ''}`);
+        this.releaseClaimRecord(it.id, 'done', actor);
         this.emitEvent({ kind: 'item', item: it, actor });
         this.log(actor, 'finish', `${it.id} ${from} → done`, it);
         this.notifyTicket(it, actor, 'status', from, `${from} → done`);
@@ -2438,6 +3017,7 @@ export class Store extends EventEmitter {
       this.emitEvent({ kind: 'item', item: tk, actor: 'hud' });
       this.log('hud', 'status', `${tk.id} ${prev} → ${next} (${why})`, tk);
       this.statusMoved(tk, wasFinished, 'hud');
+      if (next === 'done') this.releaseClaimRecord(tk.id, 'done', 'hud');
       this.autoOrganize(tk.board);
     }
   }
@@ -2836,7 +3416,7 @@ export class Store extends EventEmitter {
     const live = this.state;
     const liveIdx = this.idx;
     try {
-      this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), activity: [], alerts: [], trash: [], attention: dict() };
+      this.state = { version: STATE_VERSION, seq: dict(), boards: [], items: dict(), context: [], attachments: dict(), activity: [], alerts: [], trash: [], attention: dict() };
       this.idx = null;
       const v = typeof raw.version === 'number' && Number.isFinite(raw.version) ? Math.floor(raw.version) : 1;
       this.adopt(raw);
@@ -2872,6 +3452,9 @@ export class Store extends EventEmitter {
       const old = this.state;
       this.state = { ...norm, activity: norm.activity, trash: norm.trash };
       this.idx = null;
+      // claims belong to the live work, never to an imported snapshot
+      this.claims.clear();
+      this.cursors.clear();
       for (const t of this.organizeTimers.values()) clearTimeout(t);
       this.organizeTimers.clear();
       for (const it of Object.values(old.items)) if (!Object.hasOwn(this.state.items, it.id)) this.emitEvent({ kind: 'item.deleted', id: it.id, board: it.board, actor });
@@ -2917,7 +3500,22 @@ export class Store extends EventEmitter {
       if (it.type === 'ticket') this.syncDeps(it, actor);
     }
     for (const b of new Set(added.map((i) => i.board))) this.autoOrganize(b);
-    this.log(actor, 'import', `merged an import: ${added.length} items added, ${fresh.length - added.length + (Object.keys(norm.items).length - fresh.length)} skipped, ${boards} boards added`);
+    // merge shared context by entry id, giving imported entries fresh local sequence numbers
+    const known = new Set(this.state.context.map(e => e.id));
+    let merged = 0;
+    for (const e of norm.context) {
+      if (known.has(e.id) || !this.state.boards.some(b => b.id === e.board)) continue;
+      known.add(e.id);
+      this.state.context.push({ ...e, seq: (this.state.seq.context = (this.state.seq.context ?? 0) + 1) });
+      merged++;
+    }
+    for (const a of Object.values(norm.attachments)) if (!this.state.attachments[a.id] && this.state.boards.some(b => b.id === a.board)) this.state.attachments[a.id] = a;
+    // a claim on work that is gone or finished in this board is dropped
+    for (const [id, c] of [...this.claims]) {
+      const tk = this.state.items[id];
+      if (!tk || tk.type !== 'ticket' || this.isFinished(tk) || !this.liveSessions.has(c.session)) this.claims.delete(id);
+    }
+    this.log(actor, 'import', `merged an import: ${added.length} items added, ${merged} context entries, ${fresh.length - added.length + (Object.keys(norm.items).length - fresh.length)} skipped, ${boards} boards added`);
     this.save();
     return { items: added.length, boards, backup };
   }

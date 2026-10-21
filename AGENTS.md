@@ -14,15 +14,18 @@ Windows and Linux; it bundles the sources with esbuild at build time only.
 ```
 src/types.ts     data model (Item, Board, Alert, MonitorResult, HudEvent). Start here.
 src/store.ts     all state + mutations: create/update/remove(→trash)/push/ping, groups & organize, alerts, stale checks,
-                 linked-ticket automation, persistence (data/state.json), backups, migrations (STATE_VERSION 9)
+                 linked-ticket automation, persistence (data/state.json), backups, migrations (STATE_VERSION 10)
 src/layout.ts    fixed 1600×900 board bounds and stable automatic card/group layout
 src/lock.ts      single-writer lock (`<data>/hud.lock`, exclusive create, pid liveness)
 src/engine.ts    runs automatic monitors: command (shell), http, probe (probes/*.ts, polled or watch()); heartbeat is
                  passive (store checks it)
 src/monitoring.ts        metric validation, observation readouts, comparison evaluation and lint
+src/attachments.ts       attachment bytes under <data>/attachments: confinement, hashing, atomic writes
+src/diff.ts              bounded unified diff used by attachment expand
+src/views.ts             generated view modules: templates, static validation, file writes
 src/monitoring-server.ts dashboard, annotation, comparison, snapshot and custom-program routes
 src/programs.ts          isolated custom-program document and action broker
-src/render.ts            serialized Electron page and program capture
+src/render.ts            serialized Electron page and program/view capture
 src/server.ts    HTTP routes, /ping/:id heartbeats, SSE stream (/api/events), static files, Host/Origin checks,
                  security headers + CSP, alert hook
 src/mcp.ts       MCP stdio server (hand-written JSON-RPC) → HTTP client; also streams alerts into Claude Code
@@ -48,7 +51,7 @@ probes/          built-in probes (tcp tls dns disk file-age) + examples (git pro
 bin/hud.js       source CLI entry
 scripts/build.mjs  esbuild bundles -> bundle/{hud,main}.mjs (npm run bundle); bundle/ and appdir/main.mjs are generated
 scripts/dev.mjs    dev launcher: Electron against the repo, scratch port + scratch data dir
-scripts/icons.mjs  generates build/icon.png + build/trayTemplate.png
+scripts/icons.mjs  generates build/icon.svg + icon.png, tray PNGs, web favicons from one geometry
 scripts/check.mjs               JavaScript syntax checks and all pure regression suites (`npm test`)
 scripts/check-packaged.mjs      packaged runtime smoke test using a temporary data dir and loopback port
 scripts/check-layout.ts          fixed 1600×900 layout, UUID, persistence and migration checks
@@ -57,6 +60,10 @@ scripts/check-monitoring-views.mjs semantic view selection, targets, events, tab
 scripts/check-monitoring-api.mjs HTTP/CLI/MCP monitoring check against an existing scratch server
 scripts/check-monitoring-ui.mjs headless monitoring dashboard, custom program and snapshot check
 scripts/check-supervision.ts     store-level attention, reports, decisions, runs and changes regression checks
+scripts/check-coordination.ts    presence, claim leases, queue, shared context and attachment metadata checks
+scripts/check-views.ts           generated view templates, static validation, writes and deletes
+scripts/check-coordination-api.mjs HTTP/MCP/CLI coordination parity check against an existing scratch server
+scripts/check-coordination-ui.mjs headless sessions, queue, claim and inspector checks
 scripts/check-supervision-api.mjs HTTP/CLI/MCP supervision API check against an existing scratch server
 scripts/check-supervision-ui.mjs headless browser supervision landing, navigation, report and sidebar checks
 scripts/check-settings-ui.mjs    Electron Settings UI check with disposable board/client fixtures and screenshots
@@ -82,6 +89,19 @@ bundle/, dist/   build output (git-ignored)
   through `Store.link()`, which validates board and rejects cycles *before* anything changes; `Store.resolveId()`
   lets any `:id` route accept an ident. `projectsView()` is the read model the list UI, `hud ls tickets`, `hud_tickets`
   and the CLI all share. Don't write these fields directly and don't infer links from titles.
+- **Presence and claims are runtime-only.** `Store.liveSessions` and `Store.claims` are never persisted, exported or
+  written on a heartbeat; a restart intentionally forgets them. Claim release is wired into every "became done"
+  path (`update`, `finish`, `syncTickets`) plus trash, board clear/delete and reassign. A claim never changes status
+  by itself; `start:true` goes through `update()`. Use the 409 `code` values (`claimed`, `one-claim`, `finished`,
+  `assigned`, `blocked`) rather than adding status codes.
+- **The shared context is append-only and out of item payloads.** Entries live in `state.context`, are never edited,
+  and corrections are new entries with `corrects`. `lite()`, `/api/state` and item SSE events never carry them; they
+  are fetched through `/api/context`. Cursors are runtime-only. Attachment bytes live under
+  `<dataDir>/attachments`, never in `state.json`; `apply` runs in the CLI/MCP process, not the server.
+- **Generated views are trusted code, not a sandbox.** `src/views.ts` static checks are advisory; the Electron render
+  gate is the real check, and the module runs in the board page. Only write a view through `hud_view`/`hud view`, and
+  keep the trust warning in every tool result and in `views/README.md`. Sandboxed `hud_graph`/`hud_canvas` remain the
+  choice for untrusted UI.
 - **`trend` is heavy.** `Store.lite()` strips it from SSE, `/api/state` and `/api/items` lists; keep it out of anything
   that is not a single-item read (`GET /api/items/:id`, which also adds `uptime`).
 - **Files come from `assets.ts`.** Anything the app reads from its own tree (web/, views/, GUIDE.md, package.json, example
@@ -89,7 +109,7 @@ bundle/, dist/   build output (git-ignored)
   source and from the packaged app. Anything the *user* owns (data, probes) uses `config()`.
 - **The MCP server is a thin client.** Logic belongs in the store/server so the CLI, HTTP and MCP stay equivalent. Add
   a feature to all three surfaces (route → `client.ts` method → MCP tool + CLI command) and document it in `GUIDE.md`.
-- **Persisted state is versioned** (`state.version`, currently 9: observation provenance, metric definitions, dashboards and custom programs). If you change the meaning of stored
+- **Persisted state is versioned** (`state.version`, currently 10: observation provenance, metric definitions, dashboards, custom programs, shared context and attachment metadata). If you change the meaning of stored
   data, add a migration in the `Store` constructor and bump `STATE_VERSION`. A state file newer than the code is refused,
   never rewritten. Users have live boards. Never write code that drops their data: deletes go to `state.trash`
   (`remove()` / `restore()` / `purge()`), and only purge is permanent.
@@ -142,6 +162,7 @@ node bin/hud.js stop                                              # same env var
 With an already-running source scratch server on a non-7317 loopback port, the API harness exercises HTTP, CLI and MCP
 without restarting or stopping it; pass its explicit URL, for example:
 ```sh
+node scripts/check-coordination-api.mjs --url http://127.0.0.1:7411
 node scripts/check-supervision-api.mjs --url http://127.0.0.1:7411
 node scripts/check-monitoring-api.mjs --url http://127.0.0.1:7411 --render
 ```
@@ -149,6 +170,7 @@ For monitoring UI and custom-program rendering against that same existing scratc
 directory; this harness does not start or stop a server:
 ```sh
 ./node_modules/.bin/electron scripts/check-monitoring-ui.mjs http://127.0.0.1:7411 /tmp/hud-monitoring-ui-check
+./node_modules/.bin/electron scripts/check-coordination-ui.mjs http://127.0.0.1:7411 /tmp/hud-coordination-ui-check
 ```
 For the native Settings UI, the Electron harness uses disposable board and client-configuration fixtures and writes
 screenshots to the optional artifact directory. It does not install or modify the live app or connect to the user's

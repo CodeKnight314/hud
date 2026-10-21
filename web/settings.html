@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
   <title>Settings · hud</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="settings.css">
   <script src="settings.js" defer></script>
@@ -12,7 +13,7 @@
 <body class="settings-page">
   <div class="settings-shell">
     <aside class="settings-sidebar" aria-label="Settings navigation">
-      <div class="sidebar-brand"><span aria-hidden="true">▌</span> hud <span class="brand-muted">/ settings</span></div>
+      <div class="sidebar-brand"><img class="brand-mark" src="favicon.svg" alt="" aria-hidden="true"> hud <span class="brand-muted">/ settings</span></div>
       <nav id="settings-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
         <button id="tab-connections" class="settings-tab selected" type="button" role="tab" aria-selected="true" aria-controls="panel-connections" tabindex="0" data-tab="connections">⌘ <span>Connections</span></button>
         <button id="tab-updates" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-updates" tabindex="-1" data-tab="updates">↻ <span>Updates</span></button>

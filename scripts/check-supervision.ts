@@ -106,7 +106,7 @@ async function migrationAndAttention() {
 
   const migrated = new Store(file);
   assert.equal(migrated.state.version, STATE_VERSION);
-  assert.equal(STATE_VERSION, 9);
+  assert.equal(STATE_VERSION, 10);
   assert.equal(item(migrated, 'parent').uuid, fixedParentUuid);
   assert.equal(item(migrated, 'child').uuid, fixedChildUuid);
   assert.equal(item(migrated, 'child').project, 'project');
