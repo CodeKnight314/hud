@@ -1227,7 +1227,7 @@ export class Store extends EventEmitter {
 
   private contextScope(scope: string): { type: ContextEntry['scopeType']; id: string; board: string } {
     const m = SCOPE_RE.exec(String(scope ?? ''));
-    if (!m) throw new HudError(400, 'scope must be run:<ticket>, project:<project> or board:<board>');
+    if (!m) throw new HudError(400, 'scope must be run:<uuid>, project:<id> or board:<board id>');
     const type = m[1] as ContextEntry['scopeType'];
     const id = m[2]!;
     if (type === 'board') {

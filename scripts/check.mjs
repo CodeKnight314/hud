@@ -20,6 +20,7 @@ const suites = [
   'scripts/check-markdown.mjs',
   'scripts/check-icons.mjs',
   'scripts/check-docs.mjs',
+  'scripts/check-guide.ts',
   'scripts/check-connections.ts',
   'scripts/check-updates.ts',
 ];

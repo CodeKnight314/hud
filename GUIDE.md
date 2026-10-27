@@ -25,7 +25,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
-  `hud comment`, `hud ask`, `hud decide`, `hud finish`, … (`hud help`;
+  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud guide [decentralized|lead]`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
   `node <repo>/bin/hud.js`. Set `HUD_ACTOR=<your-name>` (or `--as`) so changes are attributed to you.
 - **HTTP** (JSON, localhost only; send header `x-hud-actor: <name>`). Malformed input is a 400, an unknown id or board
@@ -34,7 +34,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
     `GET /api/tickets[?format=text]` · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
-    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide`
+    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
     project tag q overdue=1 parent limit`. An unknown board is a 404.
   - write: `POST /api/items` (one or an array) · `PATCH /api/items/:id` · `PATCH /api/items` (array of `{id,...}`) ·
@@ -222,23 +222,38 @@ the agents decide the work.
   blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
   `hud_queue {includeDone: true}` includes finished tickets.
 
-Two coordination policies use the same primitives:
+Two coordination policies use the same primitives. Each has a copy-paste playbook — claim, publish a FACT, wait,
+finish — plus what to do on an expired lease, a blocked ticket, and an assignee conflict. Fetch that playbook on its
+own:
 
-- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, works, publishes
-  findings, and finishes. No planner and no closure step.
-- **Centralized:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
-  fixed, and leaves the rest in the queue for pull. The lead's waits are visible as blocked or claimed rows.
+    hud guide decentralized          # every agent pulls ready work; no lead
+    hud guide lead                   # one lead links and assigns; the others pull
+    hud_guide {playbook: "decentralized"}
+    GET /api/guide?playbook=lead
+
+`centralized` is an alias of `lead`. The playbook is the procedure. The primitives above are the reference.
+
+- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, publishes a
+  FACT, waits when a peer holds the next fact, and finishes. No planner.
+- **Lead:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
+  fixed, and leaves the rest in the queue for pull. Workers run the worker loop in the lead playbook. The lead's
+  waits show up as blocked or claimed rows.
 
 ## Shared context
 The queue says *what* to do; the shared context records *what was learned*. It is an append-only log scoped to a
 **run**, a **project** or a **board**, and agents read only what changed since their last read.
 
-    hud_context {action: "publish", scope: "run:EGO-1", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
-    hud_context {action: "read", scope: "run:EGO-1", since?, kind?, limit?, mark?}
+    hud_context {action: "publish", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
+    hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", since?, kind?, limit?, mark?}
     hud_context {action: "scopes", board?}
 
-- **Scopes:** `run:<ticket id>` requires a ticket tagged `run`; `project:<project id>`; `board:<board id>`. The board is
-  derived from the scope, so entries never drift across boards.
+- **Scopes:** `run:<uuid>` is `run:` plus the ticket's `id` from `hud_get` (a uuid; the example above is the shape), and
+  that ticket must be tagged `run`. `project:<id>` is the project item's id. `board:<board id>` is the board id
+  (`board:main`). Claim, link, wait and finish take a `KEY-n` ident such as `EGO-1`; the scope takes the uuid. The board is
+  derived from the scope, so entries never drift across boards. A lead FACT on `run:<uuid>` is not included in a
+  `board:main` read — list scopes, or `hud_get` the run ticket, and read `run:<uuid>`. A finished run (`done` or
+  `canceled`) keeps the tag and the scope log. The playbooks follow lead only while that ticket is open (`backlog`,
+  `todo`, `doing`, `review`, or `blocked`).
 - **Kinds:** `FACT` is a finding supported by observations; `FAIL` is an approach or hypothesis that was contradicted,
   with the conditions under which it failed; `SUMMARY` is the state of a finished or handed-off piece of work;
   `STATUS` is a short progress note. Facts and failures are what let a peer skip a dead end.
@@ -267,7 +282,7 @@ entries never appear in `/api/state` or item SSE payloads — fetch them explici
 ### Attachments
 Publish a file by reference so peers can inspect it without pasting it into the context log.
 
-    hud_attach {action: "add", path: "/abs/notes.md", scope: "run:EGO-1", baseId?, baseSha256?}
+    hud_attach {action: "add", path: "/abs/notes.md", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", baseId?, baseSha256?}
     hud_attach {action: "list", board?, scope?}
     hud_attach {action: "get" | "content" | "expand" | "delete", id}
     hud_attach {action: "apply", id, target: "/abs/notes.md", expectedSha256?, mode?: "overwrite" | "create"}
@@ -283,8 +298,8 @@ Publish a file by reference so peers can inspect it without pasting it into the 
 - **References are protected.** An attachment referenced by a context entry cannot be deleted without `force: true`.
 
 ### Waiting for peers
-    hud_wait {scope?: "run:EGO-1", ticket?: "EGO-3", sessions?: ["agent-b"], kinds?, since?, timeoutSeconds?, includeSelf?}
-    hud wait --scope run:EGO-1 --timeout 20
+    hud_wait {scope?: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", ticket?: "EGO-3", sessions?: ["agent-b"], kinds?, since?, timeoutSeconds?, includeSelf?}
+    hud wait --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80 --timeout 20
 
 `hud_wait` blocks (up to 25 s) and returns on the first matching event instead of sleeping and polling. Give it at
 least one selector — a scope, a ticket or peer session names — so unrelated activity never wakes it.
@@ -861,8 +876,8 @@ dir (`hud.lock`); a second one refuses to start.
 ## Conventions
 - Start with `hud_overview`. Reuse existing boards/frames/tickets instead of duplicating them.
 - One board per project or area; frames for sub-areas (e.g. "CI", "Release 1.4", "Agent: claude").
-- When several agents work the same board, call `hud_queue` and `hud_claim` before starting. Take one claim at a time,
-  publish a `FACT` as soon as it can unblock a peer, and release or finish the claim when you stop.
+- When several agents work the same board, follow one playbook (`hud guide decentralized` or `hud guide lead`).
+  Take one claim at a time, publish a `FACT` as soon as it can unblock a peer, and release or finish the claim when you stop.
 - Track your own work as tickets: set `status: doing` when you start (or claim with `start: true`), `hud_comment`
   progress notes, `done` when finished, `blocked` with a comment saying what you need from the human — and if you are
   waiting on another *ticket*, set `blockedBy` instead so it clears itself when that ticket finishes.

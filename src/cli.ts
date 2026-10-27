@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { asset, isElectron } from './assets.ts';
+import { isElectron } from './assets.ts';
+import { coordinationDoc, GuideError } from './guide.ts';
 import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
@@ -74,14 +75,14 @@ usage:
   hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]
                                      take an exclusive lease on a ticket; --start also moves it to doing
   hud release <id> [--session s] [--reason text]   release a claim
-  hud context read [--scope run:EGO-1] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
-  hud context publish --scope run:EGO-1 --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
+  hud context read [--scope run:<uuid>] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
+  hud context publish --scope run:<uuid> --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
                                      append a typed finding to the shared context (never edit; publish a correction)
   hud context scopes [--board b]     list scopes with entries and last activity
   hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id]
   hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create]
   hud attach rm <id> [--force]        share files by reference; apply writes a local file with conflict checks
-  hud wait [--scope run:EGO-1] [--ticket EGO-3] [--sessions peer] [--kinds context,claim,session]
+  hud wait [--scope run:<uuid>] [--ticket EGO-3] [--sessions peer] [--kinds context,claim,session]
            [--since n] [--timeout 20] [--include-self]   block until a peer publishes, claims or ends
   hud changes --since ms             list changes after a timestamp (for incremental sync)
   hud readout [board]                text and metric readout for one board or all boards
@@ -121,7 +122,7 @@ usage:
   hud arrange [--board b] [--frame f]
   hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]
                                      clear keeps the board/settings; rm deletes the board
-  hud guide                          full guide (for agents)
+  hud guide [decentralized|lead]    full guide, or one coordination playbook (claim → FACT → wait → finish)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
   hud view list | show <name> | generate <name> --spec '<json>' [--write] [--display monitor]
            | set <name> --code-file path [--overwrite] | validate <name> | rm <name>
@@ -249,7 +250,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   organize: { u: 'hud organize [board] [--auto on|off]', max: 1, f: ['board', 'auto', 'json'] },
   arrange: { u: 'hud arrange [ids...] [--board b] [--frame f] [--width n]', f: ['board', 'frame', 'width', 'json'] },
   board: { u: 'hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]', f: ['json'] },
-  guide: { u: 'hud guide', max: 0, f: [] },
+  guide: { u: 'hud guide [decentralized|lead|playbooks]', max: 1, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
   view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | validate <name> | rm <name>', max: 2, f: '*' },
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
@@ -901,7 +902,12 @@ async function main() {
       throw new UsageError(`unknown board command "${sub}"`);
     }
     case 'guide':
-      return raw(`${asset('GUIDE.md', 'utf8') ?? ''}\n\n${asset('STYLE.md', 'utf8') ?? ''}`.replaceAll('{{PORT}}', String(config().port)));
+      try {
+        return raw(coordinationDoc(rest[0], config().port));
+      } catch (e) {
+        if (e instanceof GuideError && e.status === 400) throw new UsageError(e.message);
+        throw e;
+      }
     case 'views': {
       const { dir, views } = await hud.views();
       if (json) return emit(views);

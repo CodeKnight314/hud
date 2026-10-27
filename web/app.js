@@ -3628,8 +3628,8 @@ const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
 
 <b>agents</b>
   MCP     hud mcp install
-  CLI     hud ls · hud add ticket "…" · hud push &lt;id&gt; 42 · hud guide
-  HTTP    GET /api/guide
+  CLI     hud ls · hud add ticket "…" · hud push &lt;id&gt; 42 · hud guide decentralized|lead
+  HTTP    GET /api/guide?playbook=decentralized|lead
 
 esc to close`;
 function toggleHelp(on) {

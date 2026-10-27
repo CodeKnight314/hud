@@ -9,6 +9,7 @@ import { summarize, ticketsView } from './summary.ts';
 import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
 import { asset, assetKeys, isPackaged } from './assets.ts';
+import { coordinationDoc, GuideError } from './guide.ts';
 import { ROOT, config } from './config.ts';
 import { publicState, registerMonitoring } from './monitoring-server.ts';
 import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, textOf, writeAttachmentBytes } from './attachments.ts';
@@ -287,10 +288,6 @@ function sessionOf(req: IncomingMessage, body?: any, q?: URLSearchParams): strin
   return s === undefined || s === null || s === '' ? undefined : String(s).slice(0, 64);
 }
 
-function guide() {
-  return `${asset('GUIDE.md', 'utf8') ?? ''}\n\n${asset('STYLE.md', 'utf8') ?? ''}`.replaceAll('{{PORT}}', String(PORT));
-}
-
 /** the filters shared by GET /api/items and GET /api/tickets */
 function queryOf(q: URLSearchParams): SearchQuery {
   const board = q.get('board');
@@ -400,7 +397,14 @@ route('POST', '/api/shutdown', () => {
   setTimeout(shutdown, 50);
   return { ok: true, stopping: process.pid };
 });
-route('GET', '/api/guide', (_q, res) => send(res, 200, guide(), 'text/markdown; charset=utf-8'));
+route('GET', '/api/guide', (_req, res, _m, q) => {
+  try {
+    send(res, 200, coordinationDoc(q.get('playbook'), PORT), 'text/markdown; charset=utf-8');
+  } catch (e) {
+    if (e instanceof GuideError) throw new HudError(e.status, e.message);
+    throw e;
+  }
+});
 route('GET', '/api/views', () => ({
   dir: viewsDir,
   views: listViewInfos(viewsDir).map(({ name, mtime, bytes, sha256, validation }) => ({ name: `${name}.js`, mtime, bytes, sha256, valid: validation.ok, errors: validation.errors })),
