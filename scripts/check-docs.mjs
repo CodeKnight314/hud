@@ -41,8 +41,61 @@ const version = Number(/STATE_VERSION = (\d+)/.exec(store)?.[1]);
 ok(Number.isFinite(version), 'STATE_VERSION is declared');
 ok(agents.includes(`STATE_VERSION ${version}`), `AGENTS.md mentions the current state version (${version})`);
 
+const change = agents.split(/^## /m).find((part) => part.startsWith('Change surfaces\n'));
+ok(!!change, 'AGENTS.md has a Change surfaces section');
+if (change) {
+  for (const bit of [
+    '- [ ] **Route.**',
+    '- [ ] **Client.**',
+    '- [ ] **MCP.**',
+    '- [ ] **CLI.**',
+    '- [ ] **GUIDE.**',
+    'non-skippable',
+    'route → client → MCP → CLI → GUIDE',
+    'POST /api/items/:id/comments',
+    'Hud.comment()',
+    'hud_comment',
+    "case 'comment'",
+    'hud comment',
+  ]) ok(change.includes(bit), `Change surfaces section includes ${bit}`);
+}
+
+// The comments worked example is a copy target. These tokens have to exist on the
+// live surfaces, or a rename leaves AGENTS.md describing code that is gone.
+const server = readFileSync(join(root, 'src/server.ts'), 'utf8');
+const client = readFileSync(join(root, 'src/client.ts'), 'utf8');
+const mcp = readFileSync(join(root, 'src/mcp.ts'), 'utf8');
+const cli = readFileSync(join(root, 'src/cli.ts'), 'utf8');
+ok(
+  /route\('POST', '\/api\/items\/:id\/comments'[\s\S]{0,400}?store\.comment\(/.test(server),
+  'comments example route: POST /api/items/:id/comments calls store.comment()',
+);
+ok(
+  /comment\(id: string, text: string[\s\S]{0,240}?\/api\/items\/\$\{encodeURIComponent\(id\)\}\/comments/.test(client),
+  'comments example client: Hud.comment() posts /api/items/:id/comments',
+);
+ok(mcp.includes("name: 'hud_comment'"), 'comments example MCP: TOOLS names hud_comment');
+ok(
+  /case 'hud_comment':[\s\S]{0,1200}?hud\.comment\(/.test(mcp),
+  "comments example MCP: case 'hud_comment' calls hud.comment()",
+);
+const help = /const HELP = `([\s\S]*?)`;/.exec(cli)?.[1] ?? '';
+ok(help.includes('hud comment <id>'), 'comments example CLI: HELP documents hud comment');
+ok(/^\s*comment:\s*\{[^}\n]*hud comment/m.test(cli), 'comments example CLI: CMDS has a comment entry');
+ok(
+  /case 'comment':[\s\S]{0,900}?hud\.comment\(/.test(cli),
+  "comments example CLI: case 'comment' calls hud.comment()",
+);
+const ways = guide.split(/^## /m).find((part) => part.startsWith('Ways in'));
+ok(!!ways, 'GUIDE.md has a Ways in section');
+if (ways) {
+  for (const bit of ['POST /api/items/:id/comments', '`hud comment`', '`hud_comment`']) {
+    ok(ways.includes(bit), `comments example GUIDE Ways in includes ${bit}`);
+  }
+}
+
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, release link, logo and GUIDE anchors');
+console.log('PASS docs: README shape, release link, logo, GUIDE anchors, change surfaces match comments');

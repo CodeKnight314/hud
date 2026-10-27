@@ -108,8 +108,8 @@ bundle/, dist/   build output (git-ignored)
 - **Files come from `assets.ts`.** Anything the app reads from its own tree (web/, views/, GUIDE.md, package.json, example
   probes) goes through `asset()` / `hasAsset()`, never a raw `join(ROOT, …)` — that is what lets the same code run from
   source and from the packaged app. Anything the *user* owns (data, probes) uses `config()`.
-- **The MCP server is a thin client.** Logic belongs in the store/server so the CLI, HTTP and MCP stay equivalent. Add
-  a feature to all three surfaces (route → `client.ts` method → MCP tool + CLI command) and document it in `GUIDE.md`.
+- **The MCP server is a thin client.** Logic belongs in the store/server so the CLI, HTTP and MCP stay equivalent.
+  New caller-visible behavior follows Change surfaces, in order: route → client → MCP → CLI → GUIDE.
 - **Persisted state is versioned** (`state.version`, currently 10: observation provenance, metric definitions, dashboards, custom programs, shared context and attachment metadata). If you change the meaning of stored
   data, add a migration in the `Store` constructor and bump `STATE_VERSION`. A state file newer than the code is refused,
   never rewritten. Users have live boards. Never write code that drops their data: deletes go to `state.trash`
@@ -131,6 +131,37 @@ bundle/, dist/   build output (git-ignored)
   `electron/settings-preload.cjs`. The board renderer and sandboxed custom programs must never receive this bridge or
   generic IPC, app-command installation, client-configuration access, clipboard writes, external URL opening, or
   update actions.
+
+## Change surfaces
+
+New caller-visible behavior lands as one change across five surfaces, in this order:
+route → client → MCP → CLI → GUIDE. Copy the checklist into the PR and fill every box with the
+path or command added. An empty box means the feature is unfinished. These five are non-skippable.
+
+- [ ] **Route.** `src/server.ts`: an HTTP route calls a `Store` method, validates the body, and passes
+  `actorOf`. Item changes stay in the store.
+- [ ] **Client.** `src/client.ts`: a `Hud` method is the only caller of that route. MCP and the CLI call
+  this method.
+- [ ] **MCP.** `src/mcp.ts`: a `hud_<verb>` entry in `TOOLS` and a `tools/call` case call that method.
+- [ ] **CLI.** `src/cli.ts`: a `hud <verb>` line in `HELP`, a `CMDS` entry, and a dispatch `case` call
+  the same method.
+- [ ] **GUIDE.** `GUIDE.md`: the route, the `hud` command, and the `hud_` tool describe the same behavior
+  (see "Ways in").
+
+A read-only addition fills the same boxes. When the three clients must stay equivalent, extend the
+matching `scripts/check-*-api.mjs` harness in the same PR.
+
+### Example
+
+Comments are the shape to copy. A new verb replaces `comment` in every row before the PR opens.
+
+| Surface | Comments |
+|---|---|
+| Route | `POST /api/items/:id/comments` in `src/server.ts` calls `store.comment()` |
+| Client | `Hud.comment()` in `src/client.ts` posts that route |
+| MCP | `hud_comment` in `TOOLS` and `case 'hud_comment'` in `src/mcp.ts` call `hud.comment()` |
+| CLI | `hud comment` in `HELP`, the `comment` entry in `CMDS`, and `case 'comment'` in `src/cli.ts` call `hud.comment()` |
+| GUIDE | `GUIDE.md` "Ways in" lists `POST /api/items/:id/comments`, `hud comment`, and `hud_comment` |
 
 ## Conventions
 - TypeScript under Node type stripping: use explicit `.ts` import extensions and `import type` for types. No enums,
