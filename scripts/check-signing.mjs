@@ -3,6 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// Windows has no POSIX mode bits, so the permission hardening below is asserted only where it exists.
+const posix = process.platform !== 'win32';
 import { shouldAdhocSign } from './adhoc-sign.mjs';
 import notarizeDmgs from './notarize-dmg.mjs';
 import {
@@ -98,8 +101,8 @@ try {
   ok(created && dirname(keyPath) === created, 'API key materializes inside a private temp directory');
   ok(basename(created).startsWith('hud-apple-api-key-') && keyPath !== join(tmpdir(), 'hud-apple-api-key.p8'), 'API key path is unique and not the fixed temp name');
   ok(readFileSync(keyPath, 'utf8').includes('BEGIN PRIVATE KEY'), 'materialized API key is the PEM');
-  ok((statSync(keyPath).mode & 0o777) === 0o600, 'materialized API key is readable only by the owner even with umask 0');
-  ok((statSync(created).mode & 0o777) === 0o700, 'API key directory is private even with umask 0');
+  if (posix) ok((statSync(keyPath).mode & 0o777) === 0o600, 'materialized API key is readable only by the owner even with umask 0');
+  if (posix) ok((statSync(created).mode & 0o777) === 0o700, 'API key directory is private even with umask 0');
   ok(!('CSC_IDENTITY_AUTO_DISCOVERY' in applied) && applied.HUD_SIGNING_MODE === 'signed', 'applied macOS plan enables discovery and records signed mode');
 
   const second = { ...apiEnv };
@@ -114,7 +117,7 @@ try {
   ok(resolveAppleApiKey(existing, join(dir, 'unused.p8')) === existing, 'resolveAppleApiKey keeps an existing .p8 path');
   const pemPath = join(dir, 'from-pem.p8');
   ok(resolveAppleApiKey(pem, pemPath) === pemPath, 'PEM text is written to the destination');
-  ok((statSync(pemPath).mode & 0o777) === 0o600, 'PEM destination is mode 0600 before the caller can chmod it');
+  if (posix) ok((statSync(pemPath).mode & 0o777) === 0o600, 'PEM destination is mode 0600 before the caller can chmod it');
   let rejected = false;
   try { resolveAppleApiKey('not-a-key', join(dir, 'nope.p8')); } catch { rejected = true; }
   ok(rejected, 'a value that is not a path, PEM or base64 PEM is rejected');
