@@ -108,10 +108,20 @@ textarea { resize: vertical; border: 1px solid var(--line); padding: 6px; min-he
 .claim-box, .context-box { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; }
 .claim-box .claim-state { color: var(--hi); }
 .claim-box .claim-state.held { color: var(--red); }
-.context-entry { display: grid; grid-template-columns: 46px 56px minmax(0, 1fr); gap: 6px; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 11px; }
-.context-entry .ck { color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
-.context-entry .ca { color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
-.context-entry .ct { overflow-wrap: anywhere; }
+.context-head { display: flex; align-items: baseline; gap: 8px; }
+.context-head h4 { flex: 1; margin-top: 0; }
+.context-head .btn { white-space: nowrap; }
+.context-box .chips { margin: 4px 0 6px; }
+.context-entry { display: block; padding: 6px 0 7px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.context-entry .context-when { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.context-entry .ck { color: var(--dim); letter-spacing: .04em; }
+.context-entry.kind-fail .ck { color: var(--red); }
+.context-entry .cl, .context-entry .ca { color: var(--faint); }
+.context-entry .ca { margin-left: auto; }
+.context-entry .ct { margin: 3px 0 0; overflow-wrap: anywhere; }
+.context-entry .context-note { color: var(--dim); font-size: 11px; margin-top: 3px; }
+.context-entry.is-corrected { opacity: .62; }
+.context-gap { color: var(--dim); margin-top: 6px; }
 
 /* ---------- cross-board supervision ---------- */
 #global-search { position: fixed; top: calc(var(--top-height) + 6px); left: 50%; transform: translateX(-50%); width: min(720px, calc(100vw - 24px)); max-height: min(75vh, 720px); overflow: auto; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 12px 44px #000; z-index: 85; padding-bottom: 8px; }

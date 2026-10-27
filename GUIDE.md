@@ -97,7 +97,7 @@ Opening an item shows one scrolling **inspector** with **overview**, **activity*
 links at the top; the source inspector for a board opens in the same place from the rail. There are no tabs. The
 inspector can be resized with its grip or keyboard: it stays between **360 px** and **900 px**, capped by the window
 width, and the chosen width is remembered in that browser. Overview carries the current report, linked run, decision,
-claim and shared context; activity carries readings, report history and the audit log; settings edits fields and
+claim and the shared-context timeline; activity carries readings, report history and the audit log; settings edits fields and
 configuration. Resizing or opening details does not move cards or acknowledge attention.
 
 **Groups** are the main way to organize: give an item `group: "CI"` and it lives in the frame titled "CI" (created if
@@ -254,8 +254,15 @@ The queue says *what* to do; the shared context records *what was learned*. It i
   and no claims that a check passed without the evidence. Peers rely on these entries to choose work, so scope them:
   say what you measured, on which inputs, and what remains unverified.
 
-The web UI shows entries in the ticket inspector's work section once you have a run ticket selected; agents remain the
-primary writers. Context entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
+The run inspector and the project inspector show that scope as a timeline, not a raw log. Each entry is labeled
+**FACT** (a finding), **FAIL** (a dead end), **SUMMARY** (a handoff) or **STATUS** (a progress note), with who wrote it
+and when. Filter chips narrow the list. A read is oldest-first and one page can omit the newest entries, so the
+inspector follows the cursor until every retained entry for that scope is loaded. **copy for handoff** puts the
+standing findings, the dead ends and the latest handoff on the clipboard only when that forward read is complete; it
+refuses while newer entries are still missing. A read that stops short is not kept, so the next look fetches again.
+An entry that a later one corrects is listed under Corrected. A ticket that is not a run shows
+its project's timeline, or the board timeline when it has no project. Agents remain the primary writers. Context
+entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
 
 ### Attachments
 Publish a file by reference so peers can inspect it without pasting it into the context log.

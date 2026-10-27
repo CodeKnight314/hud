@@ -1,5 +1,6 @@
 // hud — canvas client. No build step; plain ES module.
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
+import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
@@ -61,6 +62,8 @@ const S = {
   changes: { since: 0, now: 0, complete: false, events: [] },
   claimCache: new Map(),
   contextCache: new Map(),
+  contextKind: 'all',
+  contextFor: null,
   lastVisit: 0,
   visitStarted: Date.now(),
   boardQuery: '',
@@ -72,7 +75,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-drawer], [data-copy-ticket]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -2979,6 +2982,10 @@ function renderDrawer() {
   d.scrollTop = scroll;
   if (it.type === 'monitor') renderChart();
   if (it.type === 'ticket') fillClaim(it);
+  if (S.contextFor !== it.id) {
+    S.contextFor = it.id;
+    S.contextKind = 'all';
+  }
   fillContext(it);
   S.drawerDirty = false;
 }
@@ -3004,20 +3011,72 @@ function scopeFor(it) {
   return `board:${it.board}`;
 }
 
+function contextWhere(it) {
+  if (it.type === 'ticket' && (it.tags || []).some((t) => String(t).toLowerCase() === 'run')) return 'this run';
+  if (it.type === 'project') return 'this project';
+  if (it.type === 'ticket' && it.project) {
+    const project = itemFor(it.project);
+    return project ? `project ${project.key || project.title || project.id}` : 'this project';
+  }
+  return 'this board';
+}
+
+function contextName(id) {
+  const item = itemFor(id);
+  return item ? identOf(item) : id;
+}
+
+async function readContextPage(scope, since) {
+  const q = new URLSearchParams({ scope, limit: '1000' });
+  if (since != null) q.set('since', String(since));
+  return optionalGET(`/api/context?${q}`);
+}
+
 async function fillContext(it) {
   const box = $('#context-box');
   if (!box) return;
   const scope = scopeFor(it);
   let data = S.contextCache.get(scope);
   if (!data) {
-    data = await optionalGET(`/api/context?scope=${encodeURIComponent(scope)}&limit=20`);
-    S.contextCache.set(scope, data || { entries: [] });
+    data = await loadContextPages((since) => readContextPage(scope, since));
+    if (S.drawer !== it.id) return;
+    // Entries from a mid-page miss are not a finished read. Caching them sticks until SSE drops the scope.
+    if (contextCacheable(data)) S.contextCache.set(scope, data);
   }
-  if (!box.isConnected) return;
-  const entries = (data?.entries || []).slice(-10).reverse();
-  box.innerHTML = `<h4>shared context · ${esc(scope)}</h4>` + (entries.length
-    ? entries.map((e) => `<div class="context-entry"><span class="ck">${esc(e.kind)}</span><span class="ca">@${esc(e.actor)}</span><span class="ct">${esc(e.text)}</span></div>`).join('')
-    : '<div class="faint">Nothing published for this scope yet.</div>');
+  const host = $('#context-box');
+  if (!host || S.drawer !== it.id) return;
+  const payload = data || { entries: [], complete: false, newerMissing: true };
+  host.innerHTML = renderContextTimeline({
+    entries: payload.entries || [],
+    filter: S.contextKind || 'all',
+    scope,
+    where: contextWhere(it),
+    esc,
+    when: (t) => `${ago(t)} · ${localDT(t)}`,
+    nameOf: contextName,
+    complete: payload.complete === true,
+    newerMissing: payload.newerMissing === true,
+  });
+}
+
+function copyContextHandoff(it) {
+  const scope = scopeFor(it);
+  const payload = S.contextCache.get(scope);
+  if (!contextCacheable(payload)) {
+    return toast('newer entries were not loaded — handoff not copied');
+  }
+  const text = contextHandoff(payload.entries || [], {
+    scope,
+    title: it.title || identOf(it) || scope,
+    now: displayNow(),
+    formatTime: (t) => localDT(t),
+    nameOf: contextName,
+    complete: true,
+    newerMissing: false,
+  });
+  if (!text) return toast('newer entries were not loaded — handoff not copied');
+  const preview = text.length > 240 ? `${text.slice(0, 240)}…` : text;
+  return (navigator.clipboard?.writeText(text) ?? Promise.reject()).then(() => toast('handoff copied'), () => toast(preview));
 }
 
 const saveText = debounce((id, k, v) => patchItem(id, { [k]: v }).catch(() => {}), 600);
@@ -3273,6 +3332,10 @@ $('#drawer').addEventListener('click', (e) => {
       S.chartRange = v;
       return renderChart();
     }
+    if (key === 'context-kind') {
+      S.contextKind = v || 'all';
+      return fillContext(it);
+    }
     // plot option chips are namespaced: "plot-points" -> plot.points
     if (key.startsWith('plot-')) return savePlot(it.id, key.slice(5), v).then(() => renderDrawer(), () => {});
     return patchItem(it.id, { [key]: v || null }).then(() => renderDrawer(), () => {});
@@ -3292,6 +3355,7 @@ $('#drawer').addEventListener('click', (e) => {
     const txt = e.target.closest('[data-text]').dataset.text;
     return (navigator.clipboard?.writeText(txt) ?? Promise.reject()).then(() => toast('copied'), () => toast(txt));
   }
+  if (act === 'copy-handoff') return copyContextHandoff(it);
   if (act === 'cdel' || act === 'cedit' || act === 'csave' || act === 'ccancel') return commentAct(it, act, e.target.closest('.comment'));
   if (act === 'push') pushReading();
   if (act === 'apply-source') applySource();

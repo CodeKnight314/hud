@@ -62,6 +62,7 @@ scripts/check-monitoring-api.mjs HTTP/CLI/MCP monitoring check against an existi
 scripts/check-monitoring-ui.mjs headless monitoring dashboard, custom program and snapshot check
 scripts/check-supervision.ts     store-level attention, reports, decisions, runs and changes regression checks
 scripts/check-coordination.ts    presence, claim leases, queue, shared context and attachment metadata checks
+scripts/check-context-timeline.mjs shared-context timeline labels, filters, handoff text and escaping
 scripts/check-views.ts           generated view templates, static validation, writes and deletes
 scripts/check-coordination-api.mjs HTTP/MCP/CLI coordination parity check against an existing scratch server
 scripts/check-coordination-ui.mjs headless sessions, queue, claim and inspector checks

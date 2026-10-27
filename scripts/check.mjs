@@ -12,6 +12,7 @@ const syntaxFiles = [...webFiles, resolve(root, 'electron', 'render.mjs'), resol
 const suites = [
   'scripts/check-layout.ts',
   'scripts/check-coordination.ts',
+  'scripts/check-context-timeline.mjs',
   'scripts/check-supervision.ts',
   'scripts/check-monitoring.ts',
   'scripts/check-monitoring-views.mjs',
