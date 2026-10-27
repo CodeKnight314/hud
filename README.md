@@ -16,8 +16,7 @@ Download the installer for your platform from the
 or Linux (x64 AppImage or `.deb`). A signed release opens normally: macOS is Developer ID–signed and notarized, and Windows
 is Authenticode-signed. Unsigned builds — a release produced without signing secrets, or a package built on your own
 machine — still need a first-launch bypass: on macOS, right-click the app and choose **Open**; Windows may show a
-SmartScreen prompt. On Linux, both packages can install the `hud` command that agents use. From the app, choose
-Settings → Connections → **Install command**. If you move an
+SmartScreen prompt. Choose Settings → Connections → **Install command** to add the agent command. If you move an
 AppImage, run that action again so the command follows the file.
 
 From a source checkout:
@@ -56,9 +55,8 @@ hud mcp print generic  # a snippet for any other MCP client
 The packaged app installs its own `hud` command first (`hud cli install`, or **Install command** in Settings). A source
 checkout uses `node bin/hud.js` instead. On Linux, the AppImage and the `.deb` both register that command for MCP.
 
-Agents get the full surface: tickets, monitors, charts, coordination and the guide (`hud guide`, `hud://guide`,
-`GET /api/guide`). Existing agent sessions keep their old MCP process after an upgrade — reconnect them (`/mcp` in
-Claude Code) to pick up new tools.
+Agents get the full surface, documented in the guide (`hud guide`, `hud://guide`, `GET /api/guide`). Existing agent
+sessions keep their old MCP process after an upgrade — reconnect them (`/mcp` in Claude Code) to pick up new tools.
 
 ## Coordination quickstart
 
