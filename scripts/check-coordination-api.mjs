@@ -68,6 +68,30 @@ async function cli(args, env = {}) {
   });
 }
 
+function mcpRpc(messages, pick) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(root, 'src/mcp.ts')], { cwd: root, env: { ...process.env, HUD_SCRATCH: '1', HUD_PORT: base.port, HUD_URL: base.origin, HUD_ACTOR: 'api-coordination-check' } });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error('MCP timed out')); }, 20000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      for (const line of out.split('\n').filter(Boolean)) {
+        try {
+          const msg = JSON.parse(line);
+          const hit = pick(msg);
+          if (hit !== undefined) {
+            clearTimeout(timer);
+            child.kill();
+            resolve(hit);
+            return;
+          }
+        } catch {}
+      }
+    });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    for (const message of messages) child.stdin.write(JSON.stringify(message) + '\n');
+  });
+}
 async function mcpTools() {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(root, 'src/mcp.ts')], { cwd: root, env: { ...process.env, HUD_SCRATCH: '1', HUD_PORT: base.port, HUD_URL: base.origin } });
@@ -122,6 +146,83 @@ try {
   assert.equal(q.counts.claimed, 1, 'queue shows the claim');
   assert.equal(q.items.find((r) => r.id === t2.id)?.blocked, true, 'blocked ticket is marked');
   assert.equal(q.items.find((r) => r.id === t1.id)?.owner, 'api-check', 'owner comes from the claim');
+
+  // multi-project ownership: switch the list by project and owner, and show assignee plus claimer
+  const eng = await ok('/api/items', { method: 'POST', body: { type: 'project', board: boardId, title: `Eng ${nonce}`, key: 'ENG' } });
+  await ok('/api/items', { method: 'POST', body: { type: 'project', board: boardId, title: `Hud ${nonce}`, key: 'HUD' } });
+  const alpha = await ok('/api/items', { method: 'POST', body: { type: 'ticket', board: boardId, title: `Alpha ${nonce}`, project: eng.id, assignee: 'alice' } });
+  const beta = await ok('/api/items', { method: 'POST', body: { type: 'ticket', board: boardId, title: `Beta ${nonce}`, project: 'ENG' } });
+  const gamma = await ok('/api/items', { method: 'POST', body: { type: 'ticket', board: boardId, title: `Gamma ${nonce}`, project: 'HUD', assignee: 'alice' } });
+  await ok(`/api/items/${encodeURIComponent(beta.id)}/claim`, { method: 'POST', body: { session: `owner-${nonce}` } });
+  const owned = await ok(`/api/tickets?board=${encodeURIComponent(boardId)}&project=ENG&owner=alice`);
+  assert.equal(owned.groups.length, 1, 'project filter keeps one group');
+  assert.deepEqual(owned.groups[0].tickets.map((t) => t.id), [alpha.id], 'owner filter keeps the assignee when unclaimed');
+  assert.equal(owned.groups[0].tickets[0].claimer, null);
+  assert.equal(owned.groups[0].tickets[0].owner, 'alice');
+  const tree = await ok(`/api/tickets?board=${encodeURIComponent(boardId)}&project=ENG&format=text`);
+  assert.match(tree, new RegExp(`Alpha ${nonce} →alice ⊕—`));
+  assert.match(tree, new RegExp(`Beta ${nonce} →— ⊕api-coordination-check`));
+  assert.doesNotMatch(tree, new RegExp(`Gamma ${nonce}`));
+  const claims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
+  assert.equal(typeof claims.now, 'number', 'claims list shares the { items, now } shape');
+  const claimIds = new Set(claims.items.map((c) => c.ticket));
+  assert.ok(claimIds.has(t1.id) && claimIds.has(beta.id), 'omit session: every lease on the board');
+  assert.ok(claims.items.some((c) => c.ticket === beta.id && c.actor === 'api-coordination-check'), 'claims list names the claimer');
+  const sessionClaims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}&session=${encodeURIComponent(`owner-${nonce}`)}`);
+  assert.ok(sessionClaims.items.some((c) => c.ticket === beta.id), 'session filter keeps that holder');
+  assert.ok(sessionClaims.items.every((c) => c.session === `owner-${nonce}`), 'session filter drops other holders');
+  assert.equal(sessionClaims.items.some((c) => c.ticket === t1.id), false, 'session filter does not include the other holder');
+  const queued = await ok(`/api/queue?board=${encodeURIComponent(boardId)}&project=HUD&owner=alice&includeDone=1`);
+  assert.deepEqual(queued.items.map((t) => t.id), [gamma.id], 'queue filters by project and owner');
+  const cliTree = await cli(['tickets', boardId, '--project', 'ENG', '--owner', 'alice']);
+  assert.match(cliTree, new RegExp(`Alpha ${nonce}`));
+  assert.doesNotMatch(cliTree, new RegExp(`Beta ${nonce}`));
+  const ticketTool = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+  ], (msg) => (msg.id === 2 ? msg.result.tools : undefined));
+  for (const name of ['hud_tickets', 'hud_search', 'hud_queue']) {
+    const tool = ticketTool.find((t) => t.name === name);
+    assert.ok(tool?.inputSchema?.properties?.project, `${name} filters by project`);
+    assert.ok(tool?.inputSchema?.properties?.owner, `${name} filters by owner`);
+  }
+  const mcpTickets = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_tickets', arguments: { board: boardId, project: 'ENG', owner: 'claude' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  assert.equal(mcpTickets.isError, undefined, JSON.stringify(mcpTickets));
+  const mcpBody = mcpTickets.content.map((c) => c.text).join('\n');
+  assert.match(mcpBody, /no matching tickets/, 'MCP owner filter does not treat the claimer as someone else');
+  const mcpAlice = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_tickets', arguments: { board: boardId, project: 'HUD', owner: 'alice' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  const aliceBody = mcpAlice.content.map((c) => c.text).join('\n');
+  assert.match(aliceBody, new RegExp(`Gamma ${nonce} →alice ⊕—`));
+  assert.doesNotMatch(aliceBody, new RegExp(`Alpha ${nonce}|Beta ${nonce}`));
+  const mcpSearch = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_search', arguments: { board: boardId, type: 'ticket', project: 'HUD', owner: 'alice' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  assert.equal(mcpSearch.isError, undefined, JSON.stringify(mcpSearch));
+  const searchBody = mcpSearch.content.map((c) => c.text).join('\n');
+  assert.match(searchBody, new RegExp(`Gamma ${nonce}`));
+  assert.doesNotMatch(searchBody, new RegExp(`Alpha ${nonce}|Beta ${nonce}`));
+  const mcpQueue = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_queue', arguments: { board: boardId, project: 'ENG', owner: 'alice' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  assert.equal(mcpQueue.isError, undefined, JSON.stringify(mcpQueue));
+  const queueBody = mcpQueue.content.map((c) => c.text).join('\n');
+  assert.match(queueBody, new RegExp(`Alpha ${nonce}`));
+  assert.match(queueBody, /\| alice \|/);
+  assert.doesNotMatch(queueBody, new RegExp(`Beta ${nonce}|Gamma ${nonce}`));
+  const mcpNone = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_search', arguments: { board: boardId, type: 'ticket', project: 'ENG', owner: 'none' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  const noneBody = mcpNone.content.map((c) => c.text).join('\n');
+  assert.match(noneBody, /no matches/);
 
   // shared context: publish, delta, correction
   const fact = await ok('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FACT', text: 'first finding', session: s.id } }, s.id);

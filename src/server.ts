@@ -304,6 +304,7 @@ function queryOf(q: URLSearchParams): SearchQuery {
     status: status ? status.split(',').map((x) => x.trim()).filter(Boolean) : undefined,
     priority: q.get('priority') || undefined,
     assignee: q.get('assignee') || undefined,
+    owner: q.get('owner') || undefined,
     project: q.get('project') || undefined,
     tag: q.get('tag') || undefined,
     text: q.get('q') || undefined,
@@ -351,13 +352,17 @@ function fullItem(it: Item): unknown {
 
 /** one row of the ticket list */
 function ticketView(t: Item) {
+  const own = store.ownership(t);
   return {
     id: t.id,
     ident: store.ident(t),
     title: t.title,
     status: t.status ?? 'todo',
     priority: t.priority ?? null,
-    assignee: t.assignee ?? null,
+    assignee: own.assignee,
+    claimer: own.claimer,
+    claimSession: own.claimSession,
+    owner: own.owner,
     project: t.project ?? null,
     parent: t.parent ? store.identOf(t.parent) : null,
     parentId: t.parent ?? null,
@@ -624,6 +629,7 @@ route('GET', '/api/queue', (_req, _res, _m, q) => store.queue(q.get('board') || 
   status: q.get('status') || undefined,
   project: q.get('project') || undefined,
   assignee: q.get('assignee') || undefined,
+  owner: q.get('owner') || undefined,
   includeDone: q.get('includeDone') === '1' || q.get('includeDone') === 'true' || q.get('all') === '1',
   limit: numParam(q, 'limit'),
 }));

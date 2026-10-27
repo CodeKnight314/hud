@@ -67,6 +67,10 @@ const S = {
   runsTab: 'runs',
   changes: { since: 0, now: 0, complete: false, events: [] },
   claimCache: new Map(),
+  claims: new Map(), // ticket id → live claim, for list/tree/board ownership
+  claimsNow: 0, // latest applied claimsList snapshot; an older snapshot is dropped
+  claimsEpoch: 0, // SSE claim/release while a snapshot is in flight
+  claimsReady: false,
   contextCache: new Map(),
   contextKind: 'all',
   contextFor: null,
@@ -81,7 +85,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket], [data-proj-switch], [data-shape]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -713,6 +717,17 @@ function plotItemWithBoardContext(it) {
   return { ...it, plot: { ...plot, events }, ...(metrics.length ? { plotSeries } : {}) };
 }
 
+/** assignee (→) and live claimer (⊕). A dash means that side is unset. */
+function ownershipHTML(t) {
+  const claim = S.claims.get(t.id);
+  const assignee = t.assignee ? esc(t.assignee) : '—';
+  const claimer = claim ? esc(claim.actor || claim.session) : (S.claimsReady ? '—' : '…');
+  const tip = claim
+    ? `assignee ${t.assignee || '—'}; claimed by ${claim.actor} (${claim.session})`
+    : `assignee ${t.assignee || '—'}; ${S.claimsReady ? 'unclaimed' : 'claim unknown'}`;
+  return `<span class="own" title="${esc(tip)}"><span class="own-a">→${assignee}</span><span class="own-c">⊕${claimer}</span></span>`;
+}
+
 function cardHTML(it) {
   const cols = clamp(Math.floor((it.w - 18) / 7.25), 4, 300);
   switch (it.type) {
@@ -754,7 +769,7 @@ function cardHTML(it) {
         .join('  ');
       return `<div class="hd"><span class="st">${STATUS_GLYPH[it.status] || '[·]'} ${esc(it.status)}</span><span class="r">${it.autoStatus ? '<span title="status follows linked monitors">⟳</span> ' : ''}${pr} <span class="idt">${esc(identOf(it))}</span> ${copyTicketButton(it)}</span></div>
         <div class="bd"><div class="ttl">${esc(it.title) || '<span class="faint">untitled</span>'}</div>${lineage ? `<div class="lineage">${lineage}</div>` : ''}${opts}${answer}${links ? `<div class="links">${links}</div>` : ''}<div class="body md">${md(it.body)}</div></div>
-        <div class="ft">${by(it)}${it.assignee ? `<span>→${esc(it.assignee)}</span>` : ''}<span>${tags}</span>${targetHTML(it)}<span class="r">${nc} ${ago(it.updatedAt)}</span></div>`;
+        <div class="ft">${by(it)}${ownershipHTML(it)}<span>${tags}</span>${targetHTML(it)}<span class="r">${nc} ${ago(it.updatedAt)}</span></div>`;
     }
     case 'monitor': {
       const reading = monitorReadout(it);
@@ -954,6 +969,8 @@ function cardSignature(it, className) {
   // values drawn from other items: frame counts, '+N sub', idents, linked monitors, project rollups
   if (it.type === 'frame') parts.push(membersOf(it).length);
   if (it.type === 'ticket') {
+    const claim = S.claims.get(it.id);
+    parts.push(claim ? `${claim.actor}|${claim.session}|${claim.expiresAt}` : (S.claimsReady ? 'unclaimed' : 'pending'));
     parts.push(kidsOf(it.id).length, identOf(it), it.parent && nameOf(it.parent), (it.blockedBy || []).map(nameOf).join(','), (it.refs || []).map(nameOf).join(','));
     for (const id of it.monitors || []) {
       const m = S.items.get(id);
@@ -1327,7 +1344,7 @@ function setModeHint() {
   $('#mode').textContent = document.body.classList.contains('cmd') ? 'COMMAND' : n ? `SEL ${n}` : 'NORMAL';
   $('#hint').textContent = S.page !== 'board' ? 'click to inspect · ⌘/Ctrl+K search · review keeps issues active · esc closes details' : n
     ? 'drag move · ⏎ open · ⌫ delete · arrows nudge · esc clear'
-    : S.mode === 'list' ? 'click a ticket for details · / search · completed shows finished work · l board'
+    : S.mode === 'list' ? 'click a ticket · project chips switch · list, tree or board · / search · l canvas'
     : 'dbl-click details · drag pan · ⌘/ctrl+scroll zoom · shift+drag select · : command · ? help';
 }
 
@@ -1369,6 +1386,7 @@ function switchBoard(id, opts = {}) {
   if (opts.page && opts.page !== 'board') setPage(opts.page, { hash: false });
   else if (opts.page !== false) setPage('board', { hash: false });
   if (!CAPTURE_READONLY) loadReadout(id);
+  loadClaims();
 }
 
 function inlineBoardInput(initial, onDone) {
@@ -1931,7 +1949,7 @@ async function load() {
   const id = S.boards.some((b) => b.id === want) ? want : S.board && S.boards.some((b) => b.id === S.board) ? S.board : S.boards[0].id;
   const initialPage = CAPTURE_READONLY ? 'board' : hs.page === 'runs' ? 'runs' : hs.page === 'attention' ? 'attention' : hs.page === 'item' || hs.board ? 'board' : 'board';
   if (id !== S.board) switchBoard(id, { page: initialPage, hash: false });
-  else { setPage(initialPage, { hash: false }); renderAll(); }
+  else { setPage(initialPage, { hash: false }); renderAll(); loadClaims(); }
   if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
   else if (S.drawer) renderDrawer();
   if (S.drawer) fetchDetail(S.drawer);
@@ -2063,9 +2081,16 @@ function onEvent(e) {
     return;
   }
   if (e.kind === 'claim') {
+    if (!e.claim.board || e.claim.board === S.board) {
+      S.claimsEpoch++;
+      if (e.action === 'released' || e.action === 'expired') S.claims.delete(e.claim.ticket);
+      else S.claims.set(e.claim.ticket, e.claim);
+      S.claimsReady = true;
+    }
     S.claimCache.delete(e.claim.ticket);
     if (S.drawer === e.claim.ticket) fillClaim(itemFor(S.drawer));
     refreshQueueLater();
+    if (S.mode === 'list') scheduleList();
     return;
   }
   if (e.kind === 'context') {
@@ -3139,9 +3164,13 @@ async function fillClaim(it) {
     S.claimCache.set(it.id, c || null);
   }
   if (!box.isConnected) return;
+  const prev = S.claims.get(it.id)?.actor || '';
+  if (c) S.claims.set(it.id, c);
+  else S.claims.delete(it.id);
+  if (prev !== (c?.actor || '') && S.mode === 'list') scheduleList();
   box.innerHTML = `<h4>claim</h4>` + (c
-    ? `<div class="claim-state held">${esc(c.session)} · ${c.live ? `expires ${ago(c.expiresAt)} from now` : 'expired'}</div><div class="btns">${c.session === 'user' ? `<button class="btn" data-release="${esc(it.id)}">release</button>` : ''}</div>`
-    : `<div class="claim-state">unclaimed</div><div class="btns"><button class="btn" data-claim="${esc(it.id)}">claim</button></div>`);
+    ? `<div class="claim-state held">⊕${esc(c.actor)} · ${esc(c.session)} · ${c.live ? `expires ${ago(c.expiresAt)} from now` : 'expired'}</div><div class="btns">${c.session === 'user' ? `<button class="btn" data-release="${esc(it.id)}">release</button>` : ''}</div>`
+    : `<div class="claim-state">⊕— unclaimed</div><div class="btns"><button class="btn" data-claim="${esc(it.id)}">claim</button></div>`);
 }
 
 function scopeFor(it) {
@@ -3879,6 +3908,32 @@ async function runCmd(line) {
   throw new Error(`unknown command: ${c}  (? for help)`);
 }
 
+/**
+ * Live leases for ownership marks. Same shape as claimsList({ session?, board? }) → { items, now }.
+ * Omit session so every lease on the board stays visible. A session filter must not replace that map.
+ */
+function loadClaims(filter = {}) {
+  if (CAPTURE_READONLY) return;
+  const board = filter.board || S.board;
+  if (!board) return;
+  const session = filter.session ? String(filter.session) : '';
+  const q = new URLSearchParams({ board });
+  if (session) q.set('session', session);
+  const epoch = S.claimsEpoch;
+  optionalGET(`/api/claims?${q}`).then((data) => {
+    if (!data || S.board !== board) return;
+    if (session) return;
+    // an SSE claim landed after this request left; the body is already stale
+    if (S.claimsEpoch !== epoch) return loadClaims({ board });
+    const at = Number(data.now);
+    if (Number.isFinite(at) && at < S.claimsNow) return;
+    if (Number.isFinite(at)) S.claimsNow = at;
+    S.claims = new Map((Array.isArray(data.items) ? data.items : []).map((c) => [c.ticket, c]));
+    S.claimsReady = true;
+    if (S.mode === 'list') scheduleList();
+  });
+}
+
 // ---------------------------------------------------------------- Linear-style list view
 // The canvas is for spatial work; this is for reading and editing tickets the way a tracker does:
 // projects → status → tickets, with sub-tickets nested and blockers/branches called out. No coords.
@@ -3921,7 +3976,8 @@ function lfGet() {
   try {
     f = JSON.parse(localStorage.getItem(lfKey()) || '{}') || {};
   } catch {}
-  S.lf = { board: S.board, f: { ...LF_DEFAULT, ...f } };
+  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  S.lf = { board: S.board, f: { ...LF_DEFAULT, ...f, shape } };
   return S.lf.f;
 }
 function lfSet(patch) {
@@ -3960,7 +4016,11 @@ function renderFilterBar(all, projects) {
   const f = lfGet();
   const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort();
   const sel = (k, label, opts) => `<select data-f="${k}"><option value="">${label}</option>${opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>`;
+  const chips = `<span class="pchips" role="tablist" aria-label="projects">${[['*', 'all'], ...projects.map((p) => [p.id, p.key || p.title])].map(([v, l]) => `<button type="button" class="btn sm pchip" data-proj-switch="${esc(v)}" role="tab">${esc(l)}</button>`).join('')}</span>`;
+  const shapes = `<span class="shapes" role="tablist" aria-label="ticket view">${['list', 'tree', 'board'].map((v) => `<button type="button" class="btn sm" data-shape="${v}" role="tab">${v}</button>`).join('')}</span>`;
   const html = [
+    chips,
+    shapes,
     sel('status', 'status', STATUSES.map((s) => [s, s])),
     sel('assignee', 'assignee', [['-', '(none)'], ...uniq(all.map((t) => t.assignee)).map((a) => [a, a])]),
     sel('project', 'project', [['-', '(none)'], ...projects.map((p) => [p.id, p.key || p.title])]),
@@ -3983,6 +4043,18 @@ function renderFilterBar(all, projects) {
   $('[data-f-completed]', bar).classList.toggle('on', f.completed);
   $('[data-f-completed]', bar).setAttribute('aria-pressed', String(f.completed));
   $('[data-f-clear]', bar).style.display = lfActive(f) || f.sort !== 'status' ? '' : 'none';
+  const projectOn = f.project || '*';
+  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  for (const c of $$('[data-proj-switch]', bar)) {
+    const on = c.dataset.projSwitch === projectOn;
+    c.classList.toggle('on', on);
+    c.setAttribute('aria-selected', String(on));
+  }
+  for (const c of $$('[data-shape]', bar)) {
+    const on = c.dataset.shape === shape;
+    c.classList.toggle('on', on);
+    c.setAttribute('aria-selected', String(on));
+  }
 }
 
 function renderList() {
@@ -4006,13 +4078,13 @@ function renderList() {
   const kidsOf = (id) => kidMap.get(id) || [];
   const isRoot = (t) => !t.parent || !ticketIds.has(t.parent);
 
+  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
   const rowHTML = (t, depth) => {
     const kids = kidsOf(t.id);
     const folded = S.open.has(t.id);
     const bits = [
       t.priority && `<span class="prio-${esc(t.priority)}">!${esc(t.priority)}</span>`,
       t.group && `<span class="tag" title="group">${esc(t.group)}</span>`,
-      t.assignee && `<span class="dim">→${esc(t.assignee)}</span>`,
       targetHTML(t),
       t.blockedBy?.length && `<span class="dep">⊘ ${t.blockedBy.map((b) => esc(nameOf(b))).join(', ')}</span>`,
       t.refs?.length && `<span class="dim">⇒ ${t.refs.map((r) => esc(nameOf(r))).join(', ')}</span>`,
@@ -4024,11 +4096,29 @@ function renderList() {
       <span class="tid">${esc(identOf(t))}${copyTicketButton(t)}</span>
       <span class="tcar"${kids.length ? ` data-fold="${esc(t.id)}" title="${folded ? 'expand' : 'collapse'} sub-tickets"` : ''}>${kids.length ? (folded ? '▸' : '▾') : ''}</span>
       <span class="ttt">${esc(t.title) || '<span class="faint">untitled</span>'}</span>
+      <span class="town">${ownershipHTML(t)}</span>
       <span class="tbits">${bits}</span>
       <span class="tbr">${esc(t.branch || '')}</span>
     </div>`;
   };
   const tree = (t, depth) => rowHTML(t, depth) + (S.open.has(t.id) ? '' : kidsOf(t.id).map((c) => tree(c, depth + 1)).join(''));
+  const statusesOf = (list) => {
+    const present = [...new Set(list.map((t) => t.status || 'todo'))];
+    return [...LIST_ORDER.filter((x) => present.includes(x)), ...present.filter((x) => !LIST_ORDER.includes(x))];
+  };
+  const boardHTML = (project, list) => {
+    const cols = statusesOf(list).map((s) => {
+      const at = lfSort(list.filter((t) => (t.status || 'todo') === s), f);
+      const cards = at.map((t) => `<button type="button" class="kcard s-${esc(t.status || 'todo')}${needsDecision(t) ? ' needs-decision' : ''}" data-open="${esc(t.id)}">
+          <div class="kid">${esc(identOf(t))}</div>
+          <div class="kttl">${esc(t.title) || '<span class="faint">untitled</span>'}</div>
+          ${t.parent ? `<div class="kpar">↳ ${esc(nameOf(t.parent))}</div>` : ''}
+          ${ownershipHTML(t)}
+        </button>`).join('');
+      return `<div class="kcol"><div class="kh"><span class="sg">${STATUS_GLYPH[s] || '[·]'}</span> ${esc(s)} <span class="dim">${at.length}</span><button type="button" class="btn sm" data-new="${esc(project?.id ?? '')}|${esc(s)}" title="new ${esc(s)} ticket">＋</button></div>${cards}</div>`;
+    }).join('');
+    return `<div class="kboard">${cols}</div>`;
+  };
 
   const groupHTML = (project, list) => {
     const label = project ? `${esc(project.key || '—')} <span class="pn">${esc(project.title)}</span>` : `<span class="pn">${projects.length ? 'no project' : 'All tickets'}</span>`;
@@ -4038,15 +4128,15 @@ function renderList() {
       <span class="pc">${list.length} ticket${list.length === 1 ? '' : 's'}</span>
       <button class="btn sm" data-new="${esc(project?.id ?? '')}|todo">＋ ticket</button></div>`;
     if (!list.length) return head + `<div class="tnone">${active ? 'no matching tickets' : 'no tickets'}</div>`;
+    if (shape === 'board') return head + boardHTML(project, list);
     const out = [head];
-    if (f.sort !== 'status') {
-      // a non-status sort flattens the status groups
+    if (shape === 'tree' || f.sort !== 'status') {
+      // tree keeps the parent/child nest and skips status buckets; a non-status sort does the same
       for (const t of lfSort(list.filter(isRoot), f)) out.push(tree(t, 0));
       return out.join('');
     }
     // canonical statuses first, then anything else a ticket carries, so rows always add up to the totals
-    const present = [...new Set(list.map((t) => t.status || 'todo'))];
-    for (const s of [...LIST_ORDER.filter((x) => present.includes(x)), ...present.filter((x) => !LIST_ORDER.includes(x))]) {
+    for (const s of statusesOf(list)) {
       const atRoot = lfSort(list.filter((t) => (t.status || 'todo') === s).filter(isRoot), f);
       if (!atRoot.length) continue; // sub-tickets print under their parent, whatever their status
       out.push(`<div class="tstat"><span class="sg">${STATUS_GLYPH[s] || '[·]'}</span> ${esc(s)} <span class="dim">${atRoot.length}</span><button class="btn sm" data-new="${esc(project?.id ?? '')}|${esc(s)}" title="new ${esc(s)} ticket">＋</button></div>`);
@@ -4063,7 +4153,7 @@ function renderList() {
   if (loose.length) html.push(groupHTML(null, loose));
   if (active && !tickets.length) html.push('<div class="tnone">no tickets match — <span class="go" data-f-clear>clear filters</span></div>');
   else if (!projects.length && !loose.length) html.push(`<div class="tnone">${allTickets.length ? 'No active tickets. Use completed above to see finished work.' : 'No tickets yet — add a ticket or project.'}</div>`);
-  const out = `<div class="lwrap">
+  const out = `<div class="lwrap shape-${shape}">
     <div class="lhead"><span>tickets</span><span class="dim">${tickets.length} shown · ${allTickets.length} total</span><button class="btn sm" data-new="|todo">＋ ticket</button><button class="btn sm" data-new-project="1">＋ project</button></div>
     ${html.join('')}
   </div>`;
@@ -4167,6 +4257,10 @@ $('#list').addEventListener('change', (e) => {
   if (k && k !== 'q') lfSet({ [k]: e.target.value });
 });
 $('#list').addEventListener('click', (e) => {
+  const projSwitch = e.target.closest('[data-proj-switch]');
+  if (projSwitch) return lfSet({ project: projSwitch.dataset.projSwitch === '*' ? '' : projSwitch.dataset.projSwitch });
+  const shapeBtn = e.target.closest('[data-shape]');
+  if (shapeBtn) return lfSet({ shape: shapeBtn.dataset.shape });
   if (e.target.closest('[data-f-completed]')) return lfSet({ completed: !lfGet().completed });
   if (e.target.closest('[data-f-overdue]')) return lfSet({ overdue: !lfGet().overdue });
   if (e.target.closest('[data-f-clear]')) return lfSet({ ...LF_DEFAULT });

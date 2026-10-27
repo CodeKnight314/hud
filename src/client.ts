@@ -35,6 +35,10 @@ export interface TicketRow {
   status: string;
   priority: string | null;
   assignee: string | null;
+  claimer: string | null;
+  claimSession: string | null;
+  /** claimer while a lease is held, otherwise the assignee */
+  owner: string | null;
   project: string | null;
   parent: string | null;
   parentId: string | null;
@@ -75,6 +79,8 @@ export type SearchQuery = {
   status?: string;
   priority?: string;
   assignee?: string;
+  /** claimer while claimed, otherwise the assignee; `none` or `-` means neither */
+  owner?: string;
   project?: string;
   tag?: string;
   q?: string;
@@ -622,7 +628,7 @@ export class Hud {
   claims(q: { session?: string; board?: string } = {}): Promise<{ items: ClaimView[]; now: number }> {
     return this.request('GET', '/api/claims' + qs(q));
   }
-  queue(q: { board?: string; status?: string; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): Promise<QueueResult> {
+  queue(q: { board?: string; status?: string; project?: string; assignee?: string; owner?: string; includeDone?: boolean; limit?: number } = {}): Promise<QueueResult> {
     return this.request('GET', '/api/queue' + qs({ ...q, includeDone: q.includeDone ? 1 : undefined }));
   }
   /** block until a peer publishes context, claims the ticket, or ends; at most 25 s */

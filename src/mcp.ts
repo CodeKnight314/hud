@@ -115,7 +115,7 @@ const ITEM_FIELDS = {
 const TOOLS = [
   {
     name: 'hud_search',
-    description: 'Find items by text and filters (ids, idents, status, assignee, project, tag, overdue). Prefer over hud_overview on big boards.',
+    description: 'Find items by text and filters (ids, idents, status, assignee, project, owner, tag, overdue). owner is the claimer while a lease is held, otherwise the assignee; "none" is unowned. Prefer over hud_overview on big boards.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -124,6 +124,7 @@ const TOOLS = [
         type: { type: 'string', enum: ['ticket', 'monitor', 'note', 'frame', 'util', 'project'] },
         status: { type: 'string', description: 'comma-separated ok' },
         assignee: { type: 'string' },
+        owner: { type: 'string', description: 'claimer while claimed, otherwise the assignee. "none" or "-" matches tickets with neither' },
         project: { type: 'string' },
         tag: { type: 'string' },
         priority: { type: 'string' },
@@ -156,7 +157,7 @@ const TOOLS = [
   {
     name: 'hud_tickets',
     description:
-      'Ticket list for a board by project and status, sub-tickets nested, KEY-n idents. Optional filters; format:"json" for rows.',
+      'Ticket list for a board by project and status, sub-tickets nested, KEY-n idents. Each row shows assignee (→) and claimer (⊕). Filter with project and owner (owner is the claimer while claimed, otherwise the assignee; "none" is unowned). format:"json" for rows.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -164,7 +165,8 @@ const TOOLS = [
         format: { type: 'string', enum: ['text', 'json'], description: 'text (default) or json rows' },
         status: { type: 'string', description: 'comma-separated ok' },
         assignee: { type: 'string' },
-        project: { type: 'string' },
+        owner: { type: 'string', description: 'claimer while claimed, otherwise the assignee. "none" or "-" matches tickets with neither' },
+        project: { type: 'string', description: 'project id or KEY' },
         tag: { type: 'string' },
         priority: { type: 'string' },
         text: { type: 'string' },
@@ -530,6 +532,7 @@ const TOOLS = [
         status: { type: 'string', description: 'comma-separated statuses' },
         project: { type: 'string', description: 'project id or KEY' },
         assignee: { type: 'string' },
+        owner: { type: 'string', description: 'claimer while claimed, otherwise the assignee. "none" or "-" matches tickets with neither' },
         includeDone: { type: 'boolean', description: 'include finished tickets (default false)' },
         limit: { type: 'number' },
       },
@@ -697,7 +700,7 @@ async function needBoard(board?: string, client: Hud = baseHud) {
 
 function filters(a: any) {
   const q = new URLSearchParams();
-  for (const k of ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'parent', 'limit']) if (a[k] !== undefined && a[k] !== '') q.set(k, String(a[k]));
+  for (const k of ['board', 'type', 'status', 'priority', 'assignee', 'owner', 'project', 'tag', 'parent', 'limit']) if (a[k] !== undefined && a[k] !== '') q.set(k, String(a[k]));
   if (a.text) q.set('q', String(a.text));
   if (a.overdue) q.set('overdue', '1');
   return q;
@@ -1113,7 +1116,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_queue': {
       await needBoard(args.board, hud);
-      return cap(queueMarkdown(await hud.queue({ board: args.board ?? 'main', status: args.status, project: args.project, assignee: args.assignee, includeDone: args.includeDone, limit: args.limit })));
+      return cap(queueMarkdown(await hud.queue({ board: args.board ?? 'main', status: args.status, project: args.project, assignee: args.assignee, owner: args.owner, includeDone: args.includeDone, limit: args.limit })));
     }
     case 'hud_context': {
       const action = args.action ?? 'read';
@@ -1453,9 +1456,9 @@ const INSTRUCTIONS =
   'To reset a board while keeping its identity and settings, use hud_clear_canvas or hud_board {action:"clear",id}; hud_board {action:"delete",id} deletes the board. ' +
   'Visual style: hud is a dark desktop surface (see STYLE.md). Use the layered dark palette, a sans-serif UI, and monospace only for identifiers, code and measurements. Reserve red for stated blocked/error/attention conditions and green for stated done/ok conditions. Every status color must have a readable label or glyph. Do not use a terminal, CRT, or inverse-video look. Panels should stay concise and legible. ' +
   'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); use hud_runs for run summaries and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
-  'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view opens rows in a scrollable sidebar and tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. ' +
+  'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view switches across projects and between list, tree and board; every task shows its assignee and claimer. It tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. hud_tickets and hud_search filter by project and owner. ' +
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
-  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes and updates projects, hud_tree reads and reparents the ticket tree, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
+  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents and filter by project and owner, hud_project makes and updates projects, hud_tree reads and reparents the ticket tree, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
   'Prefer hud_monitor_templates when adding a disk, TLS, HTTP, or cron heartbeat monitor. Those templates use safe local defaults and do not run a shell command; the tls template connects only after host or source.config.host is set. ' +
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +

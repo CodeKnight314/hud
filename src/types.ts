@@ -358,12 +358,22 @@ export interface SearchQuery {
   status?: string | string[];
   priority?: string;
   assignee?: string;
+  /** claimer while a lease is held, otherwise the assignee. `none` or `-` means neither. */
+  owner?: string;
   project?: string;
   tag?: string;
   text?: string;
   overdue?: boolean;
   parent?: string;
   limit?: number;
+}
+
+/** assignee is durable; claimer is the live lease; owner is the claimer while claimed, else the assignee */
+export interface Ownership {
+  assignee: string | null;
+  claimer: string | null;
+  claimSession: string | null;
+  owner: string | null;
 }
 
 export interface State {
