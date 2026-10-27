@@ -910,7 +910,7 @@ and the CLI + MCP server built into the same binary.
     npm run dist:win   # nsis installer (x64, arm64)
     npm run dist:linux # AppImage + deb
 
-Prebuilt 0.1.0 downloads are on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/tag/v0.1.0):
+Prebuilt downloads for the latest stable release are on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest):
 macOS arm64/x64 DMGs, Windows x64 installer and Linux x64 AppImage/deb. Release builds are unsigned and not notarized;
 macOS may show a first-launch warning. Each OS builds its own artifact, and macOS signing only works on macOS.
 `dist/` output is produced by `electron-builder` from `electron-builder.yml`; `npm run bundle` alone just rebuilds
@@ -955,9 +955,8 @@ matching installer for the app's OS and architecture when that asset exists; **D
 and **View release** opens the release page. HUD never installs an update automatically: download the installer, quit
 HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board and stops the
 background server even when Keep server running after quit is enabled. Reconnect existing agent clients after installing.
-The optional **Check when HUD opens** preference enables launch-time checks. The 0.1.1 build
-adds this checker; version 0.1.0 has none, so upgrading from it the first time requires downloading the installer
-manually.
+The optional **Check when HUD opens** preference enables launch-time checks. The update checker has existed since 0.1.1.
+Version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual installer download.
 
 The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
 OS runners and upload seven-day workflow artifacts. A stable `vX.Y.Z` tag push runs the same four native build jobs
@@ -967,7 +966,7 @@ Windows installer, Linux AppImage and Linux `.deb`), validates them, writes `SHA
 release. It does not publish the draft. The update checker ignores drafts and prereleases, so a release appears to
 users only after someone reviews and manually publishes it.
 
-For the next release, keep the existing v0.1.0 release unchanged and:
+For the next release, leave every published stable release unchanged and:
 
 1. Bump the version in `package.json` and `appdir/package.json`, then update `package-lock.json` so all recorded package
    versions agree.

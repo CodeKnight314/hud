@@ -269,7 +269,7 @@ artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. O
 exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
 release. A person must review and publish that draft; Settings ignores drafts and prereleases.
 
-For a future release, keep v0.1.0 immutable, bump `package.json` and `appdir/package.json`, update `package-lock.json`,
+For a future release, leave published stable releases unchanged, bump `package.json` and `appdir/package.json`, update `package-lock.json`,
 push the matching `vX.Y.Z` tag, review the generated draft and publish it manually. Branch pushes and manual workflow
 dispatch build temporary artifacts but do not create a release.
 
