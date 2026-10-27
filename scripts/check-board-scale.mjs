@@ -1,7 +1,7 @@
 // The on-screen canvas letterboxes a fixed 1600×900 board. Layout coordinates do not follow the window.
 import assert from 'node:assert/strict';
 import { layout, BOARD_WIDTH, BOARD_HEIGHT } from '../src/layout.ts';
-import { letterboxBoard, restingView, shouldRefit } from '../web/board-scale.js';
+import { containAxis, letterboxBoard, restingView, shouldRefit, viewAfterViewportChange } from '../web/board-scale.js';
 
 function contained(boardW, boardH, viewW, viewH, view = letterboxBoard(boardW, boardH, viewW, viewH)) {
   assert(view.z > 0 && Number.isFinite(view.x) && Number.isFinite(view.y), view);
@@ -40,16 +40,41 @@ contained(BOARD_WIDTH, BOARD_HEIGHT, 1, 1, letterboxBoard(BOARD_WIDTH, BOARD_HEI
 
 const fit = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1064, 796);
 const cropped = restingView({ x: -400, y: 0, z: 2 }, fit);
-assert.equal(cropped.z, fit.z);
-assert.deepEqual(cropped, fit);
+assert.deepEqual(cropped, fit, 'a zoom above the letterbox is discarded');
 contained(BOARD_WIDTH, BOARD_HEIGHT, 1064, 796, cropped);
 assert.deepEqual(restingView(null, fit), fit);
 assert.deepEqual(restingView({ x: 1, y: 2, z: Number.NaN }, fit), fit);
 assert.deepEqual(restingView({ x: fit.x, y: fit.y, z: fit.z }, fit), fit);
+const kept = restingView({ x: 4, y: 18, z: fit.z - 0.05 }, fit);
+assert.deepEqual(kept, { x: 4, y: 18, z: fit.z }, 'a camera under the letterbox keeps its pan and clamps up to fit');
+assert.notDeepEqual(kept, cropped);
+
+const centered = (1064 - 1600 * fit.z) / 2;
+assert.equal(containAxis(centered, 1600 * fit.z, 1064), centered);
+assert.equal(containAxis(4, 1600 * fit.z, 1064), 4, 'pan inside the letterbox bars is kept');
+assert.equal(containAxis(-40, 1600 * fit.z, 1064), 0, 'pan that would crop is clamped');
+assert.equal(containAxis(80, 1600 * 1.2, 1064), 0, 'zoomed board cannot pan past the near edge');
+assert.equal(containAxis(-2000, 1600 * 1.2, 1064), 1064 - 1600 * 1.2, 'zoomed board cannot pan past the far edge');
 
 assert.equal(shouldRefit({ z: fit.z }, fit), true);
 assert.equal(shouldRefit({ z: fit.z + 0.2 }, fit), false);
 assert.equal(shouldRefit(null, fit), false);
+
+const beside = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1064 - 420, 796);
+let camera = { ...fit };
+camera = viewAfterViewportChange(camera, fit, beside, 1064 - 420);
+assert.deepEqual(camera, beside, 'opening the drawer refits a letterboxed board');
+camera = viewAfterViewportChange(camera, beside, fit, 1064);
+assert.deepEqual(camera, fit, 'closing the drawer restores the wide letterbox');
+
+const zoomed = { x: -80, y: 20, z: fit.z + 0.35 };
+const zoomedOpen = viewAfterViewportChange(zoomed, fit, beside, 1064 - 420);
+assert.deepEqual(zoomedOpen, zoomed, 'a zoomed-in camera survives the drawer opening');
+const zoomedClose = viewAfterViewportChange(zoomedOpen, beside, fit, 1064);
+assert.deepEqual(zoomedClose, zoomed, 'closing the drawer keeps that zoom');
+
+const tiny = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1, 796);
+assert.deepEqual(viewAfterViewportChange(fit, fit, tiny, 1), fit, 'a full-width drawer does not collapse the board');
 
 const items = [
   { id: 'a', type: 'monitor', title: 'a', createdAt: 1, x: 0, y: 0, w: 10, h: 10 },

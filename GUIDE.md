@@ -152,8 +152,8 @@ deleted. The UI exposes these as separate actions. CLI is `hud board clear <id>`
   charts beside it, using nonoverlapping rectangles inside `0..1600` × `0..900`.
 - Keep overview cards readable. If the board gets crowded, create separate boards per run or experiment.
   The board opens letterboxed into the window. Fit (`.`) returns to that view; zoom-out stops at Fit, zoom-in
-  at 300% (or Fit on an unusually large display), and panning cannot lose the board. A remembered zoom from a
-  larger window is discarded on open so the whole surface stays visible.
+  at 300% (or Fit on an unusually large display), and panning cannot lose the board. A remembered zoom above
+  that letterbox is discarded on open. A camera at or under the fit keeps its pan, clamped so the board stays visible.
 
 Existing boards are backed up before migration to this layout. Their cards and relationships are retained,
 and auto layout is enabled once during migration.

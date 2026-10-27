@@ -6,7 +6,7 @@ import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeli
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
-import { letterboxBoard, restingView, shouldRefit } from './board-scale.js';
+import { containAxis, letterboxBoard, restingView, viewAfterViewportChange } from './board-scale.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const GRID = 20;
@@ -473,11 +473,10 @@ function fittedView() {
   return letterboxBoard(b.w, b.h, r.w, r.h);
 }
 function refitIfLetterboxed() {
-  const wasFit = shouldRefit(S.view, fittedView());
+  const previous = fittedView();
   return () => {
     const next = viewport();
-    // A full-width drawer leaves no canvas; collapsing the board to a pixel would hide it on close.
-    if (wasFit && next.w >= 48) S.view = fittedView();
+    S.view = viewAfterViewportChange(S.view, previous, fittedView(), next.w);
     applyView();
   };
 }
@@ -485,8 +484,8 @@ function refitIfLetterboxed() {
 function applyView() {
   const b = boardSize(), r = viewport(), min = fittedView().z;
   S.view.z = clamp(S.view.z, min, Math.max(3, min));
-  S.view.x = b.w * S.view.z <= r.w ? (r.w - b.w * S.view.z) / 2 : clamp(S.view.x, r.w - b.w * S.view.z, 0);
-  S.view.y = b.h * S.view.z <= r.h ? (r.h - b.h * S.view.z) / 2 : clamp(S.view.y, r.h - b.h * S.view.z, 0);
+  S.view.x = containAxis(S.view.x, b.w * S.view.z, r.w);
+  S.view.y = containAxis(S.view.y, b.h * S.view.z, r.h);
   const { x, y, z } = S.view;
   world.style.width = b.w + 'px';
   world.style.height = b.h + 'px';
@@ -518,17 +517,13 @@ function fit(items) {
     S.view = fittedView();
     return applyView();
   }
-  const r = canvas.getBoundingClientRect();
-  if (!items.length) {
-    S.view = { x: 60, y: 60, z: 1 };
-    return applyView();
-  }
+  const v = viewport();
   const minX = Math.min(...items.map((i) => i.x)), minY = Math.min(...items.map((i) => i.y - (i.type === 'frame' ? 24 : 0)));
   const maxX = Math.max(...items.map((i) => i.x + i.w)), maxY = Math.max(...items.map((i) => i.y + i.h));
   const pad = 60;
-  const drawerW = S.drawer ? Math.min(drawerPixels(), r.width) : 0;
-  const z = clamp(Math.min((r.width - drawerW - pad * 2) / (maxX - minX), (r.height - pad * 2) / (maxY - minY)), 0.1, 1);
-  S.view = { z, x: (r.width - drawerW - (maxX - minX) * z) / 2 - minX * z, y: (r.height - (maxY - minY) * z) / 2 - minY * z };
+  const spanW = Math.max(1, maxX - minX), spanH = Math.max(1, maxY - minY);
+  const z = clamp(Math.min((Math.max(1, v.w - pad * 2)) / spanW, (Math.max(1, v.h - pad * 2)) / spanH), 0.1, 1);
+  S.view = { z, x: (v.w - spanW * z) / 2 - minX * z, y: (v.h - spanH * z) / 2 - minY * z };
   applyView();
 }
 
@@ -541,11 +536,10 @@ function focusItem(id) {
     return openDrawer(id);
   }
   if (S.mode !== 'canvas') setMode('canvas');
-  const r = canvas.getBoundingClientRect();
-  const drawerW = S.drawer ? Math.min(drawerPixels(), r.width) : 0;
+  const v = viewport();
   S.view.z = Math.max(S.view.z, 0.6);
-  S.view.x = (r.width - drawerW) / 2 - (it.x + it.w / 2) * S.view.z;
-  S.view.y = r.height / 2 - (it.y + it.h / 2) * S.view.z;
+  S.view.x = v.w / 2 - (it.x + it.w / 2) * S.view.z;
+  S.view.y = v.h / 2 - (it.y + it.h / 2) * S.view.z;
   applyView();
   select([id]);
   flash(id);
