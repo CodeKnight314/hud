@@ -259,8 +259,8 @@ The run inspector and the project inspector show that scope as a timeline, not a
 and when. Filter chips narrow the list. A read is oldest-first and one page can omit the newest entries, so the
 inspector follows the cursor until every retained entry for that scope is loaded. **copy for handoff** puts the
 standing findings, the dead ends and the latest handoff on the clipboard only when that forward read is complete; it
-refuses while newer entries are still missing. An entry that a later one corrects is listed under Corrected. If older
-entries were dropped, the copy says so and includes only the context still retained. A ticket that is not a run shows
+refuses while newer entries are still missing. A read that stops short is not kept, so the next look fetches again.
+An entry that a later one corrects is listed under Corrected. A ticket that is not a run shows
 its project's timeline, or the board timeline when it has no project. Agents remain the primary writers. Context
 entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
 

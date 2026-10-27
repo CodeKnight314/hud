@@ -1,6 +1,6 @@
 // hud — canvas client. No build step; plain ES module.
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
-import { contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
+import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
@@ -3040,7 +3040,8 @@ async function fillContext(it) {
   if (!data) {
     data = await loadContextPages((since) => readContextPage(scope, since));
     if (S.drawer !== it.id) return;
-    if (data.entries.length || data.complete || data.truncated) S.contextCache.set(scope, data);
+    // Entries from a mid-page miss are not a finished read. Caching them sticks until SSE drops the scope.
+    if (contextCacheable(data)) S.contextCache.set(scope, data);
   }
   const host = $('#context-box');
   if (!host || S.drawer !== it.id) return;
@@ -3053,8 +3054,7 @@ async function fillContext(it) {
     esc,
     when: (t) => `${ago(t)} · ${localDT(t)}`,
     nameOf: contextName,
-    complete: payload.complete !== false,
-    truncated: payload.truncated === true,
+    complete: payload.complete === true,
     newerMissing: payload.newerMissing === true,
   });
 }
@@ -3062,7 +3062,7 @@ async function fillContext(it) {
 function copyContextHandoff(it) {
   const scope = scopeFor(it);
   const payload = S.contextCache.get(scope);
-  if (!payload || payload.newerMissing === true || (payload.complete === false && payload.truncated !== true)) {
+  if (!contextCacheable(payload)) {
     return toast('newer entries were not loaded — handoff not copied');
   }
   const text = contextHandoff(payload.entries || [], {
@@ -3071,8 +3071,7 @@ function copyContextHandoff(it) {
     now: displayNow(),
     formatTime: (t) => localDT(t),
     nameOf: contextName,
-    complete: payload.complete !== false,
-    truncated: payload.truncated === true,
+    complete: true,
     newerMissing: false,
   });
   if (!text) return toast('newer entries were not loaded — handoff not copied');

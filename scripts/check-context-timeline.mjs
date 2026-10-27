@@ -1,6 +1,6 @@
 // Readable shared-context timeline: kind labels, filters, corrections, and handoff text.
 import assert from 'node:assert/strict';
-import { contextDataLine, contextHandoff, contextSummaryText, contextTimeline, loadContextPages, renderContextTimeline } from '../web/context-timeline.js';
+import { contextCacheable, contextDataLine, contextHandoff, contextSummaryText, contextTimeline, loadContextPages, renderContextTimeline } from '../web/context-timeline.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const when = (t) => `t${t}`;
@@ -123,7 +123,7 @@ assert.match(renderContextTimeline({
   nameOf: (id) => id,
   complete: true,
 }), /No dead ends in this run/);
-assert.match(renderContextTimeline({
+assert.doesNotMatch(renderContextTimeline({
   entries,
   filter: 'all',
   scope: 'run:run-1',
@@ -133,7 +133,7 @@ assert.match(renderContextTimeline({
   nameOf: (id) => id,
   complete: true,
   truncated: true,
-}), /older entries were dropped/);
+}), /older entries were dropped/, 'a fresh inspector read never learns that older entries were pruned');
 
 const paged = [];
 for (let i = 1; i <= 5; i++) paged.push({ id: `s${i}`, seq: i, t: i, actor: 'claude', kind: 'STATUS', text: `note ${i}` });
@@ -156,9 +156,28 @@ assert.equal(cut.complete, false);
 assert.equal(cut.newerMissing, true);
 assert.equal(cut.entries.some((entry) => entry.id === 'late-sum'), false, 'one oldest-first page drops the latest handoff');
 assert.equal(contextHandoff(cut.entries, { scope: 'run:busy', title: 'Busy run', complete: false, formatTime: when }), null);
-const retained = contextHandoff(full.entries, { scope: 'run:busy', title: 'Busy run', complete: true, truncated: true, formatTime: when });
-assert.match(retained, /^▲ Older entries were dropped; this handoff is the context still retained\.\n/);
-assert.match(retained, /latest handoff still stands/);
+assert.equal(contextCacheable(cut), false, 'a page cap is not a cache hit');
+assert.equal(contextCacheable(full), true);
+assert.equal(contextCacheable({ entries: [], complete: true, newerMissing: false }), true, 'an empty finished scope is cached');
+let reads = 0;
+const missed = await loadContextPages((since) => {
+  reads += 1;
+  if (reads === 1) return oldestFirst(since, 3);
+  return null;
+});
+assert.equal(missed.entries.length > 0, true, 'a mid-page miss still holds the first page');
+assert.equal(missed.newerMissing, true);
+assert.equal(missed.complete, false);
+assert.equal(contextCacheable(missed), false, 'entries from a mid-page miss must not be cached');
+const pruned = await loadContextPages(() => ({ entries: [], cursor: 0, complete: false, truncated: true }));
+assert.equal(pruned.truncated, true);
+assert.equal(pruned.newerMissing, true, 'a truncated page is still an unfinished read');
+assert.equal(contextCacheable(pruned), false);
+assert.equal(contextHandoff(pruned.entries, { scope: 'run:busy', title: 'Busy run', complete: false, truncated: true, formatTime: when }), null);
+const kept = contextHandoff(full.entries, { scope: 'run:busy', title: 'Busy run', complete: true, truncated: true, formatTime: when });
+assert.doesNotMatch(kept, /Older entries were dropped/);
+assert.match(kept, /^Handoff · Busy run\n/);
+assert.match(kept, /latest handoff still stands/);
 
 function section(text, name) {
   const match = text.match(new RegExp(`(?:^|\\n)${name}\\n([\\s\\S]*?)(?=\\n(?:Current handoff|Earlier handoffs|Dead ends|Findings|Progress|Corrected)\\n|$)`));
