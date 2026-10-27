@@ -470,7 +470,7 @@ route('GET', '/api/view-preview/:token', (_req, res, [token]) => {
   if (!p || p.expires < Date.now()) throw new HudError(404, 'preview expired');
   const fixture = JSON.stringify(viewFixture()).replaceAll('<', '\\u003c');
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; frame-src 'none'; base-uri 'none'" });
-  res.end(`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#050505;color:#e8e8e8;font:12px monospace}svg{display:block}</style><body><div id="out"></div><script type="module">
+  res.end(`<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#0e1218;color:#e6ebf2;font:13px/1.45 ui-sans-serif,system-ui,sans-serif}svg{display:block}</style><body><div id="out"></div><script type="module">
 import { render } from '/api/view-preview-source/${token}';
 import { helpers } from '/views.js';
 const errors = [];

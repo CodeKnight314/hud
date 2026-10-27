@@ -191,13 +191,13 @@ function createWindow(): void {
   });
 }
 
-const STARTING = `<body style="font:13px ui-monospace,monospace;background:#000;color:#8c8c8c;padding:40px">
+const STARTING = `<body style="font:14px/1.45 ui-sans-serif,system-ui,sans-serif;background:#0e1218;color:#9aa6b6;padding:40px">
   hud — starting server…</body>`;
 
 function showUnreachable(retrying = false): void {
-  const html = `<body style="font:13px ui-monospace,monospace;background:#000;color:#e8e8e8;padding:40px">
+  const html = `<body style="font:14px/1.45 ui-sans-serif,system-ui,sans-serif;background:#0e1218;color:#e6ebf2;padding:40px">
     <p>hud server is not reachable at <b>${url}</b>.</p>
-    <p style="color:#8c8c8c">${
+    <p style="color:#9aa6b6">${
       retrying
         ? 'Starting it again — this window reloads by itself once the server answers.'
         : 'Start it from the Server menu, or run <code>hud start</code> in a terminal.'

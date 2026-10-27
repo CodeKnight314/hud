@@ -172,7 +172,7 @@ export function registerMonitoring(ctx: Context) {
   }
   route('GET', '/api/program-preview/:id', (_req, res, [id]) => {
     if (!previews.has(decode(id!))) throw new HudError(404, 'preview expired');
-    send(res, 200, '<!doctype html><html><head><meta charset="utf-8"><style>html,body,#program{margin:0;width:100%;height:100%;background:#080808;color:#eee}</style></head><body><div id="program"></div><script type="module" src="/program-preview.js"></script></body></html>', 'text/html; charset=utf-8');
+    send(res, 200, '<!doctype html><html><head><meta charset="utf-8"><style>html,body,#program{margin:0;width:100%;height:100%;background:#0e1218;color:#e6ebf2}</style></head><body><div id="program"></div><script type="module" src="/program-preview.js"></script></body></html>', 'text/html; charset=utf-8');
   });
   route('GET', '/api/program-previews/:id', (_req, _res, [id]) => {
     const session = previews.get(decode(id!)); if (!session) throw new HudError(404, 'preview expired');

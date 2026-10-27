@@ -176,12 +176,13 @@ Comments are the shape to copy. A new verb replaces `comment` in every row befor
 - Zero runtime dependencies in the server. Use Node built-ins (`node:http`, `fetch`, `child_process`). Ask before adding a package.
   The only build-time dependency is esbuild (bundling for the desktop app); `electron`/`electron-builder` are dev
   dependencies of the packaging step, not of the server.
-- UI: vanilla JS, no framework or bundler. Visual language is a monochrome terminal style in a
-  monospace font, with state shown by glyphs (● ▲ ✕ ○ ◐ ✓), inverse video and dashed borders. Exactly
-  two semantic colours are allowed, and nothing else: **red** (`--red`) for a ticket that is blocked
-  or awaiting a decision, and for a monitor in error; **green** (`--green`) for done/ok. Everything
-  else stays black/white/gray. Colour never encodes anything a glyph doesn't also say. All colours
-  are CSS variables in `web/style.css`.
+- UI: vanilla JS, no framework or bundler. The visual language is the dark desktop system in
+  `STYLE.md`: layered surfaces, a sans-serif UI, monospace only for identifiers and measurements,
+  rounded solid borders, and an accent reserved for selection. State is still shown by glyphs
+  (● ▲ ✕ ○ ◐ ✓). Exactly two status colours are allowed: **red** (`--red`) for a ticket that is blocked
+  or awaiting a decision, and for a monitor in error; **green** (`--green`) for done/ok. `--accent` is
+  chrome, not status. Colour never encodes anything a glyph doesn't also say. Light mode is deferred.
+  All colours are CSS variables in `web/style.css`.
 - Match the surrounding code's density and naming. Keep comments short and only where the *why* isn't obvious.
 - Actor attribution: every mutation takes an `actor` (`user` = browser, `hud` = system/engine, otherwise the agent
   or process name). Preserve it.

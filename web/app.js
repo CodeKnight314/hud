@@ -2966,14 +2966,14 @@ function renderChart() {
   const fmtY = (y) => fmtVal(Math.abs(hi - lo) > 20 ? Math.round(y) : +y.toFixed(2));
   const thr = [['warnAbove', '4 3'], ['errorAbove', '1 0'], ['warnBelow', '4 3'], ['errorBelow', '1 0']]
     .filter(([k]) => !useP && it[k] != null && it[k] > lo && it[k] < hi)
-    .map(([k, dash]) => `<line x1="${L}" x2="${W - R}" y1="${Y(it[k])}" y2="${Y(it[k])}" stroke="#777" stroke-dasharray="${dash}" stroke-width="1"/>`)
+    .map(([k, dash]) => `<line x1="${L}" x2="${W - R}" y1="${Y(it[k])}" y2="${Y(it[k])}" stroke="var(--dim)" stroke-dasharray="${dash}" stroke-width="1"/>`)
     .join('');
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
-    <line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="#333"/><line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#333"/>
+    <line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--dim)"/><line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--dim)"/>
     <text x="${L - 4}" y="${T + 8}" text-anchor="end">${fmtY(hi)}</text><text x="${L - 4}" y="${H - B}" text-anchor="end">${fmtY(lo)}</text>
     <text x="${L}" y="${H - 4}">${hhmm(t0)}</text><text x="${W - R}" y="${H - 4}" text-anchor="end">now</text>
-    ${thr}<path d="${area}" fill="rgba(255,255,255,.06)"/><path d="${path}" fill="none" stroke="#fff" stroke-width="1.3"/>
-    <circle cx="${X(pts[pts.length - 1].t)}" cy="${Y(pts[pts.length - 1].y)}" r="2.5" fill="#fff"/></svg>
+    ${thr}<path d="${area}" fill="rgba(246,248,251,.08)"/><path d="${path}" fill="none" stroke="var(--hi)" stroke-width="1.5"/>
+    <circle cx="${X(pts[pts.length - 1].t)}" cy="${Y(pts[pts.length - 1].y)}" r="2.5" fill="var(--hi)"/></svg>
     <div class="meta">${useP ? 'progress %' : esc(it.unit || 'value')} · ${pts.length} points${tr.length ? ` (${tr.length} per-minute)` : ''}</div>`;
 }
 

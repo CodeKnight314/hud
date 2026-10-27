@@ -321,7 +321,7 @@ const TOOLS = [
   },
   {
     name: 'hud_dashboard',
-    description: 'Read or set a declarative dashboard spec. Use hud_readout to choose metrics, preview with dryRun before applying, then run hud_lint. Keep panels legible in hud’s monochrome terminal style; see hud_guide.',
+    description: 'Read or set a declarative dashboard spec. Use hud_readout to choose metrics, preview with dryRun before applying, then run hud_lint. Keep panels legible in hud’s dark desktop style; see hud_guide.',
     inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['get', 'set'] }, spec: { type: 'object' }, dryRun: { type: 'boolean' }, expectedRevision: { type: 'string' } } },
   },
   {
@@ -341,12 +341,12 @@ const TOOLS = [
   },
   {
     name: 'hud_graph',
-    description: 'Read, preview, apply, disable, or delete an item renderer program. Always preview before apply; bindings and capabilities must match the intended data and scope. Use the hud_guide resource for the API and monochrome rendering style.',
+    description: 'Read, preview, apply, disable, or delete an item renderer program. Always preview before apply; bindings and capabilities must match the intended data and scope. Use the hud_guide resource for the API and the dark desktop rendering style.',
     inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, action: { type: 'string', enum: ['get', 'preview', 'apply', 'disable', 'delete'] }, program: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', enum: ['html', 'javascript', 'svg'] }, description: { type: 'string' }, bindings: { type: 'array', items: { type: 'string' } }, capabilities: { type: 'array', items: { type: 'object', properties: { operation: { type: 'string' }, scope: { type: 'string' } } } } } }, expectedRevision: { type: 'string' } } },
   },
   {
     name: 'hud_canvas',
-    description: 'Read, preview, apply, disable, or delete a board canvas renderer program. Always preview before apply; keep charts readable in hud’s black, white, and gray style, with red/green reserved for stated status. See hud_guide.',
+    description: 'Read, preview, apply, disable, or delete a board canvas renderer program. Always preview before apply; keep charts readable on the dark desktop surface, with red and green reserved for stated status. See hud_guide.',
     inputSchema: { type: 'object', properties: { board: { type: 'string' }, action: { type: 'string', enum: ['get', 'preview', 'apply', 'disable', 'delete'] }, program: { type: 'object', properties: { code: { type: 'string' }, language: { type: 'string', enum: ['html', 'javascript', 'svg'] }, description: { type: 'string' }, bindings: { type: 'array', items: { type: 'string' } }, capabilities: { type: 'array', items: { type: 'object', properties: { operation: { type: 'string' }, scope: { type: 'string' } } } } } }, expectedRevision: { type: 'string' } } },
   },
   {
@@ -1304,7 +1304,7 @@ const INSTRUCTIONS =
   'hud is a live local dashboard shared with the human: tickets, monitors, on-canvas utilities and notes. ' +
   'For monitoring work, start with hud_readout, then use hud_dashboard, hud_annotate, and hud_compare as needed; run hud_lint after changes and hud_snapshot to retain a view. For custom renderers, inspect with hud_graph/hud_canvas, preview before apply, and bind only the required metric data. Read the hud://guide resource or call hud_guide for schemas and examples. ' +
   'To reset a board while keeping its identity and settings, use hud_clear_canvas or hud_board {action:"clear",id}; hud_board {action:"delete",id} deletes the board. ' +
-  'Visual style: use a monochrome terminal palette of black, white, and gray; reserve red for stated blocked/error/attention conditions and green for stated done/ok conditions. Every status color must have a readable label or glyph, and panels should stay concise and legible. ' +
+  'Visual style: hud is a dark desktop surface (see STYLE.md). Use the layered dark palette, a sans-serif UI, and monospace only for identifiers, code and measurements. Reserve red for stated blocked/error/attention conditions and green for stated done/ok conditions. Every status color must have a readable label or glyph. Do not use a terminal, CRT, or inverse-video look. Panels should stay concise and legible. ' +
   'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); use hud_runs for run summaries and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
   'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view opens rows in a scrollable sidebar and tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. ' +
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +

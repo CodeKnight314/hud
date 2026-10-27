@@ -27,7 +27,7 @@ export function programDocument(program: ProgramSpec, session: string, initialDa
   const bootstrap = `(() => {
     const token=${safeJSON(session)}, dataListeners=new Set(),resizeListeners=new Set(),disposeListeners=new Set(),pending=new Map(),outbox=[];let sequence=0,port;
     const send=(kind,extra={})=>{const message={hudProgram:token,kind,...extra};if(port)port.postMessage(message);else outbox.push(message)};
-    const hud=window.hud={data:${safeJSON(initialData)},size:{width:innerWidth,height:innerHeight},theme:{background:'#080808',foreground:'#eee',muted:'#888',red:'#ff5c5c',green:'#46d67a',font:'monospace'},
+    const hud=window.hud={data:${safeJSON(initialData)},size:{width:innerWidth,height:innerHeight},theme:{background:'#0e1218',foreground:'#e6ebf2',muted:'#9aa6b6',accent:'#8eb0ff',red:'#ff6d6d',green:'#3dcc7a',font:'Inter, ui-sans-serif, system-ui, sans-serif'},
       onData(fn){dataListeners.add(fn);return()=>dataListeners.delete(fn)},onResize(fn){resizeListeners.add(fn);return()=>resizeListeners.delete(fn)},onDispose(fn){disposeListeners.add(fn)},
       rendered(){requestAnimationFrame(()=>requestAnimationFrame(()=>send('rendered',{nonempty:!!document.body&&(!!document.body.textContent.trim()||!!document.querySelector('svg,canvas,img,input,button'))})))},
       error(message){send('error',{message:String(message).slice(0,2000)})},
@@ -43,5 +43,5 @@ export function programDocument(program: ProgramSpec, session: string, initialDa
     parent.postMessage({hudProgram:token,kind:'ready'},'*');
   })();`;
   const content = program.language === 'javascript' ? `<script>${program.code.replace(/<\/script/gi, '<\\/script')}</script>` : program.code;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>:root{color-scheme:dark;--fg:#eee;--bg:#080808;--muted:#888;--red:#ff5c5c;--green:#46d67a}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px monospace;width:100vw;height:100vh;min-height:100vh;overflow:auto}svg,canvas{max-width:100%}button,input,select{font:inherit;color:inherit;background:var(--bg);border:1px solid var(--muted)}</style><script>${bootstrap}</script></head><body>${content}</body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>:root{color-scheme:dark;--fg:#e6ebf2;--bg:#0e1218;--dim:#9aa6b6;--panel:#1b212b;--line:rgba(232,238,248,.08);--line2:rgba(232,238,248,.16);--red:#ff6d6d;--green:#3dcc7a;--accent:#8eb0ff}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 Inter,ui-sans-serif,system-ui,sans-serif;width:100vw;height:100vh;min-height:100vh;overflow:auto}svg,canvas{max-width:100%}button,input,select{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line2);border-radius:6px;padding:4px 8px}</style><script>${bootstrap}</script></head><body>${content}</body></html>`;
 }
