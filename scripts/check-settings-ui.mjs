@@ -219,6 +219,7 @@ async function run() {
   const prompts = [];
   const applied = [];
   let confirmInstall = false;
+  let failNextApply = false;
   const downloadFetcher = async (url) => {
     downloadCalls++;
     const target = String(url);
@@ -252,7 +253,10 @@ async function run() {
     downloadDirectory: join(fixtureRoot, 'downloads'),
     updateTarget: () => ({ platform: 'darwin', execPath: join(appRoot, 'Contents', 'MacOS', 'hud') }),
     confirmVerifiedUpdate: async (summary) => { prompts.push(summary); return confirmInstall; },
-    applyVerifiedUpdate: async (plan) => { applied.push(plan); },
+    applyVerifiedUpdate: async (plan) => {
+      if (failNextApply) { failNextApply = false; throw new Error('server changed during update'); }
+      applied.push(plan);
+    },
     visible: false,
   });
 
@@ -421,6 +425,11 @@ async function run() {
   await settingsController.checkAtLaunch();
   assert.equal(downloadCalls, callsAfterCancel, 'launch check does not download or install');
   confirmInstall = true;
+  failNextApply = true;
+  await click(primaryWindow, '#install-update');
+  await waitText(primaryWindow, '#action-status', 'server changed during update');
+  assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'a failed install removes the reconnect notice it just wrote');
+  assert.equal(applied.length, 0, 'a failed install does not keep the approved plan');
   await click(primaryWindow, '#install-update');
   await waitText(primaryWindow, '#action-status', 'Release checksum matched. HUD is quitting to install and relaunch.');
   assert.equal(applied.length, 1, 'approval replaces the app once');

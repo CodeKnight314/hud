@@ -9,7 +9,7 @@ import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
 import type { ClientId } from '../src/mcpinstall.ts';
 import { acknowledgeReconnect, armReconnectNotice, loadReconnectChecklist, readReconnectNotice } from '../src/reconnect.ts';
-import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
+import type { ReconnectChecklist, ReconnectClient, ReconnectNotice } from '../src/reconnect.ts';
 import { recordedInstallExe, installApprovedUpdate } from '../src/update-apply.ts';
 import type { UpdatePlan } from '../src/update-apply.ts';
 import { UpdateChecker } from '../src/updates.ts';
@@ -58,6 +58,21 @@ export function desktopSettings(options: {
   const armUpdateNotice = async () => {
     const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
     armReconnectNotice(options.dataDir, { reason: 'quit-for-update', fromVersion: options.version, clients });
+  };
+  const restoreNotice = (previous: ReconnectNotice | null) => {
+    if (previous) armReconnectNotice(options.dataDir, previous);
+    else acknowledgeReconnect(options.dataDir);
+  };
+  const runArmed = async (action: () => Promise<void>) => {
+    const previous = readReconnectNotice(options.dataDir);
+    await armUpdateNotice();
+    try {
+      await action();
+    } catch (error) {
+      // No relaunch is coming, so the snapshot we just armed would offer a reconnect that never happened.
+      restoreNotice(previous);
+      throw error;
+    }
   };
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
   const reconnectState = async () => {
@@ -147,9 +162,9 @@ export function desktopSettings(options: {
             return choice.response === 1;
           }),
           apply: async (plan) => {
-            if (!options.applyVerifiedUpdate) throw new Error('In-app update is only available in the packaged app.');
-            await armUpdateNotice();
-            await options.applyVerifiedUpdate(plan);
+            const apply = options.applyVerifiedUpdate;
+            if (!apply) throw new Error('In-app update is only available in the packaged app.');
+            await runArmed(() => apply(plan));
           },
           target: options.updateTarget?.() ?? {
             platform: process.platform,
@@ -163,20 +178,12 @@ export function desktopSettings(options: {
       } finally { changing = false; }
     }
     if (action === 'quit-for-update') {
-      if (!options.packaged || !options.quitForUpdate) throw new Error('Quit for update is only available in the packaged app.');
+      const quit = options.quitForUpdate;
+      if (!options.packaged || !quit) throw new Error('Quit for update is only available in the packaged app.');
       if (changing) throw new Error('Wait for the current Settings change to finish before quitting.');
       changing = true;
       try {
-        const previous = readReconnectNotice(options.dataDir);
-        await armUpdateNotice();
-        try {
-          await options.quitForUpdate();
-        } catch (error) {
-          // No relaunch is coming, so the snapshot we just armed would offer a reconnect that never happened.
-          if (previous) armReconnectNotice(options.dataDir, previous);
-          else acknowledgeReconnect(options.dataDir);
-          throw error;
-        }
+        await runArmed(() => quit());
       } finally { changing = false; }
       return;
     }

@@ -1112,7 +1112,7 @@ installed app unchanged and deletes the download. HUD never downloads or install
 HUD opens** only looks for a release. **Download in browser** and **Quit HUD for update** remain for a manual replace.
 Quitting for an update backs up the board and stops the background server even when Keep server running after quit is
 enabled. An in-app install does the same backup, writes `reconnect.json` beside the board (the running version and the
-clients connected at that moment), stops the server, and keeps it stopped until this process quits. It then replaces a
+clients that were live), stops the server, and keeps it stopped until this process quits. It then replaces a
 packaged `hud.app`, `hud.exe`, the running AppImage file, or `/opt/hud` and opens the new version. An AppImage is
 replaced in place, so a command shim that execs that same file keeps working, and the child that kept the server running
 is stopped before the file is replaced. On macOS the replaced `hud.app` has the download's quarantine attribute removed

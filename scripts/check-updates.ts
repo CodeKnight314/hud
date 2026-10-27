@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { armReconnectNotice, readReconnectNotice } from '../src/reconnect.ts';
+import { acknowledgeReconnect, armReconnectNotice, clientsFromSessions, readReconnectNotice } from '../src/reconnect.ts';
 import { backendUpdateAction, compareVersions, installerName, prepareBackendUpdate, releaseInfo, stopBackendForUpdate, UpdateChecker } from '../src/updates.ts';
 import { checksumFileUrl, downloadVerifiedAsset, helperLaunchSpec, installApprovedUpdate, parseSha256Sums, planPackagedUpdate, posixUpdateHelper, recordedInstallExe, rejectServerRestartDuringUpdate, releaseDownloadTarget, runVerifiedUpdateHandoff, windowsUpdateHelper } from '../src/update-apply.ts';
 import type { HealthInfo } from '../src/client.ts';
@@ -356,12 +356,23 @@ assert.equal(tamperApplies, 0);
 
 const noticeDir = join(root, 'reconnect-board');
 mkdirSync(noticeDir);
+const snapshotted = clientsFromSessions([
+  { id: 'claude', name: 'Claude Code', actor: 'claude', kind: 'agent', clientVersion: '0.1.1', live: true },
+  { id: 'ended', name: 'Ended', actor: 'claude', kind: 'agent', clientVersion: '0.1.0', live: false },
+  { id: 'shell', name: 'shell', actor: 'hud', kind: 'cli', live: true },
+]);
+assert.deepEqual(snapshotted.map((item) => item.id), ['claude', 'shell']);
+assert.equal(snapshotted.every((item) => item.live), true);
 const armed = armReconnectNotice(noticeDir, {
   reason: 'quit-for-update', fromVersion: '0.1.1', at: 10,
-  clients: [{ id: 'claude', name: 'Claude Code', actor: 'claude', kind: 'agent', version: '0.1.1', live: true }, { id: '', name: 'drop', actor: 'x', kind: 'agent', live: true }],
+  clients: [...snapshotted, { id: 'ended', name: 'Ended', actor: 'claude', kind: 'agent', version: '0.1.0', live: false }, { id: '', name: 'drop', actor: 'x', kind: 'agent', live: true }],
 });
-assert.equal(armed.clients.length, 1);
+assert.deepEqual(armed.clients.map((item) => item.id), ['claude', 'shell']);
 assert.deepEqual(readReconnectNotice(noticeDir), armed);
+acknowledgeReconnect(noticeDir);
+assert.equal(readReconnectNotice(noticeDir), null);
+acknowledgeReconnect(noticeDir);
+armReconnectNotice(noticeDir, { reason: 'quit-for-update', fromVersion: '0.1.1', at: 10, clients: snapshotted });
 writeFileSync(join(noticeDir, 'reconnect.json'), JSON.stringify({ reason: 'other', fromVersion: '0.1.1', at: 1, clients: [] }));
 assert.equal(readReconnectNotice(noticeDir), null);
 
