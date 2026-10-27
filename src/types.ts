@@ -517,6 +517,27 @@ export interface QueueResult {
 }
 
 
+/** a durable snapshot of one finished run's context and attachment bytes */
+export interface RunContextExport {
+  runId: string;
+  ident: string;
+  /** file name under `<data>/backups`, never an absolute path */
+  name: string;
+  bytes: number;
+  entries: number;
+  /** attachment files packed into the zip */
+  attachments: number;
+  /** attachment ids whose bytes were missing or did not match the stored hash */
+  missing: string[];
+}
+
+export interface RunContextExportFile {
+  name: string;
+  runId: string;
+  t: number;
+  bytes: number;
+}
+
 export interface RunOverview {
   id: string;
   uuid?: string;

@@ -1,11 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord } from './types.ts';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, sep } from 'node:path';
+import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord } from './types.ts';
 import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
+import { hashBytes, readAttachmentBytes } from './attachments.ts';
+import { buildZip, parseContextExportName, renderRunMarkdown, uniqueZipNames, zipSegment } from './context-export.ts';
 
 export class HudError extends Error {
   status: number;
@@ -1331,6 +1333,154 @@ export class Store extends EventEmitter {
     return [...rows.values()].sort((a, b) => b.lastAt - a.lastAt || a.scope.localeCompare(b.scope));
   }
 
+  private runTicket(ref: string): Item {
+    const it = this.get(this.resolveId(String(ref)));
+    if (it.type !== 'ticket') throw new HudError(400, `${it.id} is a ${it.type}, not a run ticket`);
+    if (!it.tags?.some((t) => t.toLowerCase() === 'run')) throw new HudError(400, `${this.ident(it)} is not tagged run`);
+    return it;
+  }
+
+  /** `context-<id>-<YYYYMMDD-HHMMSS>[-n].zip` inside backups/. Not part of the state-json rotation. */
+  private contextExportName(runId: string): string {
+    if (!/^[A-Za-z0-9][\w.-]{0,63}$/.test(runId)) throw new HudError(400, 'run id cannot be used in an export name');
+    const d = new Date();
+    const p = (n: number, w = 2) => String(n).padStart(w, '0');
+    const ts = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+    let name = `context-${runId}-${ts}.zip`;
+    for (let n = 2; existsSync(join(this.backupDir, name)); n++) {
+      if (n > 1000) throw new HudError(409, 'too many context exports in the same second');
+      name = `context-${runId}-${ts}-${n}.zip`;
+    }
+    return name;
+  }
+
+  /**
+   * Snapshot a finished run's shared context and attachment bytes to `backups/context-<id>-<ts>.zip`.
+   * Entries are the whole retained `state.context` for that run, not one page of `contextRead`.
+   * The zip holds `context.md` plus the files. The live log is left in place; state backups do not rotate these files.
+   * A missing file is listed in `missing` and omitted. When the file on disk differs from the stored hash or size,
+   * the zip packs those bytes and the markdown records their sha256 and length.
+   */
+  exportRunContext(ref: string, actor: string): RunContextExport {
+    const it = this.runTicket(ref);
+    if (!this.isFinished(it)) throw new HudError(409, `${this.ident(it)} is ${it.status ?? 'todo'}; export a finished run`, { code: 'unfinished' });
+    const entries = this.state.context.filter((e) => e.scopeType === 'run' && e.scopeId === it.id).sort((a, b) => a.seq - b.seq);
+    const wanted = new Map<string, AttachmentRecord>();
+    for (const entry of entries) for (const id of entry.attachments ?? []) {
+      const record = this.state.attachments[id];
+      if (record) wanted.set(record.id, record);
+    }
+    const scope = `run:${it.id}`;
+    for (const record of Object.values(this.state.attachments)) if (record.scope === scope) wanted.set(record.id, record);
+    const records = [...wanted.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    const missing: string[] = [];
+    const packed: { id: string; name: string; sha256: string; bytes: number; scope?: string; path?: string; note?: string; data?: Buffer; desired: string }[] = [];
+    for (const record of records) {
+      const desired = `attachments/${zipSegment(record.id)}/${zipSegment(record.name)}`;
+      let data: Buffer | undefined;
+      let note: string | undefined;
+      let sha256 = record.sha256;
+      let bytes = record.bytes;
+      try {
+        data = readAttachmentBytes(record);
+        sha256 = hashBytes(data);
+        bytes = data.length;
+        if (sha256 !== record.sha256 || bytes !== record.bytes) note = `stored ${record.sha256} (${record.bytes} bytes) differed; packed the file on disk`;
+      } catch {
+        note = 'file missing';
+        missing.push(record.id);
+        data = undefined;
+      }
+      packed.push({
+        id: record.id, name: record.name, sha256, bytes,
+        ...(record.scope ? { scope: record.scope } : {}), desired, ...(data ? { data } : {}), ...(note ? { note } : {}),
+      });
+    }
+    let paths: string[];
+    try {
+      paths = uniqueZipNames(packed.filter((file) => file.data).map((file) => file.desired), ['context.md']);
+    } catch (e) {
+      throw new HudError(500, `could not build context export: ${(e as Error).message}`);
+    }
+    let pathAt = 0;
+    for (const file of packed) if (file.data) file.path = paths[pathAt++]!;
+    const markdown = renderRunMarkdown({
+      ident: this.ident(it), id: it.id, title: it.title, board: it.board, status: it.status ?? 'todo', actor,
+      exportedAt: new Date().toISOString(),
+      entries: entries.map((entry) => ({
+        seq: entry.seq, id: entry.id, t: new Date(entry.t).toISOString(), actor: entry.actor,
+        ...(entry.session ? { session: entry.session } : {}), kind: entry.kind, text: entry.text,
+        ...(entry.data ? { data: entry.data } : {}),
+        ...(entry.refs?.length ? { refs: entry.refs.map((id) => this.identOf(id)) } : {}),
+        ...(entry.attachments?.length ? { attachments: entry.attachments } : {}),
+        ...(entry.corrects ? { corrects: entry.corrects } : {}),
+      })),
+      files: packed.map(({ data: _data, desired: _desired, ...meta }) => meta),
+    });
+    let body: Buffer;
+    try {
+      body = buildZip([
+        { name: 'context.md', data: Buffer.from(markdown, 'utf8') },
+        ...packed.filter((file): file is typeof file & { path: string; data: Buffer } => !!file.data && !!file.path).map((file) => ({ name: file.path, data: file.data })),
+      ]);
+    } catch (e) {
+      throw new HudError(500, `could not build context export: ${(e as Error).message}`);
+    }
+    const name = this.contextExportName(it.id);
+    mkdirSync(this.backupDir, { recursive: true });
+    const dest = join(this.backupDir, name);
+    const tmp = join(this.backupDir, `.${name}.${process.pid}.${++this.tmpSeq}.tmp`);
+    try {
+      writeFileSync(tmp, body, { mode: 0o600 });
+      renameSync(tmp, dest);
+    } catch (e) {
+      try { rmSync(tmp, { force: true }); } catch {}
+      throw new HudError(500, `could not write context export: ${(e as Error).message}`);
+    }
+    this.addComment(it, actor, `context export backups/${name}`);
+    it.updatedAt = now();
+    it.updatedBy = actor;
+    this.emitEvent({ kind: 'item', item: it, actor });
+    const included = packed.filter((file) => file.data).length;
+    this.log(actor, 'context.export', `exported ${this.ident(it)} to ${name} (${entries.length} entries, ${included} files)`, it);
+    this.save();
+    return { runId: it.id, ident: this.ident(it), name, bytes: body.length, entries: entries.length, attachments: included, missing };
+  }
+
+  /** context snapshots in backups/, newest first. `ref` limits them to one run (id or ident). */
+  listRunExports(ref?: string): RunContextExportFile[] {
+    const id = ref === undefined ? undefined : this.resolveId(String(ref));
+    let names: string[] = [];
+    try { names = readdirSync(this.backupDir); } catch { return []; }
+    const rows: RunContextExportFile[] = [];
+    for (const name of names) {
+      const parsed = parseContextExportName(name);
+      if (!parsed || (id !== undefined && parsed.runId !== id)) continue;
+      let st;
+      try { st = statSync(join(this.backupDir, name)); } catch { continue; }
+      if (!st.isFile()) continue;
+      rows.push({ name, runId: parsed.runId, t: st.mtimeMs, bytes: st.size });
+    }
+    rows.sort((a, b) => b.t - a.t || (a.name < b.name ? 1 : -1));
+    return rows;
+  }
+
+  /** bytes of one snapshot. The name has to belong to that run and stay inside backups/. */
+  readRunExport(ref: string, name: string): Buffer {
+    const parsed = parseContextExportName(name);
+    if (!parsed) throw new HudError(400, 'bad export name');
+    const id = this.resolveId(String(ref));
+    if (parsed.runId !== id) throw new HudError(404, `no context export "${name.slice(0, 80)}"`);
+    const path = join(this.backupDir, name);
+    let st;
+    try { st = lstatSync(path); } catch { throw new HudError(404, `no context export "${name}"`); }
+    if (st.isSymbolicLink() || !st.isFile()) throw new HudError(403, 'context export is not a regular file');
+    const real = realpathSync(path);
+    const root = realpathSync(this.backupDir);
+    if (real !== root && !real.startsWith(root + sep)) throw new HudError(403, 'context export escapes the backup dir');
+    return readFileSync(real);
+  }
+
   // ---------- attachment metadata (bytes are handled by attachments.ts) ----------
 
   attachmentAdd(input: { id?: string; board: string; scope?: string; name: string; kind?: AttachmentRecord['kind']; mime?: string; bytes: number; sha256: string; session?: string; target?: string; baseId?: string; baseSha256?: string; corrects?: string }, actor: string): AttachmentRecord {
@@ -2317,8 +2467,15 @@ export class Store extends EventEmitter {
    * An agent signals it is finished. With ids: those items are marked complete. Without: only what this
    * actor created or is assigned — open tickets and push/manual monitors — never tickets awaiting a human
    * decision, canceled tickets or other actors' work. Polled monitors report again on their next run.
+   * `export` snapshots each run this call marks done. Named ids also snapshot a run that is already done
+   * or canceled, which is how a failed zip is retried. `exportAll` snapshots every done or canceled run
+   * this actor owns on the board. A bare export does not walk that history. `exportAll` does not mark a
+   * canceled run done; naming it in `ids` still completes it, like any other finish target.
    */
-  finish(input: { board?: string; ids?: string[]; note?: string; organize?: boolean }, actor: string): { board: string; done: string[] } {
+  finish(input: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean; exportAll?: boolean }, actor: string): { board: string; done: string[]; exports?: RunContextExport[] } {
+    if (input.export !== undefined && typeof input.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
+    if (input.exportAll !== undefined && typeof input.exportAll !== 'boolean') throw new HudError(400, 'exportAll must be a boolean');
+    if (input.exportAll && !input.export) throw new HudError(400, 'exportAll requires export');
     const ids = Array.isArray(input.ids) ? input.ids : [];
     const first = ids.length ? this.get(this.resolveId(String(ids[0]), input.board)) : undefined;
     const board = this.requireBoard(input.board ?? first?.board).id;
@@ -2350,10 +2507,28 @@ export class Store extends EventEmitter {
         done.push(it.id);
       }
     }
+    const want = new Set<string>();
+    if (input.export) {
+      const isRun = (item: Item | undefined): item is Item =>
+        !!item && item.board === board && item.type === 'ticket' && !!item.tags?.some((t) => t.toLowerCase() === 'run');
+      for (const id of done) if (isRun(this.state.items[id])) want.add(id);
+      if (ids.length) {
+        for (const raw of ids) {
+          const item = this.state.items[this.resolveId(String(raw), board)];
+          if (isRun(item) && this.isFinished(item)) want.add(item.id);
+        }
+      }
+      if (input.exportAll) {
+        for (const item of Object.values(this.state.items)) {
+          if (isRun(item) && mine(item) && this.isFinished(item)) want.add(item.id);
+        }
+      }
+    }
     if (input.organize !== false) this.organize(board, actor, true);
     if (!done.length) this.log(actor, 'finish', `finished ${board}: nothing left to complete`);
     this.save();
-    return { board, done };
+    const exports = input.export ? [...want].map((id) => this.exportRunContext(id, actor)) : undefined;
+    return exports ? { board, done, exports } : { board, done };
   }
 
   /** Validate a whole reading tree (and the ids it would create) before anything is applied. */

@@ -13,6 +13,7 @@ import { coordinationDoc, GuideError } from './guide.ts';
 import { ROOT, config } from './config.ts';
 import { publicState, registerMonitoring } from './monitoring-server.ts';
 import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, textOf, writeAttachmentBytes } from './attachments.ts';
+import { zipEntry } from './context-export.ts';
 import { unifiedDiff } from './diff.ts';
 import { capturePage } from './render.ts';
 import { deleteViewFile, generateViewCode, installUntrustedView, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
@@ -771,9 +772,32 @@ route('POST', '/api/items/:id/decide', async (req, _s, [id], q) => {
 /** an agent signals it is finished: complete its items and tidy the board */
 route('POST', '/api/finish', async (req) => {
   const b = await readObj(req);
-  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize }, actorOf(req, b));
+  if (b.export !== undefined && typeof b.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
+  if (b.exportAll !== undefined && typeof b.exportAll !== 'boolean') throw new HudError(400, 'exportAll must be a boolean');
+  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize, export: b.export, exportAll: b.exportAll }, actorOf(req, b));
   // report idents so the CLI/MCP messages read the same as everywhere else
   return { ...r, done: r.done.map((x: string) => store.identOf(store.resolveId(x))) };
+});
+route('POST', '/api/runs/:id/export', (req, _res, [id]) => store.exportRunContext(rid(id), actorOf(req)));
+route('GET', '/api/runs/exports', () => store.listRunExports());
+route('GET', '/api/runs/:id/exports', (_req, _res, [id]) => store.listRunExports(rid(id)));
+route('GET', '/api/runs/:id/exports/:name', (_req, res, [id, name], q) => {
+  const safe = dec(name);
+  const bytes = store.readRunExport(rid(id), safe);
+  const format = q.get('format');
+  if (format === 'markdown') {
+    let md: Buffer;
+    try { md = zipEntry(bytes, 'context.md'); } catch (e) { throw new HudError(500, (e as Error).message); }
+    return send(res, 200, md.toString('utf8'), 'text/markdown; charset=utf-8');
+  }
+  if (format !== null && format !== 'zip') throw new HudError(400, 'format must be markdown or zip');
+  res.writeHead(200, {
+    'content-type': 'application/zip',
+    'content-length': bytes.length,
+    'content-disposition': `attachment; filename="${safe.replace(/"/g, '')}"`,
+    'cache-control': 'no-store',
+  });
+  res.end(bytes);
 });
 route('POST', '/api/monitors/:id/push', async (req, _s, [id], q) => {
   const b = await readObj(req);

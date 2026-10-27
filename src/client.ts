@@ -11,7 +11,7 @@ import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
-import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
+import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunContextExport, RunContextExportFile, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
 import type { ViewInstall, ViewReview, ViewReviewRefusal } from './views.ts';
 
 export interface HudOptions {
@@ -469,8 +469,8 @@ export class Hud {
   decide(id: string, optionId: string, note?: string, decisionVersion?: string): Promise<Item> {
     return this.request('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId, note, decisionVersion });
   }
-  /** Signal that work is finished: complete the board's items (or the named ones) and tidy up. */
-  finish(opts: { board?: string; ids?: string[]; note?: string; organize?: boolean } = {}): Promise<{ board: string; done: string[] }> {
+  /** Signal that work is finished: complete the board's items (or the named ones) and tidy up. `export` snapshots runs this call finishes; `exportAll` also snapshots owned finished runs. */
+  finish(opts: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean; exportAll?: boolean } = {}): Promise<{ board: string; done: string[]; exports?: RunContextExport[] }> {
     return this.request('POST', '/api/finish', opts);
   }
   /** Report a reading; creates a push monitor named `id` if it doesn't exist. */
@@ -585,6 +585,22 @@ export class Hud {
   }
   contextScopes(board?: string): Promise<{ scope: string; scopeType: string; scopeId: string; board: string; count: number; lastAt: number }[]> {
     return this.request('GET', '/api/context/scopes' + qs({ board }));
+  }
+  /** Snapshot a finished run's context and attachment bytes to backups/context-<id>-<ts>.zip. */
+  exportRun(id: string): Promise<RunContextExport> {
+    return this.request('POST', `/api/runs/${enc(id)}/export`);
+  }
+  runExports(id?: string): Promise<RunContextExportFile[]> {
+    return this.request('GET', id ? `/api/runs/${enc(id)}/exports` : '/api/runs/exports');
+  }
+  runExportMarkdown(id: string, name: string): Promise<string> {
+    return this.request('GET', `/api/runs/${enc(id)}/exports/${enc(name)}?format=markdown`);
+  }
+  async runExportBytes(id: string, name: string): Promise<Buffer> {
+    await this.ensureServer();
+    const res = await fetch(`${this.url}/api/runs/${enc(id)}/exports/${enc(name)}`, { headers: { 'x-hud-actor': enc(this.actor) }, signal: AbortSignal.timeout(this.timeout) });
+    if (!res.ok) throw new HudRequestError(res.status, `${res.status}: could not read context export ${name}`);
+    return Buffer.from(await res.arrayBuffer());
   }
   // ---------- attachments ----------
   attachmentAdd(input: { board?: string; scope?: string; name: string; kind?: 'file' | 'text' | 'diff'; mime?: string; target?: string; baseId?: string; baseSha256?: string; corrects?: string; content: Buffer | string }): Promise<AttachmentRecord> {

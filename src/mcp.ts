@@ -438,7 +438,7 @@ const TOOLS = [
   {
     name: 'hud_finish',
     description:
-      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Polled monitors will report again on their next run.',
+      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Pass export:true to snapshot each run this call finishes to backups/context-<id>-<ts>.zip. Pass ids to also snapshot a run that is already done or canceled. Pass exportAll:true with export to snapshot every done or canceled run you own on the board. A bare export does not re-snapshot finished history. Polled monitors will report again on their next run.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -446,6 +446,8 @@ const TOOLS = [
         ids: { type: 'array', items: { type: 'string' }, description: 'finish just these items' },
         note: { type: 'string', description: 'added as a final comment' },
         organize: { type: 'boolean', description: 'tidy the board afterwards (default true)' },
+        export: { type: 'boolean', description: 'snapshot runs this call finishes (context markdown plus attachment bytes) under backups/. With ids, also snapshot those runs if they are already done or canceled' },
+        exportAll: { type: 'boolean', description: 'with export, also snapshot every done or canceled run you own on the board. Requires export' },
       },
     },
   },
@@ -498,11 +500,11 @@ const TOOLS = [
   {
     name: 'hud_context',
     description:
-      'Shared, append-only context for a run, project or board. Publish typed entries — FACT (a finding), FAIL (a contradicted approach), SUMMARY (state of the work), STATUS (short progress note) — and read only what changed since your last read. Corrections are new entries with corrects:<entryId>; entries are never edited.',
+      'Shared, append-only context for a run, project or board. Publish typed entries — FACT (a finding), FAIL (a contradicted approach), SUMMARY (state of the work), STATUS (short progress note) — and read only what changed since your last read. Corrections are new entries with corrects:<entryId>; entries are never edited. export writes a finished run\'s context and attachment bytes to backups/context-<id>-<ts>.zip; exports lists those snapshots.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['publish', 'read', 'scopes'], description: 'default: read' },
+        action: { type: 'string', enum: ['publish', 'read', 'scopes', 'export', 'exports'], description: 'default: read' },
         scope: { type: 'string', description: 'run:<uuid> (ticket id from hud_get, tagged run), project:<id> or board:<board id>' },
         kind: { type: 'string', enum: ['FACT', 'FAIL', 'SUMMARY', 'STATUS'], description: 'publish: entry type; read: comma-separated filter' },
         text: { type: 'string', description: 'publish: the finding or correction (≤4 KB)' },
@@ -989,12 +991,24 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       const action = args.action ?? 'read';
       const session = String(args.session ?? sessionName());
       if (action === 'scopes') return cap(contextScopesMarkdown(await hud.contextScopes(args.board)));
+      if (action === 'export' || action === 'exports') {
+        const scope = String(args.scope ?? '');
+        if (action === 'export') {
+          if (!scope.startsWith('run:')) throw new Error('export needs scope run:<ticket>');
+          const exported = await hud.exportRun(scope.slice(4));
+          const missing = exported.missing.length ? `; missing ${exported.missing.join(', ')}` : '';
+          return `exported ${exported.ident} to backups/${exported.name} (${exported.entries} context entries, ${exported.attachments} attachments, ${exported.bytes} bytes)${missing}`;
+        }
+        const rows = await hud.runExports(scope ? (scope.startsWith('run:') ? scope.slice(4) : scope) : undefined);
+        if (!rows.length) return 'no context exports';
+        return cap(rows.map((row) => `${row.name}  ${row.runId}  ${row.bytes}b`).join('\n'));
+      }
       if (action === 'publish') {
         if (!args.scope || !args.kind || !args.text) throw new Error('scope, kind and text are required to publish');
         const e = await hud.contextPublish({ scope: args.scope, kind: args.kind, text: args.text, data: args.data, refs: args.refs, attachments: args.attachments, corrects: args.corrects, session });
         return `published ${e.kind} #${e.seq} ${e.scope} id=${e.id}`;
       }
-      if (action !== 'read') throw new Error('action must be publish|read|scopes');
+      if (action !== 'read') throw new Error('action must be publish|read|scopes|export|exports');
       const r = await hud.contextRead({ scope: args.scope, since: args.since, kinds: args.kind ? String(args.kind).split(',') : undefined, limit: args.limit, session, mark: args.mark });
       return cap(contextMarkdown(r, args.scope));
     }
@@ -1202,8 +1216,9 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_finish': {
       await needBoard(args.board);
-      const r = await hud.finish({ board: args.board, ids: args.ids, note: args.note, organize: args.organize });
-      return r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`;
+      const r = await hud.finish({ board: args.board, ids: args.ids, note: args.note, organize: args.organize, export: args.export, exportAll: args.exportAll });
+      const exported = r.exports?.length ? `\n${r.exports.map((e) => `exported ${e.ident} → backups/${e.name} (${e.entries} entries, ${e.attachments} files)`).join('\n')}` : '';
+      return (r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`) + exported;
     }
   }
   throw new Error(`unknown tool ${name}`);

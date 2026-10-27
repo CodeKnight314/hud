@@ -25,6 +25,34 @@ async function ok(path, init, session) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function mcpText(tool, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [join(root, 'src/mcp.ts')], {
+      cwd: root,
+      env: { ...process.env, HUD_SCRATCH: '1', HUD_PORT: base.port, HUD_URL: base.origin, HUD_ACTOR: 'api-coordination-check' },
+    });
+    let out = '';
+    const timer = setTimeout(() => { child.kill(); reject(new Error(`MCP ${tool} timed out`)); }, 30000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      for (const line of out.split('\n').filter(Boolean)) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.id !== 2) continue;
+          clearTimeout(timer);
+          child.kill();
+          const text = msg.result?.content?.[0]?.text ?? '';
+          if (msg.result?.isError) reject(new Error(text));
+          else resolve(text);
+        } catch {}
+      }
+    });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } }) + '\n');
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: tool, arguments: args } }) + '\n');
+  });
+}
+
 async function cli(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(root, 'bin/hud.js'), ...args], {
@@ -139,6 +167,35 @@ try {
   const cliSession = `api-cli-${nonce}`;
   const claimOut = JSON.parse(await cli(['claim', t2.id, '--session', cliSession, '--json']));
   assert.equal(claimOut.session, cliSession, 'CLI claims through the same route');
+
+  // finished-run context export: refused until the run is done, then zip + markdown on every surface
+  const early = await req(`/api/runs/${encodeURIComponent(run.id)}/export`, { method: 'POST' });
+  assert.equal(early.res.status, 409, 'unfinished run is not exported');
+  assert.equal(early.body.code, 'unfinished', 'unfinished export carries a code');
+  const finished = await ok('/api/finish', { method: 'POST', body: { ids: [run.id], export: true, organize: false } });
+  assert.equal(finished.exports?.length, 1, 'finish snapshots the run');
+  const exp = finished.exports[0];
+  const md = await ok(`/api/runs/${encodeURIComponent(run.id)}/exports/${encodeURIComponent(exp.name)}?format=markdown`);
+  assert.match(String(md), /first finding/, 'markdown export contains the run context');
+  assert.match(String(md), /peer woke you/, 'markdown export keeps later entries');
+  const zipRes = await fetch(new URL(`/api/runs/${encodeURIComponent(run.id)}/exports/${encodeURIComponent(exp.name)}`, base), { headers: { 'x-hud-actor': 'api-coordination-check' } });
+  assert.equal(zipRes.status, 200, 'zip download');
+  assert.match(zipRes.headers.get('content-type') || '', /zip/);
+  const zipBuf = Buffer.from(await zipRes.arrayBuffer());
+  assert.equal(zipBuf.subarray(0, 2).toString(), 'PK', 'download is a zip');
+  assert.ok(zipBuf.includes(Buffer.from('alpha\nbeta\n')), 'zip keeps attachment bytes');
+  const listed = await ok(`/api/runs/${encodeURIComponent(run.id)}/exports`);
+  assert.ok(listed.some((row) => row.name === exp.name), 'export is listed');
+  const all = await ok('/api/runs/exports');
+  assert.ok(all.some((row) => row.name === exp.name), 'global export list includes the snapshot');
+  const escaped = await req(`/api/runs/${encodeURIComponent(run.id)}/exports/${encodeURIComponent('../state.json')}`);
+  assert.equal(escaped.res.status, 400, 'export names cannot escape backups');
+  const cliExport = JSON.parse(await cli(['context', 'export', run.id, '--json']));
+  assert.equal(cliExport.runId, run.id, 'CLI exports the finished run');
+  const cliList = JSON.parse(await cli(['context', 'exports', run.id, '--json']));
+  assert.ok(cliList.some((row) => row.name === cliExport.name), 'CLI lists the snapshot');
+  const mcpExport = await mcpText('hud_context', { action: 'export', scope: `run:${run.id}` });
+  assert.match(mcpExport, /exported .+backups\/context-/, 'MCP exports the finished run');
 
   // cleanup
   await ok(`/api/attachments/${a1.id}?force=1`, { method: 'DELETE' });

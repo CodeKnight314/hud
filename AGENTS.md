@@ -64,7 +64,7 @@ scripts/check-monitoring-views.mjs semantic view selection, targets, events, tab
 scripts/check-monitoring-api.mjs HTTP/CLI/MCP monitoring check against an existing scratch server
 scripts/check-monitoring-ui.mjs headless monitoring dashboard, custom program and snapshot check
 scripts/check-supervision.ts     store-level attention, reports, decisions, runs and changes regression checks
-scripts/check-coordination.ts    presence, claim leases, queue, shared context and attachment metadata checks
+scripts/check-coordination.ts    presence, claim leases, queue, shared context, attachment metadata and finished-run export checks
 scripts/check-context-timeline.mjs shared-context timeline labels, filters, handoff text and escaping
 scripts/check-views.ts           generated view templates, static validation, writes and deletes
 scripts/check-coordination-api.mjs HTTP/MCP/CLI coordination parity check against an existing scratch server
@@ -104,6 +104,11 @@ bundle/, dist/   build output (git-ignored)
   and corrections are new entries with `corrects`. `lite()`, `/api/state` and item SSE events never carry them; they
   are fetched through `/api/context`. Cursors are runtime-only. Attachment bytes live under
   `<dataDir>/attachments`, never in `state.json`; `apply` runs in the CLI/MCP process, not the server.
+  Finishing a run can snapshot that scope (`exportRunContext`, `finish({export:true})`) to
+  `<data>/backups/context-<id>-<ts>.zip` (`context.md` plus attachment bytes). The snapshot is the full retained
+  context for the run, not a page of `contextRead`. A bare `finish({export:true})` snapshots only runs that call
+  marks done. Pass `ids` to include an already finished run, or `exportAll` for every owned done or canceled run.
+  The zip is not state and is not rotated with the 30 `state-*.json` backups.
 - **Generated views are trusted code, not a sandbox.** `src/views.ts` static checks are advisory; the Electron render
   gate is the real check, and the module runs in the board page. `generate` may write its own output. Caller-supplied
   source (`hud_view` write / `hud view set`) is staged: the tool result shows a review diff, and the file lands only
@@ -122,7 +127,8 @@ bundle/, dist/   build output (git-ignored)
   never rewritten. Users have live boards. Never write code that drops their data: deletes go to `state.trash`
   (`remove()` / `restore()` / `purge()`), and only purge is permanent.
 - **Backups and the lock protect the board.** `Store.backup()` writes `<data>/backups/state-<ts>[-reason].json` on start
-  (before migrations), before import/board delete and hourly (newest 30 kept); a corrupt `state.json` is moved to
+  (before migrations), before import/board delete and hourly (newest 30 kept). Finished-run context zips live in that
+  same directory and are left in place by that rotation. A corrupt `state.json` is moved to
   `.corrupt-<ts>` and the newest valid backup loaded. `src/lock.ts` makes a second server on the same data dir refuse to
   start. Keep both when touching persistence.
 - **A failed save must never take the process down.** `Store.flush()` writes to a temp file unique per write
