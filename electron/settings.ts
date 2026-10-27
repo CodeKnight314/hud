@@ -7,7 +7,7 @@ import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
 import type { ClientId } from '../src/mcpinstall.ts';
-import { armReconnectNotice, loadReconnectChecklist } from '../src/reconnect.ts';
+import { acknowledgeReconnect, armReconnectNotice, loadReconnectChecklist, readReconnectNotice } from '../src/reconnect.ts';
 import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
@@ -115,8 +115,16 @@ export function desktopSettings(options: {
       changing = true;
       try {
         const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
+        const previous = readReconnectNotice(options.dataDir);
         armReconnectNotice(options.dataDir, { reason: 'quit-for-update', fromVersion: options.version, clients });
-        await options.quitForUpdate();
+        try {
+          await options.quitForUpdate();
+        } catch (error) {
+          // No relaunch is coming, so the snapshot we just armed would offer a reconnect that never happened.
+          if (previous) armReconnectNotice(options.dataDir, previous);
+          else acknowledgeReconnect(options.dataDir);
+          throw error;
+        }
       } finally { changing = false; }
       return;
     }

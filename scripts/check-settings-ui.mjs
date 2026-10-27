@@ -202,6 +202,7 @@ async function run() {
   const externalUrls = [];
   const copied = [];
   let quits = 0;
+  let quitFails = false;
   let reconnectAcks = 0;
   const matchingName = installerName('0.1.2', 'darwin', 'arm64');
   assert.equal(matchingName, 'hud-0.1.2-mac-arm64.dmg', 'fixed supported fixture installer name');
@@ -223,7 +224,7 @@ async function run() {
     updateChecker,
     openExternal: async (url) => { externalUrls.push(url); },
     copyText: (text) => { copied.push(text); },
-    quitForUpdate: async () => { quits++; },
+    quitForUpdate: async () => { if (quitFails) throw new Error('Could not quit HUD.'); quits++; },
     connectedClients: async () => [
       { id: 'claude-live', name: 'claude-live', actor: 'claude', kind: 'agent', version: '0.1.0', live: true },
       { id: 'claude-ended', name: 'claude-ended', actor: 'claude', kind: 'agent', version: '0.1.0', live: false },
@@ -376,6 +377,14 @@ async function run() {
   assert.equal(quitNotice.fromVersion, '0.1.1');
   assert.deepEqual(quitNotice.clients.map((item) => item.id), ['claude-live'], 'quit snapshot omits sessions that were already ended');
 
+  // A quit that fails leaves no relaunch behind, so it must not keep the snapshot it armed.
+  acknowledgeReconnect(dataDir);
+  quitFails = true;
+  await click(primaryWindow, '#quit-for-update');
+  await waitText(primaryWindow, '#action-status', 'Could not quit HUD.');
+  assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'a failed quit clears the snapshot it just armed');
+  quitFails = false;
+
   // A second page with the same URL and preload cannot use the main Settings window's IPC identity.
   const settingsUrl = pathToFileURL(join(repo, 'web', 'settings.html')).href;
   const attacker = new BrowserWindow({
@@ -398,7 +407,7 @@ async function run() {
   assert.deepEqual(consoleFailures, [], `renderer console errors: ${consoleFailures.join(' | ')}`);
   assert.deepEqual(loadFailures, [], `renderer load failures: ${loadFailures.join(' | ')}`);
   assert.equal(readFileSync(cliEntry, 'utf8'), '# inert fixture; the shim is verified, never executed\n');
-  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, post-update reconnect checklist, quit-for-update reminder, IPC identity and no board bridge.`);
+  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, post-update reconnect checklist, quit-for-update reminder and armed-snapshot rollback, IPC identity and no board bridge.`);
   console.log(`Artifacts: ${connectionShot}, ${templateShot}, ${updatesShot}`);
 }
 
