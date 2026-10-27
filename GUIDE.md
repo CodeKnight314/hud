@@ -45,7 +45,9 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     heartbeat **`/ping/:id`** (see Monitors)
   - decisions and runs: `POST /api/items/:id/ask {question?,questionFormat?,options}` ·
     `POST /api/items/:id/decide {optionId,note?,decisionVersion}` ·
-    `POST /api/finish {board?,ids?,note?,organize?}`
+    `POST /api/finish {board?,ids?,note?,organize?,export?}` ·
+    `POST /api/runs/:id/export` · `GET /api/runs/exports` · `GET /api/runs/:id/exports` ·
+    `GET /api/runs/:id/exports/:name` (zip, or `?format=markdown`)
   - boards: `GET/POST /api/boards` · `PATCH|DELETE /api/boards/:id` (`main` cannot be deleted; a delete goes to the
     trash) · `POST /api/organize {board, auto?}` · `POST /api/arrange {board|frame, ids?, width?}` ·
     `POST /api/boards/:id/clear` (clear canvas while keeping board) ·
@@ -264,7 +266,14 @@ The queue says *what* to do; the shared context records *what was learned*. It i
   response is the value to pass next time. `complete: false` or `truncated: true` means older entries were pruned or a
   limit cut the result — read again with the returned cursor.
 - **Bounds.** Text is at most 4 KB, `data` at most 8 KB, up to 50 refs and 50 attachments. Retention keeps the newest
-  10,000 entries globally and 2,000 per scope. A session may publish at most 60 entries per minute.
+  10,000 entries globally and 2,000 per scope. A session may publish at most 60 entries per minute. That pruning is
+  why a finished run should be snapshotted: `hud context export <run>` (`hud_context {action:"export", scope:"run:<id>"}`,
+  `POST /api/runs/:id/export`) writes `backups/context-<id>-<YYYYMMDD-HHMMSS>.zip`. The zip contains `context.md`
+  (the run's context entries) and the attachment files for that scope, including files a context entry references.
+  The run ticket has to be `done` or `canceled`. An unfinished run is 409 `unfinished`. Missing bytes and hash
+  mismatches are named in the result and in the markdown; bytes that are still on disk are packed. The live log is
+  not deleted. `hud context exports [run]` lists the files. `GET /api/runs/:id/exports/:name?format=markdown` returns
+  the report. These zips are not part of the 30 state-backup rotation.
 - **What not to publish.** No routine restatements of the ticket description, no whole file dumps (use attachments),
   and no claims that a check passed without the evidence. Peers rely on these entries to choose work, so scope them:
   say what you measured, on which inputs, and what remains unverified.
@@ -739,7 +748,7 @@ and `restore`/`purge` with `id:"all"`). The operation argument shapes are:
 | `annotate`, `compare`, `ackAlerts` | `{board?,time,text}`; `{board?,rule:{left,right,relation,...}}` or rule fields directly; `{ids:[alertId,...]}` or `{ids:"all"}` |
 | `reviewAttention`, `link`, `unlink` | `{id,action,revision,until?}`; `{id,patch}`; `{id,keys:["parent",...]}` |
 | `comment`, `ask`, `decide`, `run` | `{id,text,format?}`; `{id,question?,options}`; `{id,optionId,decisionVersion,note?}`; `{id}` |
-| `finish` | `{board?,ids?,note?,organize?}` |
+| `finish` | `{board?,ids?,note?,organize?,export?}` |
 | `importState`, `exportState`, `backup`, `shutdown` | `{state,mode:"replace"|"merge"}`; `{}`; `{reason?}`; `{}`; all require `*` |
 
 Omitted `board` uses the program's target board. `hud.action()` resolves to `{result,revision}` and rejects on a broker
@@ -857,11 +866,14 @@ report a response or completion. Creating a follow-up ticket records a request; 
 responded.
 
 ## Finishing a run
-When you're done, call `hud_finish {board?, ids?, note?}` (`hud finish`). It marks the named items complete and tidies
+When you're done, call `hud_finish {board?, ids?, note?, export?}` (`hud finish [--export]`). It marks the named items complete and tidies
 the board (re-runs organize) so the canvas ends up clean. Pass `organize: false` to leave the layout alone. With no `ids` it only completes items you created or are assigned, and
 only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work.
 Finishing releases your claim on those tickets. If you coordinated with peers, publish a final `SUMMARY` entry before
-finishing so the next session can start from what you learned.
+finishing so the next session can start from what you learned. `export: true` (`--export`) also snapshots every run
+ticket that this call finishes — and any run ticket in `ids` that is already finished — to
+`backups/context-<id>-<ts>.zip`. The response includes `exports`. The same snapshot is `hud context export <run>`
+after the run is finished.
 
 ## Trash, backups and undo
 Nothing is deleted outright. `hud_delete` / `hud rm` / `DELETE /api/items/:id` move the item to the **trash**
@@ -870,7 +882,8 @@ Nothing is deleted outright. `hud_delete` / `hud rm` / `DELETE /api/items/:id` m
 links that no longer resolve; only `purge` deletes for good. The trash keeps 500 entries for 30 days. The UI's `u` /
 ⌘Z undoes a delete the same way. Trashing or clearing a board releases its claims. Sessions and claims are runtime
 state: they are not exported, and a restart starts with none. Shared context and attachment metadata are exported;
-attachment bytes live under `<data>/attachments` and are copied with a backup only when you copy that directory too.
+attachment bytes live under `<data>/attachments` and are copied with a state backup only when you copy that directory too.
+A finished-run snapshot (`backups/context-<id>-<ts>.zip`) is the copy that keeps those bytes with the context report.
 
 State is backed up to `<data>/backups/state-<YYYYMMDD-HHMMSS>[-reason].json` on server start (before migrations),
 before an import or board delete, and hourly; the newest 30 are kept. `hud backup [--list] [--reason r]`,

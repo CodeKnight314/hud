@@ -80,6 +80,8 @@ usage:
   hud context publish --scope run:<uuid> --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
                                      append a typed finding to the shared context (never edit; publish a correction)
   hud context scopes [--board b]     list scopes with entries and last activity
+  hud context export <run>           snapshot a finished run's context and attachments to backups/
+  hud context exports [run]          list those snapshots
   hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id]
   hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create]
   hud attach rm <id> [--force]        share files by reference; apply writes a local file with conflict checks
@@ -109,8 +111,9 @@ usage:
                                        (--options '[{"label":"A","detail":"…","status":"done"}]' for detail/status)
   hud decide <id> <optionId> --version UUID [--note "…"]
                                      record the choice using the current decision version (prevents stale answers)
-  hud finish [ids...] [--board b] [--note "…"] [--no-organize]
-                                     mark items done and tidy the board (how an agent ends a run)
+  hud finish [ids...] [--board b] [--note "…"] [--no-organize] [--export]
+                                     mark items done and tidy the board (how an agent ends a run);
+                                     --export also snapshots each finished run ticket
   hud run <id>                       run an automatic monitor now
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)
@@ -150,7 +153,7 @@ examples:
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite']);
+const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export']);
 const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display', 'proposal', 'sha']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
@@ -223,7 +226,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
   claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--json]', min: 1, max: 1, f: ['session', 'ttl', 'start', 'takeover', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
-  context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b]', max: 2, f: '*' },
+  context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
   attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
   wait: { u: 'hud wait [--scope s] [--ticket id] [--sessions a,b] [--kinds context,claim,session] [--since n] [--timeout sec] [--include-self] [--json]', max: 0, f: ['scope', 'ticket', 'sessions', 'kinds', 'since', 'timeout', 'include-self', 'session', 'json'] },
   changes: { u: 'hud changes --since ms [--json]', max: 0, f: ['since', 'json'] },
@@ -239,7 +242,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   log: { u: 'hud log <id> [--limit n] [--json]', min: 1, max: 1, f: ['limit', 'json'] },
   ask: { u: 'hud ask <id> --option A --option B [--question q] [--questionFormat plain|markdown] [--options json]', min: 1, max: 1, f: ['option', 'options', 'question', 'questionFormat', 'json'] },
   decide: { u: 'hud decide <id> <optionId> --version UUID [--note text]', min: 1, max: 2, f: ['optionId', 'note', 'version', 'json'] },
-  finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize]', f: ['board', 'note', 'no-organize', 'json'] },
+  finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize] [--export]', f: ['board', 'note', 'no-organize', 'export', 'json'] },
   run: { u: 'hud run <id>', min: 1, max: 1, f: ['json'] },
   rm: { u: 'hud rm <id...>', min: 1, f: ['json'] },
   trash: { u: 'hud trash [--board b] [--json]', max: 0, f: ['board', 'json'] },
@@ -604,7 +607,18 @@ async function main() {
         const e = await hud.contextPublish({ scope: String(flags.scope), kind: String(flags.kind), text: String(flags.text), data, refs, attachments, corrects: flags.corrects as string | undefined, session });
         return emit(e, `published ${e.kind} #${e.seq} ${e.scope} id=${e.id}`);
       }
-      if (sub !== 'read') throw new UsageError(`unknown context command "${sub}" — try: hud context read|publish|scopes`);
+      if (sub === 'export') {
+        const id = rest[1];
+        if (!id) throw new UsageError('usage: hud context export <run>');
+        const exported = await hud.exportRun(id);
+        const missing = exported.missing.length ? `\nmissing: ${exported.missing.join(', ')}` : '';
+        return emit(exported, `exported ${exported.ident} → backups/${exported.name} (${exported.entries} entries, ${exported.attachments} files, ${exported.bytes}b)${missing}`);
+      }
+      if (sub === 'exports') {
+        const rows = await hud.runExports(rest[1]);
+        return emit(rows, rows.length ? rows.map((row) => `${row.name}  ${row.runId}  ${row.bytes}b  ${new Date(row.t).toLocaleString()}`).join('\n') : 'no context exports');
+      }
+      if (sub !== 'read') throw new UsageError(`unknown context command "${sub}" — try: hud context read|publish|scopes|export|exports`);
       const r = await hud.contextRead({ scope: flags.scope as string | undefined, since: flags.since === undefined ? undefined : Number(flags.since), kinds: flags.kind === undefined ? undefined : String(flags.kind).split(','), limit: flags.limit === undefined ? undefined : Number(flags.limit), session, mark: !flags.peek });
       const lines = r.entries.map((e) => `#${e.seq} ${e.kind.padEnd(7)} ${e.actor.padEnd(10)} ${e.text}${e.corrects ? `  (corrects ${e.corrects})` : ''}`);
       return emit(r, `cursor=${r.cursor}${r.truncated ? ' (older entries pruned)' : ''}${r.complete ? '' : ' (more remain)'}\n${lines.join('\n')}`.trimEnd());
@@ -809,8 +823,9 @@ async function main() {
       return emit(tk, `decided ${tk.ident ?? tk.id} → ${tk.status}`);
     }
     case 'finish': {
-      const r = await hud.finish({ board: flags.board, ids: rest.length ? rest : undefined, note: flags.note, organize: flags['no-organize'] ? false : undefined });
-      return emit(r, r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`);
+      const r = await hud.finish({ board: flags.board, ids: rest.length ? rest : undefined, note: flags.note, organize: flags['no-organize'] ? false : undefined, export: flags.export ? true : undefined });
+      const exported = r.exports?.length ? `\n${r.exports.map((e) => `exported ${e.ident} → backups/${e.name} (${e.entries} entries, ${e.attachments} files)`).join('\n')}` : '';
+      return emit(r, (r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`) + exported);
     }
     case 'run': {
       const it = await hud.run(rest[0]);

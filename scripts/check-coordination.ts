@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, STATE_VERSION, Store } from '../src/store.ts';
 import { attachmentPath, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
+import { listZipEntries } from '../src/context-export.ts';
 import { unifiedDiff } from '../src/diff.ts';
 import type { Item } from '../src/types.ts';
 import { contextHandoff, loadContextPages } from '../web/context-timeline.js';
@@ -340,6 +341,112 @@ async function contextPagesKeepNewest() {
   finish(store);
 }
 
+function runContextExport() {
+  const { store, dir } = fresh('coord-export');
+  setAttachmentsRoot(join(dir, 'attachments'));
+  const run = ticket(store, 'export me', { tags: ['run'], status: 'doing' });
+  const other = ticket(store, 'other run', { tags: ['run'] });
+  const project = store.create({ type: 'project', title: 'Eng', key: 'ENG' }, ACTOR);
+  const plain = ticket(store, 'plain');
+
+  const notes = Buffer.from('alpha notes for the run\n');
+  const notesId = 'att-export-1';
+  const notesWritten = writeAttachmentBytes('main', notesId, 'notes.txt', notes);
+  store.attachmentAdd({ id: notesId, board: 'main', name: 'notes.txt', kind: 'text', scope: `run:${run.id}`, bytes: notesWritten.bytes, sha256: notesWritten.sha256 }, 'claude');
+
+  const ref = Buffer.from('referenced from the fact\n');
+  const refId = 'att-ref';
+  const refWritten = writeAttachmentBytes('main', refId, 'ref.txt', ref);
+  store.attachmentAdd({ id: refId, board: 'main', name: 'ref.txt', kind: 'text', scope: 'board:main', bytes: refWritten.bytes, sha256: refWritten.sha256 }, 'claude');
+
+  const stray = Buffer.from('stray-not-in-run\n');
+  const strayId = 'att-stray';
+  const strayWritten = writeAttachmentBytes('main', strayId, 'stray.txt', stray);
+  store.attachmentAdd({ id: strayId, board: 'main', name: 'stray.txt', kind: 'text', scope: 'board:main', bytes: strayWritten.bytes, sha256: strayWritten.sha256 }, 'claude');
+
+  store.contextPublish({
+    scope: `run:${run.id}`, kind: 'FACT', text: 'the parser drops trailing commas',
+    attachments: [notesId, refId], data: { sample: 1 }, session: 'agent-a',
+  }, 'claude');
+  store.contextPublish({ scope: `run:${other.id}`, kind: 'FACT', text: 'other-run-secret' }, 'claude');
+  store.contextPublish({ scope: `project:${project.id}`, kind: 'SUMMARY', text: 'project-secret' }, 'claude');
+
+  expectError(() => store.exportRunContext(run.id, 'claude'), 409, 'unfinished', 'export unfinished run');
+  expectError(() => store.exportRunContext(plain.id, 'claude'), 400, undefined, 'export non-run');
+  assert.equal(store.listRunExports().length, 0, 'a refused export writes nothing');
+
+  const skipped = store.finish({ ids: [other.id], organize: false }, 'claude');
+  assert.equal(skipped.exports, undefined, 'finish without export does not snapshot');
+  assert.equal(store.listRunExports().length, 0);
+
+  const done = store.finish({ ids: [run.id], export: true, organize: false }, 'claude');
+  assert.deepEqual(done.done, [run.id]);
+  assert.equal(done.exports?.length, 1);
+  const exp = done.exports![0]!;
+  assert.equal(exp.runId, run.id);
+  assert.equal(exp.entries, 1);
+  assert.equal(exp.attachments, 2);
+  assert.deepEqual(exp.missing, []);
+  assert.match(exp.name, new RegExp(`^context-${run.id}-\\d{8}-\\d{6}\\.zip$`));
+  const zip = readFileSync(join(store.backupDir, exp.name));
+  const entries = listZipEntries(zip);
+  const md = entries.find((e) => e.name === 'context.md')?.data.toString('utf8') ?? '';
+  assert(md.includes('the parser drops trailing commas'), 'markdown keeps the run fact');
+  assert(md.includes('"sample": 1'), 'markdown keeps structured data');
+  assert(!md.includes('other-run-secret'), 'markdown stays inside the run');
+  assert(!md.includes('project-secret'), 'markdown stays inside the run');
+  assert.equal(entries.find((e) => e.name === `attachments/${notesId}/notes.txt`)?.data.toString(), notes.toString());
+  assert.equal(entries.find((e) => e.name === `attachments/${refId}/ref.txt`)?.data.toString(), ref.toString());
+  assert(!entries.some((e) => e.name.includes(strayId)), 'unreferenced board files stay out');
+  assert(entries.every((e) => !e.name.split('/').includes('..') && !e.name.startsWith('/')), 'zip entries stay relative');
+  assert(store.get(run.id).comments?.some((c) => c.text.includes(exp.name)), 'the ticket records the export name');
+  assert.equal(store.contextRead({ scope: `run:${run.id}` }).entries.length, 1, 'export keeps the live log');
+  assert.equal(store.readRunExport(run.id, exp.name).equals(zip), true);
+
+  const again = store.exportRunContext(store.identOf(run.id), 'claude');
+  assert.notEqual(again.name, exp.name, 'a second snapshot gets its own file');
+  assert.equal(store.listRunExports(run.id).length, 2);
+  assert.equal(store.listRunExports(other.id).length, 0);
+
+  const ghost = '../sneak';
+  store.attachmentAdd({ id: ghost, board: 'main', name: 'gone.txt', kind: 'file', scope: `run:${run.id}`, bytes: 4, sha256: 'ab'.repeat(32) }, 'claude');
+  const partial = store.exportRunContext(run.id, 'claude');
+  assert(partial.missing.includes(ghost), 'missing attachment bytes are reported');
+  const partialEntries = listZipEntries(readFileSync(join(store.backupDir, partial.name)));
+  assert(partialEntries.some((e) => e.name === 'context.md' && e.data.toString('utf8').includes(ghost)));
+  assert(partialEntries.every((e) => !e.name.split('/').includes('..') && !e.name.startsWith('/')));
+
+  const staleId = 'att-stale';
+  const staleWritten = writeAttachmentBytes('main', staleId, 'stale.txt', Buffer.from('original\n'));
+  store.attachmentAdd({ id: staleId, board: 'main', name: 'stale.txt', kind: 'text', scope: `run:${run.id}`, bytes: staleWritten.bytes, sha256: staleWritten.sha256 }, 'claude');
+  const changed = Buffer.from('changed bytes\n');
+  writeAttachmentBytes('main', staleId, 'stale.txt', changed);
+  const stale = store.exportRunContext(run.id, 'claude');
+  assert(stale.missing.includes(staleId), 'a hash mismatch is reported');
+  const staleFile = listZipEntries(readFileSync(join(store.backupDir, stale.name))).find((e) => e.name === `attachments/${staleId}/stale.txt`);
+  assert.equal(staleFile?.data.toString(), changed.toString(), 'the bytes on disk are what the zip keeps');
+
+  const canceled = ticket(store, 'canceled run', { tags: ['run'], status: 'canceled' });
+  const canceledExport = store.exportRunContext(canceled.id, 'claude');
+  assert.equal(canceledExport.entries, 0);
+  assert(listZipEntries(readFileSync(join(store.backupDir, canceledExport.name))).some((e) => e.name === 'context.md' && e.data.toString('utf8').includes('canceled')));
+
+  for (let i = 0; i < 35; i++) store.backup('rotation');
+  assert.equal(store.listBackups().length, 30, 'state backups still rotate');
+  assert.equal(existsSync(join(store.backupDir, exp.name)), true, 'context exports survive state-backup rotation');
+  assert(store.listRunExports(run.id).length >= 2);
+
+  expectError(() => store.readRunExport(run.id, '../state.json'), 400, undefined, 'export path escape');
+  expectError(() => store.readRunExport(run.id, exp.name.replace(run.id, other.id)), 404, undefined, 'other run export');
+
+  store.flush();
+  const raw = readFileSync(join(dir, 'state.json'), 'utf8');
+  assert(!raw.includes(notes.toString()), 'attachment bytes stay out of state');
+  assert(!raw.includes(changed.toString()), 'exported bytes stay out of state');
+
+  finish(store);
+}
+
 migration();
 sessions();
 claims();
@@ -349,4 +456,5 @@ contexts();
 attachments();
 exportImport();
 await contextPagesKeepNewest();
+runContextExport();
 console.log('PASS coordination store checks');
