@@ -9,6 +9,14 @@ import { backendUpdateAction, compareVersions, installerName, prepareBackendUpda
 import { checksumFileUrl, downloadVerifiedAsset, helperLaunchSpec, installApprovedUpdate, parseSha256Sums, planPackagedUpdate, posixUpdateHelper, recordedInstallExe, rejectServerRestartDuringUpdate, releaseDownloadTarget, runVerifiedUpdateHandoff, windowsUpdateHelper } from '../src/update-apply.ts';
 import type { HealthInfo } from '../src/client.ts';
 
+// This suite executes the POSIX update helper (a /bin/sh script) against fake nohup/hdiutil/xattr
+// shims and uses POSIX sleep; neither exists on Windows. The Windows helper strings and pwsh refusal
+// are asserted by the same suite on macOS and Linux, and the packaged Windows build is checked natively.
+if (process.platform === 'win32') {
+  console.log('SKIP update-apply helper execution on Windows (POSIX /bin/sh helper, shims and sleep)');
+  process.exit(0);
+}
+
 const release = (version = '0.1.2', platform = 'darwin', arch = 'arm64', appImage = false) => {
   const name = installerName(version, platform, arch, appImage);
   return { draft: false, prerelease: false, tag_name: `v${version}`, assets: [{ name, state: 'uploaded', browser_download_url: `https://github.com/CodeKnight314/hud/releases/download/v${version}/${name}` }] };
