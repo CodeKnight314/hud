@@ -132,6 +132,47 @@ async function runUI(seedData) {
         && text.includes(${JSON.stringify(other)}) && !text.includes('⊕…');
     })()`, 'all-projects board');
     assert.equal(errors.length, 0, `no console errors: ${errors.join(' | ')}`);
+
+    // A claim event that arrives while /api/claims is in flight must survive the older snapshot.
+    const late = await jsonRequest('/api/items', { method: 'POST', body: { type: 'ticket', board: seedData.board.id, title: `Late ${seedData.nonce}`, project: seedData.eng.id, status: 'todo' } });
+    await waitForDOM(win, `document.querySelector('#list')?.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)})`, 'late ticket row');
+    await browserEval(win, `(() => {
+      const orig = window.fetch.bind(window);
+      let release;
+      window.__claimsGate = new Promise((r) => { release = r; });
+      window.__releaseClaims = release;
+      window.__claimsHeld = false;
+      window.__claimsFetches = 0;
+      window.fetch = async (url, opts) => {
+        const name = typeof url === 'string' ? url : (url && url.url) || '';
+        if (!name.includes('/api/claims')) return orig(url, opts);
+        window.__claimsFetches++;
+        const res = await orig(url, opts);
+        if (window.__claimsFetches === 1) {
+          window.__claimsHeld = true;
+          await window.__claimsGate;
+        }
+        return res;
+      };
+      return true;
+    })()`);
+    await click(win, '#btn-board');
+    await waitForDOM(win, `document.querySelector(${JSON.stringify(`[data-board-pick="${seedData.board.id}"]`)})`, 'board menu');
+    await click(win, `[data-board-pick="${seedData.board.id}"]`);
+    await waitForDOM(win, `window.__claimsHeld === true`, 'claims snapshot held');
+    await jsonRequest(`/api/items/${encodeURIComponent(late.id)}/claim`, { method: 'POST', body: { session: `ui-late-${seedData.nonce}` } });
+    await waitForDOM(win, `(() => {
+      const card = [...document.querySelectorAll('.kcard, .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
+      return card && card.textContent.includes('⊕ui-tickets-check');
+    })()`, 'SSE claim before the snapshot returns');
+    await browserEval(win, `window.__releaseClaims()`);
+    await waitForDOM(win, `window.__claimsFetches >= 2`, 'stale snapshot retries claimsList');
+    await wait(400);
+    const lateText = await browserEval(win, `(() => {
+      const card = [...document.querySelectorAll('.kcard, .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
+      return card ? card.textContent : '';
+    })()`);
+    assert.match(lateText, /⊕ui-tickets-check/, 'older claims snapshot must not clear the SSE claimer');
     if (artifactDir) {
       await mkdir(artifactDir, { recursive: true });
       const { writeFile } = await import('node:fs/promises');

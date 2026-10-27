@@ -68,7 +68,8 @@ const S = {
   changes: { since: 0, now: 0, complete: false, events: [] },
   claimCache: new Map(),
   claims: new Map(), // ticket id → live claim, for list/tree/board ownership
-  claimsNow: 0, // claimsList `now`; a late snapshot must not wipe a newer one
+  claimsNow: 0, // latest applied claimsList snapshot; an older snapshot is dropped
+  claimsEpoch: 0, // SSE claim/release while a snapshot is in flight
   claimsReady: false,
   contextCache: new Map(),
   contextKind: 'all',
@@ -2081,6 +2082,7 @@ function onEvent(e) {
   }
   if (e.kind === 'claim') {
     if (!e.claim.board || e.claim.board === S.board) {
+      S.claimsEpoch++;
       if (e.action === 'released' || e.action === 'expired') S.claims.delete(e.claim.ticket);
       else S.claims.set(e.claim.ticket, e.claim);
       S.claimsReady = true;
@@ -3917,10 +3919,13 @@ function loadClaims(filter = {}) {
   const session = filter.session ? String(filter.session) : '';
   const q = new URLSearchParams({ board });
   if (session) q.set('session', session);
+  const epoch = S.claimsEpoch;
   optionalGET(`/api/claims?${q}`).then((data) => {
     if (!data || S.board !== board) return;
-    const at = Number(data.now);
     if (session) return;
+    // an SSE claim landed after this request left; the body is already stale
+    if (S.claimsEpoch !== epoch) return loadClaims({ board });
+    const at = Number(data.now);
     if (Number.isFinite(at) && at < S.claimsNow) return;
     if (Number.isFinite(at)) S.claimsNow = at;
     S.claims = new Map((Array.isArray(data.items) ? data.items : []).map((c) => [c.ticket, c]));
