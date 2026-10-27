@@ -2,13 +2,13 @@
 // outside the mount finds resources/hud/bin/hud.mjs on each launch.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..');
-const root = mkdtempSync(join(tmpdir(), 'hud-cliinstall-'));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'hud-cliinstall-')));
 const dataDir = join(root, 'data');
 const binDir = join(root, 'bin');
 const unix = process.platform !== 'win32';
