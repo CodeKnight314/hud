@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, MAX_VIEW_REVIEWS, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
 
+const TERMINAL_HEX = /#(?:e8e8e8|8c8c8c|2c2c2c|ff5c5c|46d67a|a9c4ff|6d7888|333|777|222)\b|#fff\b/i;
 const dir = mkdtempSync(join(tmpdir(), 'hud-views-'));
 setViewsDir(dir);
 
@@ -45,6 +47,7 @@ for (const kind of VIEW_KINDS) {
   assert.equal(typeof out, 'string', `${kind} returns markup`);
   assert.ok(out.length > 0, `${kind} returns something visible`);
   assert.ok(!/<script|<img|NaN|Infinity/.test(out), `${kind} output is safe and finite: ${out.slice(0, 120)}`);
+  assert.doesNotMatch(code, TERMINAL_HEX, `${kind} uses design-token colors`);
 }
 
 // static validation rejects code that can escape the page
@@ -179,5 +182,39 @@ const oldestStill = installUntrustedView(oldest.name, { approve: true, proposalI
 assert.equal(oldestStill.installed, true, 'a budget refusal must not evict an unrelated pending approval');
 assert.equal(readViewFile(oldest.name), remote);
 deleteViewFile(oldest.name);
+
+// Theme copies and chart colors stay on the STYLE.md tokens.
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const css = readFileSync(join(root, 'web/style.css'), 'utf8');
+const programs = readFileSync(join(root, 'src/programs.ts'), 'utf8');
+const settings = readFileSync(join(root, 'web/settings.css'), 'utf8');
+function token(name: string) {
+  const found = css.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
+  assert.ok(found, `web/style.css defines --${name}`);
+  return found[1].toLowerCase();
+}
+const theme = { background: token('bg'), foreground: token('fg'), muted: token('dim'), accent: token('accent'), red: token('red'), green: token('green') };
+for (const [key, hex] of Object.entries(theme)) assert.match(programs, new RegExp(`${key}:'${hex}'`), `hud.theme.${key} matches --${key}`);
+function lin(channel: number) {
+  const c = channel / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function luminance(hex: string) {
+  const n = parseInt(hex.slice(1), 16);
+  return 0.2126 * lin(n >> 16) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+}
+function contrast(a: string, b: string) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+const faint = token('faint');
+assert.ok(contrast(faint, token('card')) >= 4.5, `--faint ${faint} is readable on --card`);
+assert.ok(contrast(faint, token('raised')) >= 4.5, `--faint ${faint} is readable on --raised`);
+assert.match(css, /\.run-progress > i \{[^}]*background: var\(--hi\)/);
+assert.doesNotMatch(css, /\.run-progress > i \{[^}]*accent/);
+assert.match(settings, /\.button\.primary:hover \{[^}]*background: var\(--accent-dim/);
+for (const file of ['web/views.js', 'web/app.js', 'web/settings.css', 'web/style.css', 'views/bullet.js', 'src/views.ts', 'GUIDE.md']) {
+  assert.doesNotMatch(readFileSync(join(root, file), 'utf8'), TERMINAL_HEX, `${file} has no terminal palette leftovers`);
+}
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

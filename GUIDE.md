@@ -655,22 +655,22 @@ const graphProgram = {
     svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     svg.setAttribute('width', '100%'); svg.setAttribute('height', '100%');
     const label = document.createElementNS(ns, 'text');
-    label.setAttribute('x', '8'); label.setAttribute('y', '18'); label.setAttribute('fill', '#e8e8e8');
+    label.setAttribute('x', '8'); label.setAttribute('y', '18'); label.setAttribute('fill', hud.theme.foreground);
     label.textContent = m ? m.title + ': ' + (m.value ?? '—') + ' ' + m.unit : 'waiting for gpu-memory-used';
     svg.append(label);
     if (m && typeof m.value === 'number') {
       const max = Math.max(1, Number(m.max) || m.value), x = 8, y = Math.round(height / 2), w = width - 16;
       const rail = document.createElementNS(ns, 'rect');
       rail.setAttribute('x', x); rail.setAttribute('y', y); rail.setAttribute('width', w);
-      rail.setAttribute('height', '8'); rail.setAttribute('fill', '#333');
+      rail.setAttribute('height', '8'); rail.setAttribute('fill', hud.theme.muted); rail.setAttribute('fill-opacity', '0.35');
       const bar = document.createElementNS(ns, 'rect');
       bar.setAttribute('x', x); bar.setAttribute('y', y);
       bar.setAttribute('width', w * Math.max(0, Math.min(1, m.value / max)));
-      bar.setAttribute('height', '8'); bar.setAttribute('fill', '#fff');
+      bar.setAttribute('height', '8'); bar.setAttribute('fill', hud.theme.foreground);
       svg.append(rail, bar);
       const provenance = document.createElementNS(ns, 'text');
       provenance.setAttribute('x', '8'); provenance.setAttribute('y', height - 8);
-      provenance.setAttribute('fill', '#8c8c8c'); provenance.setAttribute('font-size', '10');
+      provenance.setAttribute('fill', hud.theme.muted); provenance.setAttribute('font-size', '10');
       provenance.textContent = (m.stale ? 'stale' : m.ageSeconds + 's') + ' · ' + m.evidence + ' · ' + m.source;
       svg.append(provenance);
     }

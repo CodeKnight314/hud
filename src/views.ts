@@ -68,7 +68,7 @@ export function render({ item, w, h, helpers }) {
   try {
 ${body.split('\n').map((line) => `    ${line}`).join('\n')}
   } catch (e) {
-    return '<div style="padding:6px;color:#8c8c8c">view error: ' + esc(e && e.message) + '</div>';
+    return '<div style="padding:6px;color:#9aa6b6">view error: ' + esc(e && e.message) + '</div>';
   }
 }
 `;
@@ -82,26 +82,26 @@ export function generateViewCode(name: string, spec: ViewSpec): string {
   switch (spec.kind) {
     case 'bar':
       body = `const data = categoriesOf(item, { series: ${series} });
-if (!data.length) return '<div style="padding:6px;color:#8c8c8c">no categories at ' + esc(${series} || 'meta.categories') + '</div>';
+if (!data.length) return '<div style="padding:6px;color:#9aa6b6">no categories at ' + esc(${series} || 'meta.categories') + '</div>';
 const max = Math.max(1, ...data.map(d => Math.abs(d.value)));
 const bw = w / data.length;
 let out = '';
 data.forEach((d, i) => {
   const bh = Math.max(1, Math.abs(d.value) / max * (h - 18));
-  out += '<rect x="' + (i * bw + 1) + '" y="' + (h - 13 - bh) + '" width="' + Math.max(1, bw - 2) + '" height="' + bh + '" fill="#e8e8e8"/>';
-  out += '<text x="' + (i * bw + bw / 2) + '" y="' + (h - 3) + '" fill="#8c8c8c" font-size="9" text-anchor="middle">' + esc(d.name) + '</text>';
+  out += '<rect x="' + (i * bw + 1) + '" y="' + (h - 13 - bh) + '" width="' + Math.max(1, bw - 2) + '" height="' + bh + '" fill="#e6ebf2"/>';
+  out += '<text x="' + (i * bw + bw / 2) + '" y="' + (h - 3) + '" fill="#9aa6b6" font-size="9" text-anchor="middle">' + esc(d.name) + '</text>';
 });
 return svg(item, 'gen-bar', w, h, out);`;
       break;
     case 'line':
     case 'sparkline':
       body = `const { pts } = seriesOf(item);
-if (!pts.length) return '<div style="padding:6px;color:#8c8c8c">no history yet</div>';
+if (!pts.length) return '<div style="padding:6px;color:#9aa6b6">no history yet</div>';
 const r = rangeOf(pts.map(p => p.v));
 const x = (i) => 4 + (i / Math.max(1, pts.length - 1)) * (w - 8);
 const y = (v) => h - 6 - ((v - r.lo) / (r.hi - r.lo || 1)) * (h - 12);
 const d = pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.v).toFixed(1)).join(' ');
-return svg(item, 'gen-line', w, h, '<path d="' + d + '" fill="none" stroke="#e8e8e8" stroke-width="1.4"/>');`;
+return svg(item, 'gen-line', w, h, '<path d="' + d + '" fill="none" stroke="#e6ebf2" stroke-width="1.4"/>');`;
       break;
     case 'gauge':
       body = `const value = Number(Object.hasOwn(item, 'value') ? item.value : 0);
@@ -115,34 +115,34 @@ const max = Number(spec.max ?? item.max ?? Math.max(value * 1.2, 1)) || 1;
 const scale = (v) => 6 + Math.max(0, Math.min(1, v / max)) * (w - 12);
 const warn = spec.thresholds && spec.thresholds.warn, error = spec.thresholds && spec.thresholds.error;
 const ticks = [[warn, '#9aa6b6'], [error, '#ff6d6d']].filter(t => Number.isFinite(t[0])).map(t => '<rect x="' + scale(t[0]) + '" y="' + (h / 2 - 10) + '" width="1" height="20" fill="' + t[1] + '"/>').join('');
-const target = (spec.targets || []).map(t => Number(t.value)).filter(Number.isFinite).map(v => '<rect x="' + (scale(v) - 1) + '" y="' + (h / 2 - 12) + '" width="2" height="24" fill="#fff"/>').join('');
-return svg(item, 'gen-bullet', w, h, '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (w - 12) + '" height="8" fill="#2c2c2c"/>' + '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (scale(value) - 6) + '" height="8" fill="#e8e8e8"/>' + ticks + target + '<text x="6" y="' + (h - 4) + '" fill="#8c8c8c" font-size="9">' + esc(fmt(value)) + (spec.unit ? ' ' + esc(spec.unit) : '') + '</text>');`;
+const target = (spec.targets || []).map(t => Number(t.value)).filter(Number.isFinite).map(v => '<rect x="' + (scale(v) - 1) + '" y="' + (h / 2 - 12) + '" width="2" height="24" fill="#f6f8fb"/>').join('');
+return svg(item, 'gen-bullet', w, h, '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (w - 12) + '" height="8" fill="#283140"/>' + '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (scale(value) - 6) + '" height="8" fill="#e6ebf2"/>' + ticks + target + '<text x="6" y="' + (h - 4) + '" fill="#9aa6b6" font-size="9">' + esc(fmt(value)) + (spec.unit ? ' ' + esc(spec.unit) : '') + '</text>');`;
       break;
     case 'scatter':
       body = `const pts = pointsOf(item, { series: ${series} });
-if (!pts.length) return '<div style="padding:6px;color:#8c8c8c">no points at ' + esc(${series} || 'meta.points') + '</div>';
+if (!pts.length) return '<div style="padding:6px;color:#9aa6b6">no points at ' + esc(${series} || 'meta.points') + '</div>';
 const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
 const rx = rangeOf(xs), ry = rangeOf(ys);
 const px = (v) => 6 + (v - rx.lo) / (rx.hi - rx.lo || 1) * (w - 12);
 const py = (v) => h - 6 - (v - ry.lo) / (ry.hi - ry.lo || 1) * (h - 12);
-return svg(item, 'gen-scatter', w, h, pts.map(p => '<circle cx="' + px(p[0]) + '" cy="' + py(p[1]) + '" r="1.6" fill="#e8e8e8"/>').join(''));`;
+return svg(item, 'gen-scatter', w, h, pts.map(p => '<circle cx="' + px(p[0]) + '" cy="' + py(p[1]) + '" r="1.6" fill="#e6ebf2"/>').join(''));`;
       break;
     case 'heatmap':
       body = `const g = gridOf(item, { series: ${series} });
-if (!g) return '<div style="padding:6px;color:#8c8c8c">no grid at ' + esc(${series} || 'meta.grid') + '</div>';
+if (!g) return '<div style="padding:6px;color:#9aa6b6">no grid at ' + esc(${series} || 'meta.grid') + '</div>';
 const flat = g.rows.flat();
 const lo = Math.min(...flat), hi = Math.max(...flat);
 const cw = w / g.width, ch = h / g.height;
 return svg(item, 'gen-heatmap', w, h, g.rows.map((row, y) => row.map((v, x) => {
   const a = hi === lo ? 0.5 : (v - lo) / (hi - lo);
-  return '<rect x="' + (x * cw) + '" y="' + (y * ch) + '" width="' + cw + '" height="' + ch + '" fill="#fff" fill-opacity="' + (0.08 + a * 0.8).toFixed(3) + '"/>';
+  return '<rect x="' + (x * cw) + '" y="' + (y * ch) + '" width="' + cw + '" height="' + ch + '" fill="#f6f8fb" fill-opacity="' + (0.08 + a * 0.8).toFixed(3) + '"/>';
 }).join('')).join(''));`;
       break;
     case 'table':
       body = `const data = item.data;
-if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) return '<div style="padding:6px;color:#8c8c8c">no table data</div>';
+if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) return '<div style="padding:6px;color:#9aa6b6">no table data</div>';
 const rows = data.rows.slice(0, spec.maxRows || 8);
-return '<table class="md-table" style="font:10px/1.4 monospace;border-collapse:collapse;width:100%"><thead><tr>' + data.columns.map(c => '<th style="text-align:left;color:#8c8c8c;border-bottom:1px solid #5a5a5a;padding:2px 4px">' + esc(c.label || c.key) + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + data.columns.map(c => '<td style="border-bottom:1px solid #2c2c2c;padding:2px 4px">' + esc(r[c.key] == null ? '—' : String(r[c.key])) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';`;
+return '<table class="md-table" style="font:10px/1.4 monospace;border-collapse:collapse;width:100%"><thead><tr>' + data.columns.map(c => '<th style="text-align:left;color:#9aa6b6;border-bottom:1px solid rgba(232,238,248,.16);padding:2px 4px">' + esc(c.label || c.key) + '</th>').join('') + '</tr></thead><tbody>' + rows.map(r => '<tr>' + data.columns.map(c => '<td style="border-bottom:1px solid rgba(232,238,248,.08);padding:2px 4px">' + esc(r[c.key] == null ? '—' : String(r[c.key])) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';`;
       break;
     case 'slo':
       body = `const value = Number(Object.hasOwn(item, 'value') ? item.value : 0);

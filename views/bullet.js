@@ -35,21 +35,21 @@ export function render(ctx) {
     band(Number(item.warnBelow), Number(item.warnAbove) || max, 0.04);
 
   const bar = Number.isFinite(value)
-    ? `<rect x="${L}" y="${(T - 2).toFixed(1)}" width="${(X(value) - L).toFixed(1)}" height="4" fill="#fff"/>`
+    ? `<rect x="${L}" y="${(T - 2).toFixed(1)}" width="${(X(value) - L).toFixed(1)}" height="4" fill="var(--hi)"/>`
     : '';
   const target =
     item.target != null || item.meta?.target != null
-      ? `<line x1="${X(Number(item.meta?.target ?? item.target)).toFixed(1)}" x2="${X(Number(item.meta?.target ?? item.target)).toFixed(1)}" y1="${(T - 12).toFixed(1)}" y2="${(T + 8).toFixed(1)}" stroke="#fff" stroke-width="2"/>`
+      ? `<line x1="${X(Number(item.meta?.target ?? item.target)).toFixed(1)}" x2="${X(Number(item.meta?.target ?? item.target)).toFixed(1)}" y1="${(T - 12).toFixed(1)}" y2="${(T + 8).toFixed(1)}" stroke="var(--hi)" stroke-width="2"/>`
       : '';
 
   if (Number.isFinite(value)) hit(X(value), T, value, item.label || item.title || 'value');
 
   const body = `
     ${bands}
-    <text x="${L}" y="12" fill="#e8e8e8" font-size="10">${es(item.label ?? item.title ?? '')}</text>
-    <text x="${(W - R).toFixed(1)}" y="12" text-anchor="end" fill="#8c8c8c" font-size="10">${es(f(value))}/${es(f(max))}</text>
+    <text x="${L}" y="12" fill="var(--fg)" font-size="10">${es(item.label ?? item.title ?? '')}</text>
+    <text x="${(W - R).toFixed(1)}" y="12" text-anchor="end" fill="var(--dim)" font-size="10">${es(f(value))}/${es(f(max))}</text>
     ${bar}${target}
-    <line x1="${L}" x2="${W - R}" y1="${(B > 0 ? H - B : H - 4).toFixed(1)}" y2="${H - 4}" stroke="#333"/>`;
+    <line x1="${L}" x2="${W - R}" y1="${(B > 0 ? H - B : H - 4).toFixed(1)}" y2="${H - 4}" stroke="var(--dim)"/>`;
 
   return helpers?.svg
     ? helpers.svg({ id: item.id, h: item.h }, 'bullet', W, H, body, null)

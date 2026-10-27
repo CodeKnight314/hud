@@ -158,7 +158,7 @@ const THRESHOLDS = [['warnAbove', '4 3'], ['errorAbove', '1 0'], ['warnBelow', '
 function thresholdLines(it, key, lo, hi, Y, W, L, R) {
   if (key !== 'v') return '';
   return THRESHOLDS.filter(([k]) => it[k] != null && it[k] >= lo && it[k] <= hi)
-    .map(([k, dash]) => `<line class="thr" x1="${L}" x2="${W - R}" y1="${Y(it[k]).toFixed(1)}" y2="${Y(it[k]).toFixed(1)}" stroke="#777" stroke-dasharray="${dash}" stroke-width="1"/>`)
+    .map(([k, dash]) => `<line class="thr" x1="${L}" x2="${W - R}" y1="${Y(it[k]).toFixed(1)}" y2="${Y(it[k]).toFixed(1)}" stroke="var(--dim)" stroke-dasharray="${dash}" stroke-width="1"/>`)
     .join('');
 }
 
@@ -215,19 +215,19 @@ export function lineSVG(it, w, h, plot = {}) {
     : '').join('');
   const linePaths = paths.map(({ d, series, segment }, i) => {
     const pattern = { reported: '5 3', estimate: '1 3', unknown: '2 5' }[segment[0]?.e || 'unknown'];
-    return `<path d="${d}" fill="none" stroke="#fff" stroke-width="${i ? '1' : '1.2'}"${pattern ? ` stroke-dasharray="${pattern}"` : ''}><title>${esc(series.label)} · ${esc(segment[0]?.e || 'unknown')}</title></path>`;
+    return `<path d="${d}" fill="none" stroke="var(--hi)" stroke-width="${i ? '1' : '1.2'}"${pattern ? ` stroke-dasharray="${pattern}"` : ''}><title>${esc(series.label)} · ${esc(segment[0]?.e || 'unknown')}</title></path>`;
   }).join('');
   const lastTime = maxOf(times);
   const firstTime = minOf(times);
   const yl = [hi, (hi + lo) / 2, lo].map((v) => `<text x="4" y="${(cl(v) + 3).toFixed(1)}">${fmt(v)}</text>`).join('');
   const xl = Number.isFinite(firstTime) && Number.isFinite(lastTime) ? `<text x="${L}" y="${H - 3}">${hhmm(firstTime)}</text><text x="${W - R}" y="${H - 3}" text-anchor="end">${hhmm(lastTime)}</text>` : '';
   const dots = plot.points
-    ? lines.flatMap((series) => series.pts.map((p, i) => p.v == null ? '' : `<circle cx="${X(p, i, series).toFixed(1)}" cy="${cl(p.v).toFixed(1)}" r="1.8" fill="#fff"/>`)).join('')
+    ? lines.flatMap((series) => series.pts.map((p, i) => p.v == null ? '' : `<circle cx="${X(p, i, series).toFixed(1)}" cy="${cl(p.v).toFixed(1)}" r="1.8" fill="var(--hi)"/>`)).join('')
     : '';
   const hits = lines.flatMap((series) => series.pts.map((p, i) => p.v == null ? null : ({ px: X(p, i, series), py: cl(p.v), value: p.v, t: p.t, label: series.label })).filter(Boolean));
   const targetLines = targets.filter((target) => target.value >= lo && target.value <= hi).map((target) => {
     const y = cl(target.value).toFixed(1);
-    return `<g class="target"><line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="#aaa" stroke-dasharray="2 3"/><text x="${W - R}" y="${(Number(y) - 2).toFixed(1)}" text-anchor="end">${esc(target.label || 'target')} ${fmt(target.value)}</text></g>`;
+    return `<g class="target"><line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--dim)" stroke-dasharray="2 3"/><text x="${W - R}" y="${(Number(y) - 2).toFixed(1)}" text-anchor="end">${esc(target.label || 'target')} ${fmt(target.value)}</text></g>`;
   }).join('');
   const events = eventMarkers(it, plot, useTime ? timeLo : firstTime, useTime ? timeHi : lastTime, (t) => useTime && timeHi > timeLo ? L + ((t - timeLo) / (timeHi - timeLo)) * (W - L - R) : null, T, H - B);
   const legend = lines.length > 1 ? `<text x="${L}" y="${T + 8}">${lines.map((series) => esc(series.label)).join(' · ')}</text>` : '';
@@ -253,12 +253,12 @@ export function barsSVG(it, w, h, plot = {}) {
   const bars = last
     .map((p, i) => {
       const y = clamp(Y(p.v), T, H - B);
-      return `<rect x="${(L + i * bw + 0.5).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${Math.max(0, H - B - y).toFixed(1)}" fill="#fff"/>`;
+      return `<rect x="${(L + i * bw + 0.5).toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(1, bw - 1).toFixed(1)}" height="${Math.max(0, H - B - y).toFixed(1)}" fill="var(--hi)"/>`;
     })
     .join('');
   const hits = last.map((p, i) => ({ px: L + i * bw + bw / 2, py: clamp(Y(p.v), T, H - B), value: p.v, t: p.t }));
   const yl = `<text x="2" y="${(T + 8).toFixed(1)}">${fmt(hi)}</text><text x="2" y="${H - B}">${fmt(lo)}</text>`;
-  return svg(it, 'bars', W, H, `${bars}<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#333"/>${yl}`, hits);
+  return svg(it, 'bars', W, H, `${bars}<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--dim)"/>${yl}`, hits);
 }
 
 function catBars(it, cats, W, H, L, R, T, B, plot) {
@@ -277,7 +277,7 @@ function catBars(it, cats, W, H, L, R, T, B, plot) {
     .map((c, i) => `<text x="${(L + i * step * bw + bw / 2).toFixed(1)}" y="${H - 4}" text-anchor="middle">${esc(String(c.name).slice(0, 8))}</text>`)
     .join('');
   const hits = cats.map((c, i) => ({ px: L + i * bw + bw / 2, py: H - B, value: c.value, label: c.name }));
-  return svg(it, 'bars', W, H, `${bars}<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#333"/><text x="2" y="${T + 6}">${fmt(max)}</text>${lbl}`, hits);
+  return svg(it, 'bars', W, H, `${bars}<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--dim)"/><text x="2" y="${T + 6}">${fmt(max)}</text>${lbl}`, hits);
 }
 
 // ---------------------------------------------------------------- distributions
@@ -310,12 +310,12 @@ export function boxSVG(it, w, h, plot = {}) {
   const bx = cx - bw / 2;
   const sy = clamp(Y(q1), T, H - B), ey = clamp(Y(q3), T, H - B);
   const body = `
-    <line x1="${bx + bw / 2}" x2="${bx + bw / 2}" y1="${clamp(Y(lo), T, H - B).toFixed(1)}" y2="${sy.toFixed(1)}" stroke="#777"/>
-    <line x1="${bx + bw / 2}" x2="${bx + bw / 2}" y1="${ey.toFixed(1)}" y2="${clamp(Y(hi), T, H - B).toFixed(1)}" stroke="#777"/>
-    <line x1="${bx}" x2="${bx + bw}" y1="${clamp(Y(lo), T, H - B).toFixed(1)}" y2="${clamp(Y(lo), T, H - B).toFixed(1)}" stroke="#fff"/>
-    <line x1="${bx}" x2="${bx + bw}" y1="${clamp(Y(hi), T, H - B).toFixed(1)}" y2="${clamp(Y(hi), T, H - B).toFixed(1)}" stroke="#fff"/>
-    <rect x="${bx.toFixed(1)}" y="${sy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, ey - sy).toFixed(1)}" fill="rgba(255,255,255,.12)" stroke="#fff"/>
-    <line x1="${bx.toFixed(1)}" x2="${(bx + bw).toFixed(1)}" y1="${clamp(Y(med), T, H - B).toFixed(1)}" y2="${clamp(Y(med), T, H - B).toFixed(1)}" stroke="#fff" stroke-width="2"/>
+    <line x1="${bx + bw / 2}" x2="${bx + bw / 2}" y1="${clamp(Y(lo), T, H - B).toFixed(1)}" y2="${sy.toFixed(1)}" stroke="var(--dim)"/>
+    <line x1="${bx + bw / 2}" x2="${bx + bw / 2}" y1="${ey.toFixed(1)}" y2="${clamp(Y(hi), T, H - B).toFixed(1)}" stroke="var(--dim)"/>
+    <line x1="${bx}" x2="${bx + bw}" y1="${clamp(Y(lo), T, H - B).toFixed(1)}" y2="${clamp(Y(lo), T, H - B).toFixed(1)}" stroke="var(--hi)"/>
+    <line x1="${bx}" x2="${bx + bw}" y1="${clamp(Y(hi), T, H - B).toFixed(1)}" y2="${clamp(Y(hi), T, H - B).toFixed(1)}" stroke="var(--hi)"/>
+    <rect x="${bx.toFixed(1)}" y="${sy.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, ey - sy).toFixed(1)}" fill="rgba(255,255,255,.12)" stroke="var(--hi)"/>
+    <line x1="${bx.toFixed(1)}" x2="${(bx + bw).toFixed(1)}" y1="${clamp(Y(med), T, H - B).toFixed(1)}" y2="${clamp(Y(med), T, H - B).toFixed(1)}" stroke="var(--hi)" stroke-width="2"/>
     <text x="2" y="${(T + 8).toFixed(1)}">${fmt(rhi)}</text><text x="2" y="${H - B}">${fmt(rlo)}</text>
     <text x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">min ${fmt(lo)} · q1 ${fmt(q1)} · med ${fmt(med)} · q3 ${fmt(q3)} · max ${fmt(hi)}</text>`;
   return svg(it, 'box', W, H, body, [
@@ -359,7 +359,7 @@ export function ridgelineSVG(it, w, h, plot = {}) {
         .map((c, i) => `${i ? 'L' : 'M'}${(L + i * bw).toFixed(1)} ${(base - (c / max) * rowH * 0.92).toFixed(1)}`)
         .join(' ');
       hits.push({ px: W - 4, py: base - rowH / 2, value: g.values.length, label: `row ${gi}: ${g.values.length} pts` });
-      return `<path d="${d} L${(W - R).toFixed(1)} ${base.toFixed(1)} L${L} ${base.toFixed(1)} Z" fill="rgba(255,255,255,${(0.05 + 0.06 * gi).toFixed(2)})" stroke="#fff" stroke-width="1"/>`;
+      return `<path d="${d} L${(W - R).toFixed(1)} ${base.toFixed(1)} L${L} ${base.toFixed(1)} Z" fill="rgba(255,255,255,${(0.05 + 0.06 * gi).toFixed(2)})" stroke="var(--hi)" stroke-width="1"/>`;
     })
     .join('');
   return svg(it, 'ridge', W, H, body, hits);
@@ -424,7 +424,7 @@ function pieCore(it, w, h, plot, donut) {
       const mid = a + sweep / 2;
       hits.push({ px: cx + r * 0.65 * Math.cos(mid), py: cy + r * 0.65 * Math.sin(mid), value: c.value, label: c.name, pct: (c.value / total) * 100 });
       a = a1;
-      return `<path d="${d}" fill="rgba(255,255,255,${shade(i, vals.length).toFixed(2)})" stroke="#1e2530" stroke-width="1"/>`;
+      return `<path d="${d}" fill="rgba(255,255,255,${shade(i, vals.length).toFixed(2)})" stroke="var(--card)" stroke-width="1"/>`;
     })
     .join('');
   // legend down the right (donut) or under the pie
@@ -489,7 +489,7 @@ function box3d(cam, W, H) {
   const c = [-1, 1];
   const seg = (a, b) => {
     const p = cam(a), q = cam(b);
-    return `<line x1="${p.x.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${q.x.toFixed(1)}" y2="${q.y.toFixed(1)}" stroke="#333" stroke-width="1"/>`;
+    return `<line x1="${p.x.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${q.x.toFixed(1)}" y2="${q.y.toFixed(1)}" stroke="var(--dim)" stroke-width="1"/>`;
   };
   let out = '';
   for (const y of c) for (const z of c) out += seg([-1, y, z], [1, y, z]);
@@ -522,7 +522,7 @@ export function surface3dSVG(it, w, h, plot = {}) {
     }
   }
   quads.sort((a, b) => b.depth - a.depth);
-  const body = quads.map((q) => `<path d="${q.d}" fill="rgba(255,255,255,${(0.05 + 0.6 * ((q.v - zlo) / (zhi - zlo || 1))).toFixed(2)})" stroke="#1e2530" stroke-width="0.4"/>`).join('');
+  const body = quads.map((q) => `<path d="${q.d}" fill="rgba(255,255,255,${(0.05 + 0.6 * ((q.v - zlo) / (zhi - zlo || 1))).toFixed(2)})" stroke="var(--card)" stroke-width="0.4"/>`).join('');
   const hits = quads.slice(0, 40).map((q) => ({ px: W / 2, py: H / 2, value: q.v, label: 'cell' }));
   return svg(it, 'surface3d', W, H, `${body}<text x="4" y="${H - 4}">${g.width}×${g.height} · ${fmt(zlo)}…${fmt(zhi)}</text>`, hits);
 }
@@ -537,10 +537,10 @@ export function scatterSVG(it, w, h, plot = {}) {
   const { lo, hi } = rangeOf(ys, plot);
   const X = (v) => L + ((v - xlo) / (xhi - xlo || 1)) * (W - L - R);
   const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
-  const body = pts.map((p) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${clamp(Y(p[1]), T, H - B).toFixed(1)}" r="2" fill="#fff" fill-opacity=".85"/>`).join('');
+  const body = pts.map((p) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${clamp(Y(p[1]), T, H - B).toFixed(1)}" r="2" fill="var(--hi)" fill-opacity=".85"/>`).join('');
   const hits = pts.map((p) => ({ px: X(p[0]), py: clamp(Y(p[1]), T, H - B), value: p[1], label: `x ${fmt(p[0])}` }));
   const yl = `<text x="2" y="${(T + 8).toFixed(1)}">${fmt(hi)}</text><text x="2" y="${H - B}">${fmt(lo)}</text>`;
-  return svg(it, 'scatter', W, H, `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="#333"/><line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="#333"/>${body}${yl}`, hits);
+  return svg(it, 'scatter', W, H, `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--dim)"/><line x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--dim)"/>${body}${yl}`, hits);
 }
 
 // ---------------------------------------------------------------- gauge
@@ -556,7 +556,7 @@ export function gaugeSVG(it, w, h, plot = {}) {
     const x1 = (cx + r * Math.cos(to)).toFixed(1), y1 = (cy + r * Math.sin(to)).toFixed(1);
     return `<path d="M${x0} ${y0} A${r.toFixed(1)} ${r.toFixed(1)} 0 0 1 ${x1} ${y1}" fill="none" stroke="${stroke}" stroke-width="${sw}"/>`;
   };
-  const body = `${arc(Math.PI, 2 * Math.PI, '#333', 8)}${p > 0 ? arc(Math.PI, Math.PI * (1 + p / 100), '#fff', 8) : ''}<text x="${cx}" y="${(cy - 4).toFixed(1)}" text-anchor="middle" class="gv">${Math.round(p)}%</text>`;
+  const body = `${arc(Math.PI, 2 * Math.PI, 'var(--dim)', 8)}${p > 0 ? arc(Math.PI, Math.PI * (1 + p / 100), 'var(--hi)', 8) : ''}<text x="${cx}" y="${(cy - 4).toFixed(1)}" text-anchor="middle" class="gv">${Math.round(p)}%</text>`;
   return svg(it, 'gauge', W, H, body, [{ px: cx + r * Math.cos(Math.PI * (1 + p / 100)), py: cy + r * Math.sin(Math.PI * (1 + p / 100)), value: p, label: 'percent' }]);
 }
 
@@ -570,15 +570,15 @@ export function bulletSVG(it, w, h, plot = {}) {
   const max = Math.max(1, Number(plot.max ?? it.max ?? it.metric?.denominator ?? 0) || Math.max(value * 1.2, 1));
   const x = (v) => 8 + clamp(v / max, 0, 1) * (W - 16);
   const ticks = [
-    [it.warnAbove, '#8c8c8c'], [it.errorAbove, '#ff5c5c'],
-    [it.warnBelow, '#8c8c8c'], [it.errorBelow, '#ff5c5c'],
+    [it.warnAbove, 'var(--dim)'], [it.errorAbove, 'var(--red)'],
+    [it.warnBelow, 'var(--dim)'], [it.errorBelow, 'var(--red)'],
   ].filter(([v]) => Number.isFinite(v)).map(([v, color]) => `<line x1="${x(v).toFixed(1)}" y1="${H / 2 - 13}" x2="${x(v).toFixed(1)}" y2="${H / 2 + 13}" stroke="${color}" stroke-width="1"/>`).join('');
   const targets = [...(plot.targets || []).map((t) => Number(t.value)), Number(it.metric?.target)].filter(Number.isFinite);
-  const target = targets.map((v) => `<line x1="${(x(v) - 1).toFixed(1)}" y1="${H / 2 - 15}" x2="${(x(v) - 1).toFixed(1)}" y2="${H / 2 + 15}" stroke="#fff" stroke-width="2"/>`).join('');
-  const body = `<rect x="8" y="${H / 2 - 5}" width="${W - 16}" height="10" fill="#2c2c2c"/>`
-    + `<rect x="8" y="${H / 2 - 5}" width="${Math.max(0, x(value) - 8).toFixed(1)}" height="10" fill="#e8e8e8"/>`
+  const target = targets.map((v) => `<line x1="${(x(v) - 1).toFixed(1)}" y1="${H / 2 - 15}" x2="${(x(v) - 1).toFixed(1)}" y2="${H / 2 + 15}" stroke="var(--hi)" stroke-width="2"/>`).join('');
+  const body = `<rect x="8" y="${H / 2 - 5}" width="${W - 16}" height="10" fill="var(--raised)"/>`
+    + `<rect x="8" y="${H / 2 - 5}" width="${Math.max(0, x(value) - 8).toFixed(1)}" height="10" fill="var(--fg)"/>`
     + ticks + target
-    + `<text x="8" y="${H - 4}" fill="#8c8c8c" font-size="9">${esc(fmt(value))}${it.metric?.unit || it.unit ? ` ${esc(it.metric?.unit || it.unit)}` : ''} · ${esc(fmt(max))}</text>`;
+    + `<text x="8" y="${H - 4}" fill="var(--dim)" font-size="9">${esc(fmt(value))}${it.metric?.unit || it.unit ? ` ${esc(it.metric?.unit || it.unit)}` : ''} · ${esc(fmt(max))}</text>`;
   return svg(it, 'bullet', W, H, body, [{ px: x(value), py: H / 2, value, label: 'value' }]);
 }
 
@@ -598,12 +598,12 @@ export function waterfallSVG(it, w, h, plot = {}) {
   let body = '';
   values.forEach((v, i) => {
     const y0 = y(starts[i]), y1 = y(starts[i] + v);
-    body += `<rect x="${(i * bw + 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y1 - y0)).toFixed(1)}" fill="${v < 0 ? '#8c8c8c' : '#e8e8e8'}"/>`;
-    body += `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="#8c8c8c" font-size="8" text-anchor="middle">${esc(cats[i].name)}</text>`;
+    body += `<rect x="${(i * bw + 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y1 - y0)).toFixed(1)}" fill="${v < 0 ? 'var(--dim)' : 'var(--fg)'}"/>`;
+    body += `<text x="${(i * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="var(--dim)" font-size="8" text-anchor="middle">${esc(cats[i].name)}</text>`;
   });
   const ty = y(acc);
-  body += `<rect x="${(values.length * bw + 2).toFixed(1)}" y="${ty.toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y(0) - ty)).toFixed(1)}" fill="#fff"/>`;
-  body += `<text x="${(values.length * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="#fff" font-size="8" text-anchor="middle">total</text>`;
+  body += `<rect x="${(values.length * bw + 2).toFixed(1)}" y="${ty.toFixed(1)}" width="${Math.max(1, bw - 4).toFixed(1)}" height="${Math.max(1, Math.abs(y(0) - ty)).toFixed(1)}" fill="var(--hi)"/>`;
+  body += `<text x="${(values.length * bw + bw / 2).toFixed(1)}" y="${H - 3}" fill="var(--hi)" font-size="8" text-anchor="middle">total</text>`;
   return svg(it, 'waterfall', W, H, body);
 }
 
@@ -661,7 +661,7 @@ function eventMarkers(it, plot, t0, t1, X, top, bottom) {
     const x = X(t);
     if (x === null || !Number.isFinite(x)) return '';
     const title = String(event.text ?? event.id ?? 'event');
-    return `<g class="event"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top}" y2="${bottom}" stroke="#777" stroke-dasharray="1 3"/><text x="${(x + 2).toFixed(1)}" y="${top + 8}"><title>${esc(title)}</title>${esc(title.slice(0, 18))}</text></g>`;
+    return `<g class="event"><line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top}" y2="${bottom}" stroke="var(--dim)" stroke-dasharray="1 3"/><text x="${(x + 2).toFixed(1)}" y="${top + 8}"><title>${esc(title)}</title>${esc(title.slice(0, 18))}</text></g>`;
   }).join('');
 }
 
@@ -686,9 +686,9 @@ export function compositeSVG(it, w, h, plot = {}) {
     else seg.push({ x: X(i), y: Y(point.v), point });
   });
   if (seg.length) paths.push(seg);
-  const trend = paths.map((part) => `<path d="${part.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="#fff" stroke-width="1"/>`).join('');
+  const trend = paths.map((part) => `<path d="${part.map((p, i) => `${i ? 'L' : 'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ')}" fill="none" stroke="var(--hi)" stroke-width="1"/>`).join('');
   const targetY = target && target.value >= lo && target.value <= hi ? Y(target.value).toFixed(1) : null;
-  const targetLine = targetY === null ? '' : `<line x1="${left}" x2="${right}" y1="${targetY}" y2="${targetY}" stroke="#777" stroke-dasharray="2 3"><title>${esc(target.label || 'target')} ${fmt(target.value)}</title></line>`;
+  const targetLine = targetY === null ? '' : `<line x1="${left}" x2="${right}" y1="${targetY}" y2="${targetY}" stroke="var(--dim)" stroke-dasharray="2 3"><title>${esc(target.label || 'target')} ${fmt(target.value)}</title></line>`;
   const valueText = esc(fmt(value));
   const unitText = unit ? `<text x="${Math.min(W - 4, 8 + valueText.length * 10)}" y="${Math.max(18, H * 0.4)}">${esc(unit)}</text>` : '';
   const targetLabel = target ? `<text x="${W - 4}" y="${H - 4}" text-anchor="end">${esc(target.label || 'target')} ${fmt(target.value)}</text>` : '';
@@ -705,7 +705,7 @@ export function capacitySVG(it, w, h) {
   const ratio = clamp(value / capacity, 0, 1);
   const x = 4, width = W - 8, barY = H * 0.58, barH = Math.max(6, Math.min(12, H * 0.18));
   const label = `${fmt(value)} / ${fmt(capacity)}${unit ? ` ${unit}` : ''}`;
-  const body = `<text x="4" y="${Math.max(17, H * 0.34)}" class="gv">${esc(label)}</text><rect x="${x}" y="${barY.toFixed(1)}" width="${width.toFixed(1)}" height="${barH.toFixed(1)}" fill="#222" stroke="#777"/><rect x="${x}" y="${barY.toFixed(1)}" width="${(width * ratio).toFixed(1)}" height="${barH.toFixed(1)}" fill="#fff"/><text x="${W - 4}" y="${H - 4}" text-anchor="end">${(ratio * 100).toFixed(0)}%</text>`;
+  const body = `<text x="4" y="${Math.max(17, H * 0.34)}" class="gv">${esc(label)}</text><rect x="${x}" y="${barY.toFixed(1)}" width="${width.toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--raised)" stroke="var(--dim)"/><rect x="${x}" y="${barY.toFixed(1)}" width="${(width * ratio).toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--hi)"/><text x="${W - 4}" y="${H - 4}" text-anchor="end">${(ratio * 100).toFixed(0)}%</text>`;
   return svg(it, 'capacity', W, H, body, [{ px: x + width * ratio, py: barY + barH / 2, value, label: `${fmt(value)} / ${fmt(capacity)}` }]);
 }
 
@@ -732,8 +732,8 @@ export function tableHTML(it, grid = false) {
   if (!columns.length || !rows.length) return EMPTY;
   const numeric = columns.flatMap((column) => rows.map((row) => numberOf(row?.[column.key]))).filter((n) => n !== null);
   const nlo = numeric.length ? minOf(numeric) : 0, nhi = numeric.length ? maxOf(numeric) : 0;
-  const thStyle = 'border:1px solid rgba(232,238,248,.16);padding:4px 6px;white-space:nowrap;color:#f6f8fb;background:#283140;font-weight:500';
-  const tdStyle = 'border:1px solid rgba(232,238,248,.1);padding:4px 6px;white-space:nowrap';
+  const thStyle = 'border:1px solid var(--line2);padding:4px 6px;white-space:nowrap;color:var(--hi);background:var(--raised);font-weight:500';
+  const tdStyle = 'border:1px solid var(--line);padding:4px 6px;white-space:nowrap';
   const header = columns.map((column, index) => `<th scope="col" style="${thStyle}"><button type="button" data-monitor-sort="${index}" style="font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer" title="sort by ${esc(column.label)}">${esc(column.label)}${column.unit ? ` <span class="u">${esc(column.unit)}</span>` : ''} ↕</button></th>`).join('');
   const body = rows.map((row, rowIndex) => {
     const cells = columns.map((column) => {
@@ -745,7 +745,7 @@ export function tableHTML(it, grid = false) {
     }).join('');
     const metadata = ['observedAt', 'source', 'state', 'coverage'].filter((key) => row?.[key] !== null && row?.[key] !== undefined)
       .map((key) => `${key}: ${cellText(row[key])}`).join(' · ');
-    return `<tr data-monitor-row="${rowIndex}">${cells}</tr>${metadata ? `<tr class="row-meta" data-monitor-meta="${rowIndex}"><td colspan="${columns.length}" style="${tdStyle};color:#8c8c8c;font-size:10px">${esc(metadata)}</td></tr>` : ''}`;
+    return `<tr data-monitor-row="${rowIndex}">${cells}</tr>${metadata ? `<tr class="row-meta" data-monitor-meta="${rowIndex}"><td colspan="${columns.length}" style="${tdStyle};color:var(--dim);font-size:10px">${esc(metadata)}</td></tr>` : ''}`;
   }).join('');
   return `<div class="monitor-data" style="overflow:auto;max-height:100%;min-height:0;min-width:0;width:100%;flex:1"><table role="${grid ? 'grid' : 'table'}" style="border-collapse:collapse;width:100%;text-align:left"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -772,8 +772,8 @@ export function pipelineHTML(it) {
   const view = it?.pipelineView;
   const stages = Array.isArray(view?.stages) ? view.stages : (Array.isArray(it?.pipeline?.stages) ? it.pipeline.stages : []);
   if (!stages.length) return `<div class="chart-empty faint">${esc(view?.message || 'no pipeline stages')}</div>`;
-  const thStyle = 'border:1px solid rgba(232,238,248,.16);padding:4px 6px;white-space:nowrap;color:#f6f8fb;background:#283140;font-weight:500';
-  const tdStyle = 'border:1px solid rgba(232,238,248,.1);padding:4px 6px;white-space:nowrap';
+  const thStyle = 'border:1px solid var(--line2);padding:4px 6px;white-space:nowrap;color:var(--hi);background:var(--raised);font-weight:500';
+  const tdStyle = 'border:1px solid var(--line);padding:4px 6px;white-space:nowrap';
   const headers = PIPELINE_FIELDS.map(([, label]) => `<th scope="col" style="${thStyle}">${esc(label)}</th>`).join('');
   const rows = stages.map((stage) => {
     const metrics = PIPELINE_FIELDS.map(([key]) => {
@@ -791,7 +791,7 @@ export function pipelineHTML(it) {
   const flow = stages.map((stage, index) => {
     const rate = stage.throughput, queue = stage.queued, age = stage.oldestAge;
     const detail = [rate?.source, rate?.ageSeconds != null ? `${fmt(rate.ageSeconds)}s old` : '', rate?.stale ? 'STALE' : ''].filter(Boolean).join(' · ');
-    return `<div style="min-width:120px;border:1px solid ${stage.candidate ? '#8eb0ff' : 'rgba(232,238,248,.16)'};border-radius:8px;padding:8px;background:${stage.candidate ? 'rgba(142,176,255,.16)' : '#1e2530'};color:#e6ebf2"><div>${stage.candidate ? '▲ ' : ''}${esc(stage.label || stage.key)}${index < stages.length - 1 ? ' →' : ''}</div><div>${esc(cellText(rate?.value))} ${esc(rate?.unit || '')}</div><div style="height:6px;background:#283140;border-radius:999px;margin:5px 0;overflow:hidden"><div style="height:100%;width:${Math.max(0, queues[index]) / maximum * 100}%;background:#c5ceda"></div></div><div>queued ${esc(cellText(queue?.value))} · oldest ${esc(cellText(age?.value))}${esc(age?.unit || '')}</div><small>${esc(detail)}</small></div>`;
+    return `<div style="min-width:120px;border:1px solid ${stage.candidate ? 'var(--accent)' : 'var(--line2)'};border-radius:8px;padding:8px;background:${stage.candidate ? 'var(--accent-dim)' : 'var(--card)'};color:var(--fg)"><div>${stage.candidate ? '▲ ' : ''}${esc(stage.label || stage.key)}${index < stages.length - 1 ? ' →' : ''}</div><div>${esc(cellText(rate?.value))} ${esc(rate?.unit || '')}</div><div style="height:6px;background:var(--inset);border-radius:999px;margin:5px 0;overflow:hidden"><div style="height:100%;width:${Math.max(0, queues[index]) / maximum * 100}%;background:var(--hi)"></div></div><div>queued ${esc(cellText(queue?.value))} · oldest ${esc(cellText(age?.value))}${esc(age?.unit || '')}</div><small>${esc(detail)}</small></div>`;
   }).join('');
   return `<div class="monitor-data" style="overflow:auto;max-height:100%;min-height:0;min-width:0;width:100%;flex:1"><div class="pipeline-flow" style="display:grid;grid-template-columns:repeat(${stages.length},minmax(120px,1fr));gap:10px;margin-bottom:8px">${flow}</div>${view?.message ? `<div class="faint">${esc(view.message)}</div>` : ''}<table role="table" style="border-collapse:collapse;width:100%;text-align:left"><thead><tr><th scope="col" style="${thStyle}">stage</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }

@@ -19,7 +19,7 @@ Tokens live on `:root` in `web/style.css`. Use the tokens; do not invent a secon
 | `--card` | Cards and rows that sit on the canvas |
 | `--raised` | Hover and pressed fills |
 | `--inset` | Code, command input and other wells |
-| `--fg` `--hi` `--dim` `--faint` | Primary, emphasis, secondary and quiet text |
+| `--fg` `--hi` `--dim` `--faint` | Primary, emphasis, secondary and quiet text. `--faint` stays at least 4.5:1 on `--card` and `--raised` |
 | `--line` `--line2` | Hairline and stronger borders |
 | `--accent` `--accent-dim` | Selection, focus and active chrome. Not a status |
 | `--red` `--red-dim` | Blocked ticket, pending decision, or monitor error |
@@ -40,7 +40,7 @@ with `--hi` text, or a 2px `--accent` focus ring. Do not invert a control to a l
 ## Status
 
 - Red marks a blocked ticket, a pending decision or a monitor in error. Green marks done or `ok`.
-- `--accent` is chrome only. It must not mean warning, progress or health.
+- `--accent` is chrome only. It must not mean warning, progress or health. Progress meters use `--hi` on an `--inset` track.
 - A status color always appears with a glyph or label. Color never carries meaning by itself.
 - Show blocked, decision and error states as a tinted header or inset bar (`--red-dim` / `--green-dim`), not a
   solid banner of inverted text.
