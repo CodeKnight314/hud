@@ -448,6 +448,10 @@ export class Hud {
     const q = playbook ? `?playbook=${encodeURIComponent(playbook)}` : '';
     return this.request('GET', `/api/guide${q}`);
   }
+  /** human quickstart; served links point back at GET /api/guide */
+  quickstart(): Promise<string> {
+    return this.request('GET', '/api/quickstart');
+  }
   /** the chart renderer modules agents can use (`display: 'view:<name>'`) */
   views(): Promise<{ dir: string; views: { name: string; mtime: number; bytes: number; sha256?: string; valid?: boolean; errors?: string[] }[] }> {
     return this.request('GET', '/api/views');

@@ -1,10 +1,17 @@
 import { asset } from './assets.ts';
 
+/**
+ * The only served-doc builder. HTTP, CLI, and MCP call `guideText` / `quickstartText`.
+ * Do not concatenate GUIDE.md and STYLE.md anywhere else: a second builder skips this
+ * relative-link rewrite. Sibling drafts that grow their own full-guide body (`fullGuide`,
+ * `renderGuide`) have to call `guideText` for that body. A GUIDE-only slice must not
+ * point at the visual-contract anchor, because STYLE.md is not in the slice.
+ */
+
 /** Repo file on the release line. It is packaged with views/ but has no HTTP route. */
 const VIEWS_README_URL = 'https://github.com/CodeKnight314/hud/blob/0.2.0/views/README.md';
 /** Product contract. Packaged beside the guide; the served page has no directory for a relative link. */
 const PRODUCT_URL = 'https://github.com/CodeKnight314/hud/blob/0.2.0/PRODUCT.md';
-
 /**
  * Repo markdown keeps relative links so GitHub can open the sibling file.
  * The served copy has no directory, so each link becomes a URL or an in-page anchor.
