@@ -128,6 +128,8 @@ usage:
                                      --export snapshots runs this call finishes; pass ids to include an already
                                      finished run; --all with --export snapshots every owned done or canceled run
   hud run <id>                       run an automatic monitor now
+  hud approve <id> --revision v      approve a command monitor waiting in Attention
+                                     (only actor user; an agent calling this is refused)
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)
   hud backup [--list] [--reason r] | hud backup restore <name>
@@ -263,6 +265,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   decide: { u: 'hud decide <id> <optionId> --version UUID [--note text]', min: 1, max: 2, f: ['optionId', 'note', 'version', 'json'] },
   finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize] [--export] [--all]', f: ['board', 'note', 'no-organize', 'export', 'all', 'json'] },
   run: { u: 'hud run <id>', min: 1, max: 1, f: ['json'] },
+  approve: { u: 'hud approve <id> --revision v', min: 1, max: 1, f: ['revision', 'json'] },
   rm: { u: 'hud rm <id...>', min: 1, f: ['json'] },
   trash: { u: 'hud trash [--board b] [--json]', max: 0, f: ['board', 'json'] },
   restore: { u: 'hud restore <id>', min: 1, max: 1, f: ['json'] },
@@ -906,6 +909,11 @@ async function main() {
     case 'run': {
       const it = await hud.run(rest[0]);
       return emit(it, line(it));
+    }
+    case 'approve': {
+      if (typeof flags.revision !== 'string' || !flags.revision) throw new UsageError('--revision is required (read it from hud attention)');
+      const it = await hud.approveCommand(rest[0], flags.revision);
+      return emit(it, `approved ${line(it)}`);
     }
     case 'rm': {
       const out = [];

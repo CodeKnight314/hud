@@ -111,7 +111,7 @@ body.persistence-alert { --chrome-top: calc(var(--top-height) + var(--persistenc
 #monitor-attention-strip[hidden] { display: none; }
 #monitor-attention-strip .strip-label { color: var(--dim); text-transform: uppercase; font-size: 10px; letter-spacing: .08em; }
 #monitor-attention-strip button { border: 1px solid var(--line); padding: 1px 5px; overflow: hidden; text-overflow: ellipsis; }
-#monitor-attention-strip .strip-error { color: var(--red); border-color: var(--red); }
+#monitor-attention-strip .strip-error, #monitor-attention-strip .strip-command { color: var(--red); border-color: var(--red); }
 #monitor-attention-strip .strip-stale, #monitor-attention-strip .strip-unknown, #monitor-attention-strip .strip-pending, #monitor-attention-strip .strip-conflict { color: var(--dim); }
 #top > button, #bar > button, #zoom { flex-shrink: 0; white-space: nowrap; }
 #btn-trash.on, #btn-activity.on, #btn-auto.on, #btn-view.on, [data-f-completed].on { color: var(--hi); background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent); }
@@ -206,10 +206,11 @@ body.supervision #btn-organize, body.supervision #btn-auto, body.supervision #bt
 .attention-run-head { display: flex; align-items: baseline; gap: 8px; color: var(--dim); margin-bottom: 5px; }
 .attention-card { border: 1px solid var(--line2); background: var(--card); border-radius: var(--radius); padding: 10px; min-width: 0; box-shadow: var(--shadow); }
 .attention-card:hover { border-color: var(--accent); }
-.attention-card.kind-error, .attention-card.kind-decision, .attention-card.kind-blocked { border-color: var(--red); }
+.attention-card.kind-error, .attention-card.kind-decision, .attention-card.kind-blocked, .attention-card.kind-command { border-color: var(--red); }
 .attention-card .ac-head { display: flex; align-items: baseline; gap: 7px; }
 .attention-card .ac-kind { color: var(--dim); font-size: 10px; text-transform: uppercase; }
-.attention-card.kind-error .ac-kind, .attention-card.kind-decision .ac-kind, .attention-card.kind-blocked .ac-kind { color: var(--red); }
+.attention-card.kind-error .ac-kind, .attention-card.kind-decision .ac-kind, .attention-card.kind-blocked .ac-kind, .attention-card.kind-command .ac-kind { color: var(--red); }
+.ac-command { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; max-height: 9em; overflow: auto; font: inherit; }
 button:focus-visible, [tabindex]:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .attention-card .ac-title { color: var(--hi); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
 .attention-card .ac-meta { color: var(--dim); margin-top: 4px; }
@@ -338,6 +339,10 @@ body.blank #empty { display: flex; }
 .monitor .lg div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .monitor .g { width: 1.2em; text-align: center; display: inline-block; }
 .monitor.m-ok .g { color: var(--green); }
+.monitor.awaiting-approval { border-style: dashed; border-color: var(--red); }
+.monitor.awaiting-approval.m-error .hd { background: transparent; color: inherit; }
+.monitor.awaiting-approval.m-error .hd .t, .monitor.awaiting-approval.m-error .hd .r, .monitor.awaiting-approval.m-error .hd .tag { color: inherit; }
+.monitor.awaiting-approval.m-error .g { animation: none; color: var(--red); }
 .monitor.m-error { border-color: var(--red); box-shadow: inset 3px 0 0 var(--red); }
 .monitor.m-error .hd { background: var(--red-dim); color: var(--fg); }
 .monitor.m-error .hd .t, .monitor.m-error .hd .r { color: var(--fg); }

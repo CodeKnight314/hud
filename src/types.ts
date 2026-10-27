@@ -272,6 +272,11 @@ export interface Item {
   programDraft?: ProgramDraft;
   source?: MonitorSource;
   /**
+   * Shell monitors authored by anyone except the browser actor `user` stay pending until that
+   * human approves the current command and cwd. The engine will not run a pending command.
+   */
+  commandApproval?: CommandApproval;
+  /**
    * Monitor view. 'auto' adapts to the data; the fixed kinds are drawn by web/views.js;
    * 'view:<name>' loads a renderer module from views/ that exports render(ctx).
    */
@@ -392,10 +397,24 @@ export interface State {
   attention: Record<string, AttentionRecord>;
 }
 
+/** command is first so a shell waiting on a person sorts above every other attention kind */
+export const ATTENTION_KINDS = ['command', 'decision', 'error', 'stale', 'warn', 'blocked'] as const;
+export type AttentionKind = (typeof ATTENTION_KINDS)[number];
+
+/** the command and cwd a person has been asked to allow, or has already allowed */
+export interface CommandApproval {
+  fingerprint: string;
+  status: 'pending' | 'approved';
+  requestedBy: string;
+  requestedAt: number;
+  approvedBy?: string;
+  approvedAt?: number;
+}
+
 export interface AttentionRecord {
   id: string;
   itemId: string;
-  kind: 'decision' | 'error' | 'stale' | 'warn' | 'blocked';
+  kind: AttentionKind;
   priority: number;
   openedAt: number;
   revision: string;

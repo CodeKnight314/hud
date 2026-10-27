@@ -529,6 +529,10 @@ export class Hud {
   run(id: string): Promise<Item> {
     return this.request('POST', `/api/monitors/${encodeURIComponent(id)}/run`);
   }
+  /** Approve a command monitor. Only actor `user` (the human at the board) is accepted. */
+  approveCommand(id: string, revision: string): Promise<Item> {
+    return this.request('POST', `/api/monitors/${encodeURIComponent(id)}/approve`, { revision });
+  }
   /** Tidy a board by group; `auto` turns continuous auto-organize on/off for that board. */
   organize(board?: string, auto?: boolean): Promise<{ groups: string[]; moved: number; canvas: { width: number; height: number }; items: number; tickets: number }> {
     return this.request('POST', '/api/organize', { board, auto });

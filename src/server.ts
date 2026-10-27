@@ -5,6 +5,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { Engine } from './engine.ts';
 import { HudError, STATE_VERSION, Store } from './store.ts';
 import { acquireLock } from './lock.ts';
+import { actorAllowed, boardCookie, isBoardRequest } from './actor.ts';
 import { summarize, ticketsView } from './summary.ts';
 import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
@@ -278,12 +279,22 @@ function numParam(q: URLSearchParams, name: string): number | undefined {
 }
 const dec = (s: string) => decodeURIComponent(s);
 
+/**
+ * This process's board identity. The page gets it as an HttpOnly cookie; nothing else does, so an agent
+ * cannot claim to be the human by naming itself `user`.
+ */
+const BOARD_TOKEN = randomUUID();
+
 function actorOf(req: IncomingMessage, body?: any, q?: URLSearchParams) {
   // clients percent-encode the header so non-Latin names survive HTTP's Latin-1 header rules
   let h = req.headers['x-hud-actor'] as string | undefined;
   if (h) try { h = decodeURIComponent(h); } catch {}
   const a = h || (isObj(body) ? body.actor : undefined) || q?.get('actor') || 'api';
-  return String(a).slice(0, 40);
+  const actor = String(a).slice(0, 40);
+  if (!actorAllowed(actor, isBoardRequest(req.headers.cookie, BOARD_TOKEN))) {
+    throw new HudError(403, 'actor "user" is reserved for the board page; send your own name (x-hud-actor or --as) instead');
+  }
+  return actor;
 }
 
 /** the session making a call: header, body or query; undefined when the caller has none */
@@ -880,9 +891,16 @@ route('POST', '/api/monitors/:id/push', async (req, _s, [id], q) => {
 route('POST', '/api/monitors/:id/run', async (_r, _s, [id], q) => {
   const mid = rid(id, q);
   await engine.runNow(mid).catch((e) => {
-    throw new HudError(400, e.message);
+    if (e instanceof HudError) throw e;
+    throw new HudError(400, (e as Error).message);
   });
   return Store.lite(store.get(mid));
+});
+/** The browser actor `user` approves the command currently shown in Attention. */
+route('POST', '/api/monitors/:id/approve', async (req, _s, [id], q) => {
+  const b = await readObj(req);
+  if (typeof b.revision !== 'string' || !b.revision) throw new HudError(400, 'revision must be a string');
+  return Store.lite(store.approveCommand(rid(id, q), b.revision, actorOf(req, b)));
 });
 route('GET', '/api/alerts', (_r, _s, _m, q) =>
   store.alerts({ all: q.get('all') === '1', since: numParam(q, 'since'), notify: q.get('notify') || undefined }),
@@ -1006,7 +1024,8 @@ function serveStatic(path: string, res: ServerResponse) {
   const headers = (n: string): Record<string, string> => ({
     'content-type': MIME[extname(n)] ?? 'application/octet-stream',
     'cache-control': 'no-store',
-    ...(extname(n) === '.html' ? { 'content-security-policy': CSP } : {}),
+    // the document is what makes this browser the board: the cookie is the only thing that can act as the human
+    ...(extname(n) === '.html' ? { 'content-security-policy': CSP, 'set-cookie': boardCookie(BOARD_TOKEN) } : {}),
   });
   if (isPackaged()) {
     const name = rel.replace(/^\/+/, '');

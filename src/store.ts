@@ -2,8 +2,8 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord, TicketForest, TicketNode, Ownership } from './types.ts';
-import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
+import type { Activity, Alert, AttentionItem, AttentionKind, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord, TicketForest, TicketNode, Ownership } from './types.ts';
+import { ATTENTION_KINDS, CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
 import { hashBytes, readAttachmentBytes } from './attachments.ts';
@@ -22,7 +22,27 @@ export class HudError extends Error {
 }
 
 /** bump with a migration in the Store constructor whenever the meaning of stored data changes */
-export const STATE_VERSION = 10;
+export const STATE_VERSION = 11;
+
+/** v10 attention order, before `command` was inserted at the front */
+const LEGACY_ATTENTION_KINDS = ['decision', 'error', 'stale', 'warn', 'blocked'];
+
+/** The shell identity a person approves. Interval and timeout do not change which command runs. */
+export function commandFingerprint(source: MonitorSource): string {
+  return JSON.stringify({ kind: 'command', command: source.command ?? '', cwd: source.cwd ?? '' });
+}
+
+/** Non-command monitors are always allowed. A command runs only when its current command and cwd were approved. */
+export function commandApproved(item: Item): boolean {
+  if (item.type !== 'monitor' || item.source?.kind !== 'command') return true;
+  const approval = item.commandApproval;
+  return approval?.status === 'approved' && approval.fingerprint === commandFingerprint(item.source);
+}
+
+function attentionPriorityOk(kind: unknown, priority: unknown): boolean {
+  if (typeof kind !== 'string' || typeof priority !== 'number' || !Number.isInteger(priority)) return false;
+  return (ATTENTION_KINDS as readonly string[]).indexOf(kind) === priority || LEGACY_ATTENTION_KINDS.indexOf(kind) === priority;
+}
 
 const TYPES: ItemType[] = ['ticket', 'monitor', 'note', 'frame', 'util', 'project'];
 const PREFIX: Record<ItemType, string> = { ticket: 't', monitor: 'm', note: 'n', frame: 'f', util: 'u', project: 'p' };
@@ -414,7 +434,7 @@ export class Store extends EventEmitter {
     if (Array.isArray(raw.alerts)) s.alerts = raw.alerts.filter((a) => isObj(a) && Array.isArray(a.notify)) as Alert[];
     if (isObj(raw.attention)) for (const [id, a] of Object.entries(raw.attention)) {
       if (isObj(a) && a.id === id && a.itemId === id && typeof a.revision === 'string' && typeof a.signature === 'string' && Number.isFinite(a.openedAt) && a.openedAt >= 0
-        && ['decision', 'error', 'stale', 'warn', 'blocked'].indexOf(a.kind) === a.priority && a.priority >= 0
+        && attentionPriorityOk(a.kind, a.priority)
         && ['resolvedAt', 'reviewedAt', 'snoozedUntil'].every(k => a[k] === undefined || (Number.isFinite(a[k]) && a[k] >= 0))
         && ['reviewedBy', 'snoozedBy'].every(k => a[k] === undefined || typeof a[k] === 'string'))
         s.attention[id] = a as AttentionRecord;
@@ -508,6 +528,31 @@ export class Store extends EventEmitter {
       s.attachments ??= dict();
       s.version = 10;
     }
+    if (s.version < 11) {
+      // v11: command monitors that already existed were running with the user's consent. New agent
+      // commands after this version stay pending until the human approves them.
+      const t = now();
+      const grandfather = (it: Item) => {
+        if (it.type !== 'monitor' || it.source?.kind !== 'command') return;
+        const fingerprint = commandFingerprint(it.source);
+        if (it.commandApproval?.status === 'approved' && it.commandApproval.fingerprint === fingerprint) return;
+        it.commandApproval = {
+          fingerprint,
+          status: 'approved',
+          requestedBy: typeof it.createdBy === 'string' && it.createdBy ? it.createdBy : 'hud',
+          requestedAt: Number.isFinite(it.createdAt) ? it.createdAt : t,
+          approvedBy: 'hud',
+          approvedAt: t,
+        };
+      };
+      for (const it of Object.values(s.items)) grandfather(it);
+      for (const entry of s.trash ?? []) if (entry?.item) grandfather(entry.item);
+      for (const record of Object.values(s.attention)) {
+        const priority = (ATTENTION_KINDS as readonly string[]).indexOf(record.kind);
+        if (priority >= 0) record.priority = priority;
+      }
+      s.version = 11;
+    }
     for (const b of s.boards) { b.width = BOARD_WIDTH; b.height = BOARD_HEIGHT; }
     for (const it of Object.values(s.items)) Object.assign(it, bounded(it));
     for (const it of [...Object.values(s.items), ...s.trash.map(e => e.item)])
@@ -547,7 +592,9 @@ export class Store extends EventEmitter {
       if (it.reportHistory) fix(it.reportHistory.some(r => !isObj(r)), () => (it.reportHistory = it.reportHistory!.filter(isObj)));
       for (const k of ['messageFormat', 'questionFormat'] as const) fix(it[k] != null && !['plain', 'markdown'].includes(it[k]!), () => (it[k] = 'plain'));
       for (const k of ['meta', 'util', 'source', 'plot'] as const) fix(it[k] !== undefined && !isObj(it[k]), () => delete it[k]);
+      if (it.type === 'monitor' || it.commandApproval) fix(this.normalizeCommandApproval(it), () => {});
     }
+    for (const entry of this.state.trash) if (entry.item) fix(this.normalizeCommandApproval(entry.item), () => {});
     const tickets = Object.values(items).filter((i) => i.type === 'ticket');
     const same = (id: unknown, it: Item) => typeof id === 'string' && items[id]?.type === 'ticket' && items[id].board === it.board && id !== it.id;
     for (const it of tickets) {
@@ -845,8 +892,62 @@ export class Store extends EventEmitter {
       throw new HudError(400, 'summaryMonitor must be a linked monitor on the same board');
   }
 
-  private attentionKind(it?: Item): AttentionRecord['kind'] | undefined {
+  /** A command record must match the current command and cwd. Anything else fails closed as pending. */
+  private normalizeCommandApproval(it: Item): boolean {
+    if (it.type !== 'monitor' || it.source?.kind !== 'command') {
+      if (it.commandApproval) {
+        delete it.commandApproval;
+        return true;
+      }
+      return false;
+    }
+    const approval = it.commandApproval;
+    const fingerprint = commandFingerprint(it.source);
+    const valid = !!approval && approval.fingerprint === fingerprint
+      && (approval.status === 'pending' || approval.status === 'approved')
+      && typeof approval.requestedBy === 'string' && Number.isFinite(approval.requestedAt)
+      && (approval.status === 'pending' || (typeof approval.approvedBy === 'string' && Number.isFinite(approval.approvedAt)));
+    if (valid) return false;
+    it.commandApproval = {
+      fingerprint,
+      status: 'pending',
+      requestedBy: typeof it.updatedBy === 'string' && it.updatedBy ? it.updatedBy : 'hud',
+      requestedAt: now(),
+    };
+    return true;
+  }
+
+  /**
+   * Actor `user` is the browser. A command they write is the approval. Anyone else, including the
+   * CLI and agents, leaves the new command and cwd pending until approveCommand().
+   */
+  private settleCommandApproval(item: Item, actor: string, previous?: MonitorSource) {
+    if (item.type !== 'monitor') return;
+    if (item.source?.kind !== 'command') {
+      if (item.commandApproval) delete item.commandApproval;
+      return;
+    }
+    const fingerprint = commandFingerprint(item.source);
+    const changed = previous?.kind !== 'command' || commandFingerprint(previous) !== fingerprint;
+    if (!changed && item.commandApproval?.fingerprint === fingerprint && (item.commandApproval.status === 'pending' || item.commandApproval.status === 'approved')) return;
+    const t = now();
+    if (actor === 'user') {
+      item.commandApproval = { fingerprint, status: 'approved', requestedBy: actor, requestedAt: t, approvedBy: actor, approvedAt: t };
+      return;
+    }
+    item.commandApproval = { fingerprint, status: 'pending', requestedBy: actor, requestedAt: t };
+  }
+
+  private commandAttentionMessage(it: Item): string {
+    const command = it.source?.command ?? '';
+    const cwd = it.source?.cwd ? `\ncwd: ${it.source.cwd}` : '';
+    const who = it.commandApproval?.requestedBy || it.updatedBy || 'agent';
+    return `${who} wants to run:\n${command}${cwd}`;
+  }
+
+  private attentionKind(it?: Item): AttentionKind | undefined {
     if (!it) return;
+    if (it.type === 'monitor' && it.source?.kind === 'command' && !commandApproved(it)) return 'command';
     if (it.type === 'ticket') {
       if (this.isFinished(it)) return;
       if (it.options?.length && !it.decision) return 'decision';
@@ -869,10 +970,18 @@ export class Store extends EventEmitter {
       old.resolvedAt = t;
       old.revision = randomUUID();
     } else {
-      const signature = kind + (kind === 'decision' ? ':' + (it?.decisionVersion ?? '') : '');
-      if (old && !old.resolvedAt && old.signature === signature) return;
-      const priority = ['decision', 'error', 'stale', 'warn', 'blocked'].indexOf(kind);
-      const deescalated = old && !old.resolvedAt && priority > old.priority;
+      const signature = kind === 'command' ? `command:${commandFingerprint(it!.source!)}` : kind + (kind === 'decision' ? ':' + (it?.decisionVersion ?? '') : '');
+      const priority = (ATTENTION_KINDS as readonly string[]).indexOf(kind);
+      if (old && !old.resolvedAt && old.signature === signature) {
+        if (old.priority !== priority) {
+          old.priority = priority;
+          if (emit) this.emit('event', { kind: 'attention', itemId: id } satisfies HudEvent);
+          return true;
+        }
+        return;
+      }
+      // Leaving a command approval is a new episode. De-escalation only preserves review inside the monitor ladder.
+      const deescalated = old && !old.resolvedAt && old.kind !== 'command' && priority > old.priority;
       records[id] = {
         id, itemId: id, kind, priority, signature, revision: randomUUID(), openedAt: deescalated ? old.openedAt : t,
         ...(deescalated ? { reviewedAt: old.reviewedAt, reviewedBy: old.reviewedBy, snoozedUntil: old.snoozedUntil, snoozedBy: old.snoozedBy } : {}),
@@ -908,8 +1017,9 @@ export class Store extends EventEmitter {
       if (record.resolvedAt || !it) continue;
       const run = this.runFor(it.id);
       result.push({ ...record, board: it.board, title: it.title || it.id, owner: it.assignee || it.createdBy,
-        lastUpdate: it.lastUpdate ?? it.updatedAt, message: record.kind === 'decision' ? it.question : it.message,
-        messageFormat: record.kind === 'decision' ? it.questionFormat : it.messageFormat,
+        lastUpdate: it.lastUpdate ?? it.updatedAt,
+        message: record.kind === 'decision' ? it.question : record.kind === 'command' ? this.commandAttentionMessage(it) : it.message,
+        messageFormat: record.kind === 'decision' ? it.questionFormat : record.kind === 'command' ? 'plain' : it.messageFormat,
         runId: run?.id, runTitle: run?.title });
     }
     return { items: result.sort((a, b) => a.priority - b.priority || a.openedAt - b.openedAt || a.id.localeCompare(b.id)), now: now() };
@@ -920,6 +1030,7 @@ export class Store extends EventEmitter {
     if (!record || record.resolvedAt) throw new HudError(409, 'this issue is no longer active; refresh Attention');
     if (input.revision !== record.revision) throw new HudError(409, 'this issue has changed; refresh Attention before reviewing');
     if (!['review', 'unreview', 'snooze'].includes(input.action)) throw new HudError(400, 'action must be review, unreview or snooze');
+    if (record.kind === 'command' && input.action !== 'snooze') throw new HudError(400, 'reviewing does not approve a command; approve it in Attention');
     const t = now();
     if (input.action === 'snooze') {
       if (!Number.isFinite(input.until) || input.until! <= t || input.until! > t + 7 * 86400_000) throw new HudError(400, 'until must be a future timestamp within seven days');
@@ -934,6 +1045,38 @@ export class Store extends EventEmitter {
     this.emitEvent({ kind: 'attention', itemId: id });
     this.save();
     return { ...record };
+  }
+
+  /** The browser actor `user` allows the command currently shown in Attention. Agents cannot approve their own shell. */
+  approveCommand(id: string, revision: string, actor: string): Item {
+    if (actor !== 'user') throw new HudError(403, 'only the browser at the board can approve a command monitor');
+    // The actor name is only trusted together with the board session it belongs to: an agent that
+    // reaches this far must not be able to stand in for a person who is not there.
+    const human = this.sessions().items.find((s) => s.kind === 'human' && s.live);
+    if (!human) throw new HudError(403, 'no live human session at the board; open or reload the board and approve again');
+    const item = this.get(id);
+    if (item.type !== 'monitor' || item.source?.kind !== 'command') throw new HudError(400, 'only a command monitor can be approved');
+    this.normalizeCommandApproval(item);
+    const record = this.state.attention[id];
+    if (!record || record.resolvedAt || record.kind !== 'command') throw new HudError(409, 'this command is not waiting for approval; refresh Attention');
+    if (revision !== record.revision) throw new HudError(409, 'this command has changed; refresh Attention before approving');
+    const fingerprint = commandFingerprint(item.source);
+    if (item.commandApproval?.fingerprint !== fingerprint || item.commandApproval.status !== 'pending') throw new HudError(409, 'this command has changed; refresh Attention before approving');
+    const t = now();
+    item.commandApproval = {
+      fingerprint,
+      status: 'approved',
+      requestedBy: item.commandApproval.requestedBy,
+      requestedAt: item.commandApproval.requestedAt,
+      approvedBy: actor,
+      approvedAt: t,
+    };
+    item.updatedAt = t;
+    const shown = (item.source.command ?? '').slice(0, 200);
+    this.log(actor, 'command.approve', `approved command on ${item.id}: ${shown}`, item);
+    this.emitEvent({ kind: 'item', item, actor });
+    this.save();
+    return item;
   }
 
   runs(): { items: RunOverview[] } {
@@ -962,7 +1105,7 @@ export class Store extends EventEmitter {
   changesSince(since: number) {
     if (!Number.isFinite(since) || since < 0 || since > now()) throw new HudError(400, 'since must be a past timestamp in milliseconds');
     const all = this.state.activity;
-    const meaningful = new Set(['created', 'deleted', 'restored', 'status', 'state', 'stale', 'ask', 'decide', 'comment', 'updated', 'link', 'attention.review', 'attention.unreview', 'attention.snooze', 'board.deleted', 'board.renamed']);
+    const meaningful = new Set(['created', 'deleted', 'restored', 'status', 'state', 'stale', 'ask', 'decide', 'comment', 'updated', 'link', 'attention.review', 'attention.unreview', 'attention.snooze', 'command.approve', 'board.deleted', 'board.renamed']);
     const events = all.filter(a => a.t > since && meaningful.has(a.action));
     return { since, now: now(), complete: !(all.length && all[0]!.id > 1 && since < all[0]!.t) && events.length <= 500, events: events.slice(-500) };
   }
@@ -2170,6 +2313,7 @@ export class Store extends EventEmitter {
         this.record(item, item.observation?.observedAt ?? t);
       }
       item.state ??= 'unknown';
+      this.settleCommandApproval(item, actor, undefined);
     } else if (type === 'note') {
       item.text ??= '';
     } else if (type === 'util') {
@@ -2262,7 +2406,9 @@ export class Store extends EventEmitter {
     const wasFinished = this.isFinished(item);
     const newKey = item.type === 'project' && changed.includes('key') ? (fields.key as string) : undefined;
     if (newKey) delete fields.key;
+    const previousSource = item.type === 'monitor' ? item.source : undefined;
     this.assign(item, fields);
+    if (item.type === 'monitor') this.settleCommandApproval(item, actor, previousSource);
     if (item.type === 'ticket' && changed.some(k => ['question', 'questionFormat', 'options'].includes(k))) {
       item.decisionVersion = randomUUID();
       delete item.decision;

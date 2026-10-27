@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, STATE_VERSION, Store } from '../src/store.ts';
+import { actorAllowed, boardCookie, cookieOf, isBoardRequest } from '../src/actor.ts';
+import { Engine } from '../src/engine.ts';
 import type { Activity, Item } from '../src/types.ts';
 
 const ACTOR = 'supervision-check';
@@ -106,7 +108,7 @@ async function migrationAndAttention() {
 
   const migrated = new Store(file);
   assert.equal(migrated.state.version, STATE_VERSION);
-  assert.equal(STATE_VERSION, 10);
+  assert.equal(STATE_VERSION, 11);
   assert.equal(item(migrated, 'parent').uuid, fixedParentUuid);
   assert.equal(item(migrated, 'child').uuid, fixedChildUuid);
   assert.equal(item(migrated, 'child').project, 'project');
@@ -477,15 +479,192 @@ function stressReadModels() {
   flush(store);
 }
 
+const USER = 'user';
+
+function waitFor(predicate: () => boolean, ms = 2000): Promise<void> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (predicate()) return resolve();
+      if (Date.now() - start > ms) return reject(new Error('timed out waiting for command approval behavior'));
+      setTimeout(tick, 30);
+    };
+    tick();
+  });
+}
+
+async function commandApprovalGate() {
+  const dir = mkdtempSync(join(tmpdir(), 'hud-command-gate-'));
+  roots.push(dir);
+  const file = join(dir, 'state.json');
+  const marker = join(dir, 'ran.txt');
+  const changed = join(dir, 'changed.txt');
+  const legacy = {
+    version: 10,
+    seq: {},
+    boards: [{ id: 'main', name: 'main', createdAt: 1, width: 1600, height: 900, autoOrganize: false }],
+    items: {
+      'legacy-cmd': {
+        id: 'legacy-cmd', type: 'monitor', board: 'main', title: 'legacy command',
+        x: 0, y: 0, w: 260, h: 150, createdAt: 1, updatedAt: 1, createdBy: ACTOR, updatedBy: ACTOR,
+        source: { kind: 'command', command: 'echo legacy', cwd: '/tmp', interval: 30 }, state: 'unknown', display: 'auto', history: [], log: [],
+      },
+      'legacy-warn': {
+        id: 'legacy-warn', type: 'monitor', board: 'main', title: 'legacy warn',
+        x: 280, y: 0, w: 260, h: 150, createdAt: 2, updatedAt: 2, createdBy: ACTOR, updatedBy: ACTOR,
+        source: { kind: 'manual' }, state: 'warn', message: 'still warning', display: 'auto', history: [], log: [],
+      },
+    },
+    activity: [],
+    alerts: [],
+    attention: {
+      'legacy-warn': {
+        id: 'legacy-warn', itemId: 'legacy-warn', kind: 'warn', priority: 3, openedAt: 2,
+        revision: 'legacy-rev', signature: 'warn', reviewedAt: 3, reviewedBy: HUMAN,
+      },
+    },
+    trash: [{
+      t: Date.now(), actor: ACTOR,
+      item: {
+        id: 'trashed-cmd', type: 'monitor', board: 'main', title: 'trashed command',
+        x: 0, y: 0, w: 260, h: 150, createdAt: 3, updatedAt: 3, createdBy: ACTOR, updatedBy: ACTOR,
+        source: { kind: 'command', command: 'echo trashed' }, state: 'unknown',
+      },
+    }],
+  };
+  writeFileSync(file, JSON.stringify(legacy));
+  const store = new Store(file);
+  store.setBoard('main', { autoOrganize: false }, ACTOR);
+  assert.equal(store.state.version, 11);
+  const kept = item(store, 'legacy-cmd');
+  assert.equal(kept.commandApproval?.status, 'approved', 'an existing command monitor keeps running after upgrade');
+  assert.equal(kept.commandApproval?.fingerprint, JSON.stringify({ kind: 'command', command: 'echo legacy', cwd: '/tmp' }));
+  assert.equal(kept.commandApproval?.approvedBy, 'hud');
+  const trashed = store.state.trash.find((entry) => entry.item.id === 'trashed-cmd');
+  assert.equal(trashed?.item.commandApproval?.status, 'approved', 'trashed command monitors are grandfathered too');
+  const warn = store.state.attention['legacy-warn'];
+  assert.equal(warn.kind, 'warn');
+  assert.equal(warn.priority, 4, 'warn keeps its place after command is inserted at the front of the attention order');
+  assert.equal(warn.reviewedBy, HUMAN, 'migration must keep an existing review');
+  assert.equal(warn.revision, 'legacy-rev');
+
+  const engine = new Engine(store, dir);
+  engine.start();
+  try {
+    assert.equal(engine.running.has('legacy-cmd'), true, 'a grandfathered command is eligible to run');
+
+    const forged = store.create({
+      type: 'monitor', id: 'forged-cmd', title: 'forged',
+      source: { kind: 'command', command: `touch ${JSON.stringify(marker)}`, interval: 3600 },
+      commandApproval: { status: 'approved', fingerprint: 'nope', requestedBy: USER, requestedAt: 1, approvedBy: USER, approvedAt: 1 },
+    }, ACTOR);
+    assert.equal(forged.commandApproval?.status, 'pending', 'a caller cannot store its own approval');
+    assert.notEqual(forged.commandApproval?.fingerprint, 'nope');
+    assert.equal(engine.running.has(forged.id), false, 'a new agent command must not be scheduled');
+    const pending = activeAttentionOf(store, forged.id);
+    assert.equal(pending.kind, 'command');
+    assert.equal(pending.priority, 0, 'a pending command sorts ahead of other attention');
+    assert.match(pending.message || '', /supervision-check wants to run:/);
+    assert.match(pending.message || '', /touch /);
+    assert.equal(store.attention().items[0]?.itemId, forged.id);
+    await sleep(250);
+    assert.equal(existsSync(marker), false, 'the engine must not execute an unapproved command');
+
+    store.reviewAttention(forged.id, { action: 'snooze', revision: pending.revision, until: Date.now() + 60_000 }, USER);
+    assert.equal(item(store, forged.id).commandApproval?.status, 'pending', 'snooze does not approve');
+    assert.equal(engine.running.has(forged.id), false);
+    const snoozedRevision = store.state.attention[forged.id].revision;
+    expectHudError(() => store.reviewAttention(forged.id, { action: 'review', revision: snoozedRevision }, USER), 400, 'review is not approval');
+    expectHudError(() => store.approveCommand(forged.id, snoozedRevision, ACTOR), 403, 'agent approval');
+    expectHudError(() => store.approveCommand(forged.id, snoozedRevision, HUMAN), 403, 'non-user approval');
+    // Naming yourself `user` is not enough: the browser also has to be present at the board.
+    expectHudError(() => store.approveCommand(forged.id, snoozedRevision, USER), 403, 'no live human session');
+    const board = store.sessionStart({ id: 'user', kind: 'human' }, USER);
+    assert.equal(board.live, true, 'the board page registers a live human session');
+    expectHudError(() => store.approveCommand(forged.id, 'stale-revision', USER), 409, 'stale approval revision');
+    await engine.runNow(forged.id).then(() => { throw new Error('runNow should reject a pending command'); }, (error: Error) => {
+      assert.match(error.message, /approval/);
+    });
+
+    const approved = store.approveCommand(forged.id, snoozedRevision, USER);
+    assert.equal(approved.commandApproval?.status, 'approved');
+    assert.equal(approved.commandApproval?.approvedBy, USER);
+    assert.equal(attentionOf(store, forged.id), undefined, 'approval closes the command attention episode');
+    assert.equal(engine.running.has(forged.id), true);
+    await waitFor(() => existsSync(marker));
+    assert(store.state.activity.some((entry) => entry.action === 'command.approve' && entry.itemId === forged.id));
+
+    const retitled = store.update(forged.id, { title: 'renamed' }, ACTOR);
+    assert.equal(retitled.commandApproval?.status, 'approved', 'an unrelated edit keeps the approval');
+    const sameCommand = store.update(forged.id, { source: { ...retitled.source, interval: 120 } }, ACTOR);
+    assert.equal(sameCommand.commandApproval?.status, 'approved', 'interval changes do not re-arm the gate');
+    assert.equal(sameCommand.commandApproval?.fingerprint, forged.commandApproval?.fingerprint);
+    assert.equal(engine.running.has(forged.id), true);
+
+    const edited = store.update(forged.id, { source: { kind: 'command', command: `touch ${JSON.stringify(changed)}`, cwd: dir, interval: 3600 } }, ACTOR);
+    assert.equal(edited.commandApproval?.status, 'pending', 'a changed command or cwd needs a new approval');
+    assert.equal(engine.running.has(forged.id), false, 'the engine stops when the approved command changes');
+    const again = activeAttentionOf(store, forged.id);
+    assert.equal(again.kind, 'command');
+    assert.notEqual(again.revision, pending.revision);
+    await sleep(250);
+    assert.equal(existsSync(changed), false, 'the replacement command must not run before approval');
+    expectHudError(() => store.approveCommand(forged.id, snoozedRevision, USER), 409, 'old revision cannot approve the new command');
+
+    const humanEdit = store.update(forged.id, { source: { kind: 'command', command: 'echo human', interval: 3600 } }, USER);
+    assert.equal(humanEdit.commandApproval?.status, 'approved', 'a command the human writes is approved by that edit');
+    assert.equal(humanEdit.commandApproval?.approvedBy, USER);
+    assert.equal(attentionOf(store, forged.id), undefined);
+    assert.equal(engine.running.has(forged.id), true);
+
+    const manual = store.update(forged.id, { source: { kind: 'manual' } }, ACTOR);
+    assert.equal(manual.commandApproval, undefined, 'leaving command clears the approval record');
+    assert.equal(engine.running.has(forged.id), false);
+
+    const http = store.create({ type: 'monitor', id: 'http-still-runs', title: 'http', source: { kind: 'http', url: 'http://127.0.0.1:9/', interval: 3600 } }, ACTOR);
+    assert.equal(http.commandApproval, undefined);
+    assert.equal(engine.running.has(http.id), true, 'http monitors are not held for command approval');
+    assert.equal(attentionOf(store, http.id), undefined);
+
+    const owned = store.create({ type: 'monitor', id: 'user-cmd', title: 'user command', source: { kind: 'command', command: 'true', interval: 3600 } }, USER);
+    assert.equal(owned.commandApproval?.status, 'approved');
+    assert.equal(engine.running.has(owned.id), true);
+    assert.equal(attentionOf(store, owned.id), undefined);
+
+    store.push(owned.id, { state: 'error', message: 'reported' }, ACTOR);
+    assert.equal(activeAttentionOf(store, owned.id).kind, 'error', 'an approved command still raises ordinary attention');
+    const blocked = store.update(owned.id, { source: { kind: 'command', command: 'false', interval: 3600 } }, ACTOR);
+    assert.equal(blocked.commandApproval?.status, 'pending');
+    assert.equal(activeAttentionOf(store, owned.id).kind, 'command', 'pending approval outranks an existing error');
+  } finally {
+    engine.stopAll();
+    flush(store);
+  }
+}
+
+function boardIdentity() {
+  assert.equal(isBoardRequest(undefined, 'token'), false, 'no cookie is not the board');
+  assert.equal(isBoardRequest('other=1; hud_board=wrong', 'token'), false, 'a wrong token is not the board');
+  assert.equal(isBoardRequest('hud_board=token', 'other'), false, 'the token is per server process');
+  assert.equal(isBoardRequest('other=1; hud_board=token; more=2', 'token'), true, 'the board cookie wins among others');
+  assert.equal(cookieOf('a=1; b = 2 ', 'b'), '2', 'cookie values are trimmed');
+  assert.equal(actorAllowed('user', false), false, 'an agent cannot name itself user');
+  assert.equal(actorAllowed('user', true), true, 'the board page may act as the human');
+  assert.equal(actorAllowed('claude', false), true, 'any other caller keeps its own name');
+  assert.match(boardCookie('t0k'), /^hud_board=t0k; Path=\/; HttpOnly; SameSite=Strict$/, 'the board cookie is HttpOnly and strict');
+}
+
 async function main() {
+  boardIdentity();
   await migrationAndAttention();
+  await commandApprovalGate();
   await attentionLifecycle();
   decisionRevisions();
   reportsAndComments();
   runsAndLinks();
   changesSinceChecks();
   stressReadModels();
-  console.log('PASS: supervision migration, attention lifecycle/revisions, reports/comments/fan-out validation, runs/links, incremental changes, and 20-run/100-monitor/200-ticket read-model stress.');
+  console.log('PASS: supervision migration, board identity, attention lifecycle/revisions, reports/comments/fan-out validation, runs/links, incremental changes, and 20-run/100-monitor/200-ticket read-model stress.');
   console.log(`Scratch directories: ${roots.join(', ')}`);
 }
 
