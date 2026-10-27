@@ -19,20 +19,31 @@ export function formatClaimTtl(expiresAt, now) {
   return m ? `${hr}h ${m}m` : `${hr}h`;
 }
 
-function sessionOf(row, sessions) {
+function snapshotTime(value) {
+  const t = Number(value);
+  return Number.isFinite(t) ? t : null;
+}
+
+function sessionOf(row, sessions, queue) {
   const id = String(row.claim?.session || '');
-  const fromList = (sessions?.items || []).find((s) => s.id === id);
-  const name = String(fromList?.name || row.session?.name || id).trim() || id || 'session';
-  // Presence is refreshed on its own; a queue row can still say the holder is live after the session has ended.
-  const holderLive = (fromList?.live ?? row.session?.live) !== false;
-  return { name, holderLive };
+  const fromList = (sessions?.items || []).find((s) => s.id === id) || null;
+  const fromQueue = row.session || null;
+  const sessionsAt = snapshotTime(sessions?.now);
+  const queueAt = snapshotTime(queue?.now);
+  // The session list overrides the queue row only when its snapshot is strictly newer.
+  const listNewer = !!(fromList && sessionsAt != null && (queueAt == null || sessionsAt > queueAt));
+  const chosen = listNewer ? fromList : (fromQueue || fromList);
+  const other = chosen === fromList ? fromQueue : fromList;
+  const name = String(chosen?.name || other?.name || id).trim() || id || 'session';
+  const liveFlag = chosen && typeof chosen.live === 'boolean' ? chosen.live : other?.live;
+  return { name, holderLive: liveFlag !== false };
 }
 
 function claimRows(queue, sessions, now) {
   const rows = [];
   for (const row of queue.items || []) {
     if (!row?.claim) continue;
-    const session = sessionOf(row, sessions);
+    const session = sessionOf(row, sessions, queue);
     const expiresAt = Number(row.claim.expiresAt);
     const leaseLive = row.claim.live !== false && expiresAt > now;
     rows.push({

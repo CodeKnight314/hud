@@ -28,6 +28,7 @@ assert.doesNotMatch(readyOnly, /data-claim-focus/);
 
 const claimed = claimWidgetHTML({
   queue: {
+    now: now - 2_000,
     counts: { ready: 5 },
     items: [
       { id: 'late', ident: 'EGO-4', title: 'later', claim: { session: 'agent-a', expiresAt: now + 90_000, live: true, ident: 'EGO-4' }, session: { id: 'agent-a', name: 'Queue Alice', live: true } },
@@ -35,7 +36,7 @@ const claimed = claimWidgetHTML({
       { id: 'open', ident: 'EGO-1', claim: null, ready: true },
     ],
   },
-  sessions: { items: [{ id: 'agent-a', name: 'Alice' }] },
+  sessions: { now, items: [{ id: 'agent-a', name: 'Alice', live: true }] },
   now,
 });
 assert.match(claimed, /data-ready="5"/, 'ready count is the queue total, not the visible rows');
@@ -64,10 +65,11 @@ assert.doesNotMatch(namedFallback, /●/);
 
 const fresherDead = claimWidgetHTML({
   queue: {
+    now: now - 2_000,
     counts: { ready: 0 },
     items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-c', expiresAt: now + 20_000, live: true }, session: { id: 'agent-c', name: 'Queue Cara', live: true } }],
   },
-  sessions: { items: [{ id: 'agent-c', name: 'Cara', live: false }] },
+  sessions: { now, items: [{ id: 'agent-c', name: 'Cara', live: false }] },
   now,
 });
 assert.match(fresherDead, /data-claim-session="Cara"/);
@@ -77,15 +79,42 @@ assert.doesNotMatch(fresherDead, /●/);
 
 const fresherLive = claimWidgetHTML({
   queue: {
+    now: now - 2_000,
     counts: { ready: 0 },
     items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-d', expiresAt: now + 20_000, live: true }, session: { id: 'agent-d', name: 'Queue Dan', live: false } }],
   },
-  sessions: { items: [{ id: 'agent-d', name: 'Dan', live: true }] },
+  sessions: { now, items: [{ id: 'agent-d', name: 'Dan', live: true }] },
   now,
 });
 assert.match(fresherLive, /data-claim-session="Dan"/);
 assert.match(fresherLive, /data-claim-live="1"/);
 assert.match(fresherLive, /●/);
+
+const queueNewer = claimWidgetHTML({
+  queue: {
+    now,
+    counts: { ready: 0 },
+    items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-d', expiresAt: now + 20_000, live: true }, session: { id: 'agent-d', name: 'Dan', live: true } }],
+  },
+  sessions: { now: now - 2_000, items: [{ id: 'agent-d', name: 'Stale Dan', live: false }] },
+  now,
+});
+assert.match(queueNewer, /data-claim-session="Dan"/, 'a newer queue snapshot keeps its session name');
+assert.match(queueNewer, /data-claim-live="1"/, 'a newer queue snapshot keeps a live holder');
+assert.match(queueNewer, /●/);
+assert.doesNotMatch(queueNewer, /Stale Dan/);
+
+const sameTime = claimWidgetHTML({
+  queue: {
+    now,
+    counts: { ready: 0 },
+    items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-e', expiresAt: now + 20_000, live: true }, session: { id: 'agent-e', name: 'Queue Eve', live: true } }],
+  },
+  sessions: { now, items: [{ id: 'agent-e', name: 'List Eve', live: false }] },
+  now,
+});
+assert.match(sameTime, /data-claim-session="Queue Eve"/, 'an equal snapshot time does not let the session list override the queue');
+assert.match(sameTime, /data-claim-live="1"/);
 
 const hostile = claimWidgetHTML({
   queue: {
