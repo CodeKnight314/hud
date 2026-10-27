@@ -2,9 +2,9 @@
 // Release signing plan. Credentials stay in the environment (GitHub Actions secrets
 // locally or in CI). Nothing here reads a certificate from the repo.
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, closeSync, existsSync, fchmodSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -55,6 +55,9 @@ function unsignedPlan(platform) {
     mode: 'unsigned',
     unset: [...ALL_CREDENTIALS],
     set: { CSC_IDENTITY_AUTO_DISCOVERY: 'false', HUD_SIGNING_MODE: 'unsigned' },
+    // electron-builder.yml sets mac.notarize: true, which notarizes when Apple
+    // credentials are present. An unsigned job must turn that off explicitly.
+    extraArgs: platform === 'macos' ? ['--config.mac.notarize=false'] : [],
     summary: `${platform} unsigned`,
   };
 }
@@ -143,7 +146,35 @@ function planMac(env) {
   return plan;
 }
 
-export function resolveAppleApiKey(raw, destination, writeFile = writeFileSync) {
+// Create the file at mode 0600 before any key bytes are written. open(2) masks
+// the mode with umask, so fchmod on the still-empty fd removes that race.
+function writeRestricted(path, contents) {
+  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+  const data = Buffer.from(contents);
+  const fd = openSync(temporary, 'wx', 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    let offset = 0;
+    while (offset < data.length) {
+      const wrote = writeSync(fd, data, offset, data.length - offset);
+      if (wrote <= 0) throw new Error('failed to write the Apple API key');
+      offset += wrote;
+    }
+  } catch (error) {
+    closeSync(fd);
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+  closeSync(fd);
+  try {
+    renameSync(temporary, path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+export function resolveAppleApiKey(raw, destination, writeFile = writeRestricted) {
   const value = raw.trim();
   if (value.includes('BEGIN PRIVATE KEY')) {
     writeFile(destination, value.endsWith('\n') ? value : `${value}\n`);
@@ -188,20 +219,31 @@ export function notarizeOptions(env, appPath) {
   return null;
 }
 
-export function applySigningPlan(env, plan, keyPath = join(tmpdir(), 'hud-apple-api-key.p8')) {
+export function applySigningPlan(env, plan) {
   if (plan.error) throw new Error(plan.error);
   for (const name of plan.unset) delete env[name];
   Object.assign(env, plan.set);
-  let createdKey = null;
-  if (plan.rewriteAppleApiKey) {
-    const rewritten = resolveAppleApiKey(env.APPLE_API_KEY, keyPath);
-    if (rewritten === keyPath) {
-      chmodSync(keyPath, 0o600);
-      createdKey = keyPath;
-    }
-    env.APPLE_API_KEY = rewritten;
+  if (!plan.rewriteAppleApiKey) return null;
+  const raw = env.APPLE_API_KEY;
+  const value = raw.trim();
+  if (!value.includes('BEGIN PRIVATE KEY') && existsSync(value)) {
+    env.APPLE_API_KEY = value;
+    return null;
   }
-  return createdKey;
+  const dir = mkdtempSync(join(tmpdir(), 'hud-apple-api-key-'));
+  const keyPath = join(dir, 'AuthKey.p8');
+  try {
+    chmodSync(dir, 0o700);
+    env.APPLE_API_KEY = resolveAppleApiKey(raw, keyPath);
+    return dir;
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export function discardPrivateKey(dir) {
+  if (dir) rmSync(dir, { recursive: true, force: true });
 }
 
 export function macAppAcceptance(verifyStatus, displayText, mode) {
@@ -328,26 +370,42 @@ function readMode(outputDir) {
   }
 }
 
+// npm on Windows is npm.cmd, and spawning a batch file requires a shell. Run
+// Node's own npm-cli.js instead so passwords in the environment are never parsed.
+export function signingExec(command, extraArgs, platformName = process.platform) {
+  const argv = [...command, ...extraArgs];
+  if (argv.length === 0 || argv.some((arg) => typeof arg !== 'string' || arg.includes('\0'))) {
+    throw new Error('refusing to run a signing build command with a NUL byte');
+  }
+  const [bin, ...args] = argv;
+  if ((bin === 'npm' || bin === 'npm.cmd') && platformName === 'win32') {
+    const npmCli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    return { file: process.execPath, args: [npmCli, ...args], shell: false };
+  }
+  if (bin === 'npm.cmd') return { file: 'npm', args, shell: false };
+  return { file: bin, args, shell: false };
+}
+
 function prepare(platform, command) {
   const plan = planSigning(process.env, platform);
-  const createdKey = applySigningPlan(process.env, plan);
-  recordMode(plan.mode);
-  console.log(`signing: ${plan.summary}`);
+  let createdDir = null;
   let exitCode = 0;
   try {
+    createdDir = applySigningPlan(process.env, plan);
+    recordMode(plan.mode);
+    console.log(`signing: ${plan.summary}`);
     if (!command) return;
-    const args = [...command, ...plan.extraArgs];
-    if (args.some((arg) => /[\0\n\r`$]/.test(arg))) throw new Error('refusing to run a signing build command with shell metacharacters');
-    const status = spawnSync(args.join(' '), {
+    const exec = signingExec(command, plan.extraArgs);
+    const status = spawnSync(exec.file, exec.args, {
       cwd: root,
       env: process.env,
-      shell: true,
+      shell: false,
       stdio: 'inherit',
     });
     if (status.error) throw status.error;
     exitCode = status.status ?? 1;
   } finally {
-    if (createdKey) rmSync(createdKey, { force: true });
+    discardPrivateKey(createdDir);
   }
   if (exitCode !== 0) process.exit(exitCode);
 }

@@ -292,11 +292,13 @@ workflow dispatch build temporary artifacts but do not create a release.
 ### Release signing
 Stable macOS releases are Developer ID–signed and notarized, and stable Windows releases are Authenticode-signed, when
 the GitHub Actions secrets below are set on the repository. `scripts/signing.mjs` reads them in the native workflow.
-No certificate or password belongs in the repo. If a platform's secrets are all absent, that job stays unsigned and
-macOS falls back to the ad-hoc signature. If only some of a platform's secrets are set, the job fails.
+No certificate or password belongs in the repo. If a platform's secrets are all absent, that job stays unsigned,
+macOS notarization is turned off, and macOS falls back to the ad-hoc signature. If only some of a platform's secrets
+are set, the job fails.
 
-`APPLE_API_KEY` may be the `.p8` PEM or base64 of that file. The script writes a temporary `.p8` and passes its path:
-electron-builder 26 forwards `APPLE_API_KEY` to `notarytool --key`, which requires a file. Prefer the API key. When
+`APPLE_API_KEY` may be the `.p8` PEM or base64 of that file. The script writes it to a private temporary file
+(mode 0600, in a unique 0700 directory) and passes that path: electron-builder 26 forwards `APPLE_API_KEY` to
+`notarytool --key`, which requires a file. The directory is removed when the build step finishes. Prefer the API key. When
 both notarization methods are fully set, the API key is used. `CSC_NAME` is optional and is the identity name without
 the `Developer ID Application:` prefix. Leave `CSC_IDENTITY_AUTO_DISCOVERY` unset when `CSC_LINK` is set; `false`
 makes electron-builder ignore the imported certificate unless `CSC_NAME` is also set.

@@ -1,7 +1,7 @@
 // Signing plan: complete credentials sign, partial credentials fail, and no credentials stay unsigned.
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { shouldAdhocSign } from './adhoc-sign.mjs';
 import notarizeDmgs from './notarize-dmg.mjs';
@@ -10,12 +10,14 @@ import {
   SIGNING_SECRETS,
   WIN_SIGNING_SECRETS,
   applySigningPlan,
+  discardPrivateKey,
   macAppAcceptance,
   macDmgAcceptance,
   macStapleAcceptance,
   notarizeOptions,
   planSigning,
   resolveAppleApiKey,
+  signingExec,
   windowsAcceptance,
 } from './signing.mjs';
 
@@ -50,7 +52,7 @@ function plan(env, platform) {
 const unsignedMac = plan({}, 'macos');
 ok(unsignedMac.mode === 'unsigned' && !unsignedMac.error, 'macOS without credentials stays unsigned');
 ok(unsignedMac.set.CSC_IDENTITY_AUTO_DISCOVERY === 'false', 'unsigned macOS disables identity auto-discovery');
-ok(unsignedMac.extraArgs.length === 0, 'unsigned macOS does not force signing');
+ok(unsignedMac.extraArgs.length === 1 && unsignedMac.extraArgs[0] === '--config.mac.notarize=false', 'unsigned macOS disables notarization and does not force signing');
 
 const planted = plan({ CSC_KEY_PASSWORD: secret, APPLE_API_KEY_ID: 'KEYID12345' }, 'macos');
 ok(planted.error && !planted.error.includes(secret), 'partial macOS credentials fail without echoing secrets');
@@ -60,6 +62,7 @@ const api = plan({ ...apiEnv, CSC_IDENTITY_AUTO_DISCOVERY: 'false' }, 'macos');
 ok(api.mode === 'signed' && api.notarization === 'api-key' && !api.error, 'complete API-key credentials sign and notarize');
 ok(api.unset.includes('CSC_IDENTITY_AUTO_DISCOVERY'), 'CSC_LINK signing does not keep auto-discovery disabled');
 ok(api.unset.includes('APPLE_ID') && api.extraArgs.includes('--config.mac.forceCodeSigning=true'), 'API-key plan forces Developer ID signing');
+ok(!api.extraArgs.includes('--config.mac.notarize=false'), 'signed macOS keeps notarization enabled');
 ok(!api.summary.includes(secret) && !api.summary.includes(apiEnv.APPLE_API_KEY), 'signing summary does not include credential values');
 
 const both = plan({ ...apiEnv, ...appleIdEnv }, 'macos');
@@ -76,36 +79,67 @@ const win = plan({ WIN_CSC_LINK: 'cert', WIN_CSC_KEY_PASSWORD: secret, CSC_LINK:
 ok(win.mode === 'signed' && win.unset.includes('CSC_LINK') && win.extraArgs.includes('--config.win.forceCodeSigning=true'), 'Windows uses WIN_CSC_LINK and ignores the macOS certificate');
 const partialWin = plan({ WIN_CSC_LINK: secret }, 'windows');
 ok(partialWin.error && !partialWin.error.includes(secret) && partialWin.error.includes('WIN_CSC_KEY_PASSWORD'), 'partial Windows credentials fail without echoing the certificate');
-ok(plan({}, 'windows').mode === 'unsigned', 'Windows without credentials stays unsigned');
+const unsignedWin = plan({}, 'windows');
+ok(unsignedWin.mode === 'unsigned' && unsignedWin.extraArgs.length === 0, 'Windows without credentials stays unsigned and does not force signing');
+ok(plan({}, 'linux').extraArgs.length === 0, 'unsigned Linux does not pass macOS notarization flags');
 
 const linux = plan({ ...apiEnv, WIN_CSC_LINK: 'cert', WIN_CSC_KEY_PASSWORD: secret }, 'linux');
 ok(linux.mode === 'unsigned' && linux.unset.includes('CSC_LINK') && linux.unset.includes('WIN_CSC_LINK'), 'Linux stays unsigned and drops signing credentials');
 ok(plan({}, 'freebsd').error, 'unknown platforms are rejected');
 
 const dir = mkdtempSync(join(tmpdir(), 'hud-signing-'));
+const previousUmask = process.umask(0);
+const createdDirs = [];
 try {
-  const keyPath = join(dir, 'AuthKey.p8');
   const applied = { ...apiEnv };
-  applySigningPlan(applied, api, keyPath);
-  ok(applied.APPLE_API_KEY === keyPath, 'API key materializes to a file path for notarytool');
+  const created = applySigningPlan(applied, api);
+  createdDirs.push(created);
+  const keyPath = applied.APPLE_API_KEY;
+  ok(created && dirname(keyPath) === created, 'API key materializes inside a private temp directory');
+  ok(basename(created).startsWith('hud-apple-api-key-') && keyPath !== join(tmpdir(), 'hud-apple-api-key.p8'), 'API key path is unique and not the fixed temp name');
   ok(readFileSync(keyPath, 'utf8').includes('BEGIN PRIVATE KEY'), 'materialized API key is the PEM');
-  ok((statSync(keyPath).mode & 0o777) === 0o600, 'materialized API key is readable only by the owner');
+  ok((statSync(keyPath).mode & 0o777) === 0o600, 'materialized API key is readable only by the owner even with umask 0');
+  ok((statSync(created).mode & 0o777) === 0o700, 'API key directory is private even with umask 0');
   ok(!('CSC_IDENTITY_AUTO_DISCOVERY' in applied) && applied.HUD_SIGNING_MODE === 'signed', 'applied macOS plan enables discovery and records signed mode');
 
+  const second = { ...apiEnv };
+  const secondDir = applySigningPlan(second, api);
+  createdDirs.push(secondDir);
+  ok(secondDir !== created && second.APPLE_API_KEY !== keyPath, 'two API key writes do not share a file');
+
   const existing = join(dir, 'existing.p8');
-  writeFileSync(existing, pem);
-  ok(resolveAppleApiKey(existing, keyPath) === existing, 'an existing .p8 path is kept');
-  ok(resolveAppleApiKey(pem, keyPath) === keyPath, 'PEM text is written to the destination');
+  writeFileSync(existing, pem, { mode: 0o600 });
+  const kept = { ...apiEnv, APPLE_API_KEY: existing };
+  ok(applySigningPlan(kept, plan(kept, 'macos')) === null && kept.APPLE_API_KEY === existing && existsSync(existing), 'an existing .p8 path is kept and not deleted');
+  ok(resolveAppleApiKey(existing, join(dir, 'unused.p8')) === existing, 'resolveAppleApiKey keeps an existing .p8 path');
+  const pemPath = join(dir, 'from-pem.p8');
+  ok(resolveAppleApiKey(pem, pemPath) === pemPath, 'PEM text is written to the destination');
+  ok((statSync(pemPath).mode & 0o777) === 0o600, 'PEM destination is mode 0600 before the caller can chmod it');
   let rejected = false;
   try { resolveAppleApiKey('not-a-key', join(dir, 'nope.p8')); } catch { rejected = true; }
   ok(rejected, 'a value that is not a path, PEM or base64 PEM is rejected');
 
-  const options = notarizeOptions(applied, '/tmp/hud.dmg');
-  ok(options?.appleApiKey === keyPath && options.appleApiKeyId === 'KEYID12345' && !options.appleId, 'notarize options use the API key file');
+  discardPrivateKey(created);
+  ok(!existsSync(keyPath) && !existsSync(created), 'discarding the private directory removes the API key');
+  createdDirs.shift();
+
+  const options = notarizeOptions(second, '/tmp/hud.dmg');
+  ok(options?.appleApiKey === second.APPLE_API_KEY && options.appleApiKeyId === 'KEYID12345' && !options.appleId, 'notarize options use the API key file');
   ok(notarizeOptions({ APPLE_API_KEY_ID: 'only-one' }, '/tmp/hud.dmg') === null, 'incomplete notarize options are not sent');
 } finally {
+  process.umask(previousUmask);
+  for (const created of createdDirs) discardPrivateKey(created);
   rmSync(dir, { recursive: true, force: true });
 }
+
+const linuxExec = signingExec(['npm', 'run', 'dist', '--', '--publish', 'never'], ['--config.mac.notarize=false'], 'linux');
+ok(linuxExec.shell === false && linuxExec.file === 'npm' && linuxExec.args.at(-1) === '--config.mac.notarize=false', 'prepare runs npm as an argv array without a shell');
+const winExec = signingExec(['npm', 'run', 'dist'], ['--config.win.forceCodeSigning=true'], 'win32');
+ok(winExec.shell === false && winExec.file === process.execPath && winExec.args[0].endsWith(`${join('npm', 'bin', 'npm-cli.js')}`), 'Windows npm runs as node plus npm-cli.js');
+ok(winExec.args.at(-1) === '--config.win.forceCodeSigning=true', 'Windows signing flags stay argv entries');
+let nul = false;
+try { signingExec(['npm', 'bad\0arg'], [], 'linux'); } catch { nul = true; }
+ok(nul, 'a NUL byte in the build command is rejected');
 
 ok(macAppAcceptance(0, 'Authority=Developer ID Application: Example (TEAM)\n', 'signed') === null, 'Developer ID app signature is accepted');
 ok(macAppAcceptance(0, 'Signature=adhoc\nflags=0x2(adhoc)\n', 'signed'), 'ad-hoc signature is rejected for a signed build');
