@@ -6,7 +6,7 @@ import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeli
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
-import { containAxis, letterboxBoard, restingView, viewAfterViewportChange } from './board-scale.js';
+import { cameraOnBoardOpen, containAxis, letterboxBoard, viewAfterViewportChange } from './board-scale.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const GRID = 20;
@@ -36,6 +36,8 @@ const S = {
   mode: 'canvas', // 'canvas' | 'list' — the Linear-style ticket list
   open: new Set(), // ticket ids whose sub-tickets are collapsed in the list view
   view: { x: 60, y: 60, z: 1 },
+  fit: null, // centered letterbox of the last real viewport; not the camera
+  viewPending: false, // saved camera not judged yet because the canvas had no size
   sel: new Set(),
   drawer: null, // item id
   drawerWide: false,
@@ -438,12 +440,26 @@ document.addEventListener('click', (e) => {
 }, true);
 
 // ---------------------------------------------------------------- view
+function readSavedView() {
+  if (CAPTURE_READONLY) return null;
+  try { return JSON.parse(localStorage.getItem('hud.bounded-view.' + S.board)); } catch { return null; }
+}
 function loadView() {
-  const fit = fittedView();
+  const raw = canvas.getBoundingClientRect();
+  // List and supervision hide the canvas. Judging the saved camera against that 0×0 box
+  // would drop a legal pan; settleCamera applies it once the board is on screen.
+  if (raw.width < 1 || raw.height < 1) {
+    S.viewPending = true;
+    S.fit = null;
+    const saved = readSavedView();
+    if (saved && [saved.x, saved.y, saved.z].every(Number.isFinite)) return { x: saved.x, y: saved.y, z: saved.z };
+    return { x: 0, y: 0, z: 1 };
+  }
+  S.viewPending = false;
+  const b = boardSize(), r = viewport(true);
+  const fit = letterboxBoard(b.w, b.h, r.w, r.h);
   if (CAPTURE_READONLY) return fit;
-  let saved;
-  try { saved = JSON.parse(localStorage.getItem('hud.bounded-view.' + S.board)); } catch {}
-  return restingView(saved, fit);
+  return cameraOnBoardOpen(readSavedView(), fit, r.w);
 }
 const saveView = debounce(() => {
   if (CAPTURE_READONLY) return;
@@ -457,10 +473,10 @@ function boardSize() {
   return { w: b?.width || 1600, h: b?.height || 900 };
 }
 function drawerPixels() { return S.drawerWide ? Math.min(900, innerWidth) : (S.drawerWidth || 420); }
-function viewport() {
+function viewport(ignoreDrawer = false) {
   const r = canvas.getBoundingClientRect();
   let cover = 0;
-  if (S.drawer) {
+  if (S.drawer && !ignoreDrawer) {
     const dr = $('#drawer')?.getBoundingClientRect();
     // The drawer overlays the canvas. Measure the overlap so the letterbox matches the visible area.
     if (dr && dr.width > 0) cover = Math.max(0, Math.min(r.right, dr.right) - Math.max(r.left, dr.left));
@@ -486,6 +502,8 @@ function applyView() {
   S.view.z = clamp(S.view.z, min, Math.max(3, min));
   S.view.x = containAxis(S.view.x, b.w * S.view.z, r.w);
   S.view.y = containAxis(S.view.y, b.h * S.view.z, r.h);
+  const raw = canvas.getBoundingClientRect();
+  if (raw.width >= 1 && raw.height >= 1) S.fit = fittedView();
   const { x, y, z } = S.view;
   world.style.width = b.w + 'px';
   world.style.height = b.h + 'px';
@@ -494,6 +512,22 @@ function applyView() {
   $('#zoom-out').disabled = z <= min + 0.001;
   $('#zoom-in').disabled = z >= Math.max(3, min) - 0.001;
   saveView();
+}
+
+/** Resize and return-to-board. A centered letterbox follows the viewport; a kept pan or zoom does not. */
+function settleCamera() {
+  const raw = canvas.getBoundingClientRect();
+  if (S.page !== 'board' || S.mode !== 'canvas' || raw.width < 1 || raw.height < 1) return;
+  const r = viewport();
+  const b = boardSize();
+  const next = letterboxBoard(b.w, b.h, r.w, r.h);
+  if (S.viewPending || !S.fit) {
+    S.view = cameraOnBoardOpen(S.view, next, r.w);
+    S.viewPending = false;
+  } else {
+    S.view = viewAfterViewportChange(S.view, S.fit, next, r.w);
+  }
+  applyView();
 }
 
 function toWorld(cx, cy) {
@@ -1315,9 +1349,11 @@ function switchBoard(id, opts = {}) {
   S.sel.clear();
   if (!CAPTURE_READONLY) try { localStorage.setItem('hud.board', id); } catch {}
   if (opts.hash !== false) setNavHash(opts.page === 'attention' || opts.page === 'runs' ? opts.page : 'board', id);
+  // Close first, without refitting, so the saved camera is judged against the full window.
+  // A later z-matching refit would replace a kept pan with the centered letterbox.
+  dismissDrawer();
   S.view = loadView();
-  applyView();
-  closeDrawer();
+  if (!S.viewPending) applyView();
   let mode;
   try { mode = localStorage.getItem('hud.mode.' + id); } catch {}
   const hasCanvas = canvasItems().some((i) => i.type !== 'frame');
@@ -1434,7 +1470,7 @@ function setPage(page, opts = {}) {
   } else {
     renderAll();
     if (S.mode === 'list') renderList();
-    else requestAnimationFrame(() => fit());
+    else requestAnimationFrame(() => settleCamera());
     if (!CAPTURE_READONLY) loadQueue();
   }
   updateChrome();
@@ -2639,20 +2675,22 @@ function openDrawer(id, focusTitle = false) {
   refit();
   if (focusTitle) setTimeout(() => { $('#drawer [data-k="title"]')?.focus(); $('#drawer [data-section="settings"]')?.scrollIntoView({ block: 'start' }); }, 0);
 }
-function closeDrawer() {
-  const refit = refitIfLetterboxed();
+function dismissDrawer() {
   S.drawer = null;
   S.pendingKind = null;
   S.drawerWide = false;
   $('#drawer').classList.remove('open');
-  document.body.classList.remove('drawer-open');
-  document.body.classList.remove('drawer-wide');
+  document.body.classList.remove('drawer-open', 'drawer-wide');
+}
+function closeDrawer() {
+  const refit = refitIfLetterboxed();
+  dismissDrawer();
   refit();
 }
 
 const DRAWER_MIN = 360;
-function setDrawerWidth(width, persist = true) {
-  const refit = S.drawer ? refitIfLetterboxed() : null;
+function setDrawerWidth(width, persist = true, adjustCamera = true) {
+  const refit = adjustCamera && S.drawer ? refitIfLetterboxed() : null;
   const max = Math.min(900, innerWidth);
   const min = Math.min(DRAWER_MIN, max);
   S.drawerWidth = clamp(Number(width) || 420, min, max);
@@ -4314,7 +4352,7 @@ if (!CAPTURE_READONLY) setInterval(() => {
     if (it && ((it.type === 'util' && isLive(it)) || isAnimated(it))) renderItem(it, true);
   }
 }, 100);
-window.addEventListener('resize', () => { setDrawerWidth(S.drawerWidth, false); fit(); syncPersistenceBannerHeight(); });
+window.addEventListener('resize', () => { setDrawerWidth(S.drawerWidth, false, false); settleCamera(); syncPersistenceBannerHeight(); });
 $('#persistence-banner').addEventListener('click', (e) => {
   const button = e.target.closest('[data-persistence]');
   if (!button) return;

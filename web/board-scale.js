@@ -38,19 +38,32 @@ export function containAxis(pos, span, view) {
   return Math.min(Math.max(p, v - s), 0);
 }
 
-/** True when the camera is still the letterboxed fit, so a viewport change should refit. */
+const near = (a, b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= 1e-3;
+
+/** True when the camera is still the centered letterbox. A matching zoom with another pan is a kept camera. */
 export function shouldRefit(view, fit) {
-  return !!view && !!fit && Number.isFinite(view.z) && Number.isFinite(fit.z) && Math.abs(view.z - fit.z) <= 1e-3;
+  return !!view && !!fit && near(view.z, fit.z) && near(view.x, fit.x) && near(view.y, fit.y);
 }
 
 /** Below this visible width a drawer covers the canvas; refitting would collapse the board. */
 export const REFIT_MIN_WIDTH = 48;
 
 /**
- * Drawer open/close. A letterboxed camera adopts the next letterbox. A zoomed-in camera
- * is left alone so closing the drawer does not throw that zoom away.
+ * Drawer, resize, or return to the board. A centered letterbox adopts the next letterbox.
+ * A kept pan or a zoomed-in camera stays, so closing the drawer cannot recenter it.
  */
 export function viewAfterViewportChange(view, previousFit, nextFit, nextViewportW) {
   if (shouldRefit(view, previousFit) && finite(nextViewportW, 0) >= REFIT_MIN_WIDTH) return { ...nextFit };
   return { x: view.x, y: view.y, z: view.z };
+}
+
+/**
+ * Camera when a board opens. `wide` is the full-window letterbox, including when the
+ * inspector still covers the canvas: a zoom that fits the window must not be judged
+ * against that narrower strip. The drawer then closes through the same refit, which
+ * leaves a kept pan where it is.
+ */
+export function cameraOnBoardOpen(saved, wide, viewportW) {
+  const opened = restingView(saved, wide);
+  return viewAfterViewportChange(opened, wide, wide, viewportW);
 }

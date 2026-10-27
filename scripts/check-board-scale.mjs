@@ -1,7 +1,7 @@
 // The on-screen canvas letterboxes a fixed 1600×900 board. Layout coordinates do not follow the window.
 import assert from 'node:assert/strict';
 import { layout, BOARD_WIDTH, BOARD_HEIGHT } from '../src/layout.ts';
-import { containAxis, letterboxBoard, restingView, shouldRefit, viewAfterViewportChange } from '../web/board-scale.js';
+import { cameraOnBoardOpen, containAxis, letterboxBoard, restingView, shouldRefit, viewAfterViewportChange } from '../web/board-scale.js';
 
 function contained(boardW, boardH, viewW, viewH, view = letterboxBoard(boardW, boardH, viewW, viewH)) {
   assert(view.z > 0 && Number.isFinite(view.x) && Number.isFinite(view.y), view);
@@ -56,8 +56,10 @@ assert.equal(containAxis(-40, 1600 * fit.z, 1064), 0, 'pan that would crop is cl
 assert.equal(containAxis(80, 1600 * 1.2, 1064), 0, 'zoomed board cannot pan past the near edge');
 assert.equal(containAxis(-2000, 1600 * 1.2, 1064), 1064 - 1600 * 1.2, 'zoomed board cannot pan past the far edge');
 
-assert.equal(shouldRefit({ z: fit.z }, fit), true);
-assert.equal(shouldRefit({ z: fit.z + 0.2 }, fit), false);
+assert.equal(shouldRefit(fit, fit), true);
+assert.equal(shouldRefit({ x: fit.x, y: fit.y, z: fit.z + 0.2 }, fit), false);
+assert.equal(shouldRefit({ z: fit.z }, fit), false, 'zoom alone is not the letterbox');
+assert.equal(shouldRefit({ x: 4, y: 18, z: fit.z }, fit), false, 'a kept pan is not the letterbox');
 assert.equal(shouldRefit(null, fit), false);
 
 const beside = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1064 - 420, 796);
@@ -75,6 +77,24 @@ assert.deepEqual(zoomedClose, zoomed, 'closing the drawer keeps that zoom');
 
 const tiny = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1, 796);
 assert.deepEqual(viewAfterViewportChange(fit, fit, tiny, 1), fit, 'a full-width drawer does not collapse the board');
+
+// Board open keeps a pan, then the drawer closes. A z-only refit would swap in the centered letterbox.
+const keptPan = { x: 4, y: 18, z: fit.z - 0.05 };
+const opened = cameraOnBoardOpen(keptPan, fit, 1064);
+assert.deepEqual(opened, { x: 4, y: 18, z: fit.z }, 'board open keeps a pan and raises zoom to the full window');
+assert.deepEqual(viewAfterViewportChange(opened, fit, fit, 1064), opened, 'drawer close after board open keeps that pan');
+assert.deepEqual(viewAfterViewportChange(opened, beside, fit, 1064), opened, 'closing a drawer that was open during the switch keeps that pan');
+
+// A zoom between the drawer strip and the full window is legal once the inspector closes.
+const midZoom = { x: 30, y: 8, z: (beside.z + fit.z) / 2 };
+assert(midZoom.z > beside.z && midZoom.z <= fit.z, 'fixture sits between the covered fit and the wide fit');
+assert.deepEqual(restingView(midZoom, beside), beside, 'judging that zoom against the open drawer would drop it');
+assert.deepEqual(cameraOnBoardOpen(midZoom, fit, 1064), { x: 30, y: 8, z: fit.z }, 'board open judges the saved camera against the full window');
+
+const grown = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1600, 1000);
+assert.deepEqual(viewAfterViewportChange(fit, fit, grown, 1600), grown, 'resize refits a centered letterbox');
+assert.deepEqual(viewAfterViewportChange(opened, fit, grown, 1600), opened, 'resize keeps a pan at the fit zoom');
+assert.deepEqual(viewAfterViewportChange(zoomed, fit, grown, 1600), zoomed, 'resize keeps an in-session zoom');
 
 const items = [
   { id: 'a', type: 'monitor', title: 'a', createdAt: 1, x: 0, y: 0, w: 10, h: 10 },
