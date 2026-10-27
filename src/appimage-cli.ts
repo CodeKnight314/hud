@@ -72,13 +72,16 @@ export function appImageBootstrapPath(): string {
   return join(config().dataDir, 'appimage-boot.mjs');
 }
 
-/** Standalone ESM the AppImage runs in node mode. Keep the candidate order aligned with `resolveAppImageCliEntry`. */
+/**
+ * Standalone ESM the AppImage runs in node mode. It does not consult `HUD_CLI_ENTRY`:
+ * that variable is a dev-checkout override and must not replace, or block, the mounted CLI.
+ * Keep the candidate order aligned with `resolveAppImageCliEntry`.
+ */
 export function appImageBootstrapSource(): string {
   return `import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-const requested = process.env.HUD_CLI_ENTRY;
-const candidates = requested ? [requested] : [
+const candidates = [
   ${ENTRY_FROM_EXEC},
   ...(process.resourcesPath ? [${ENTRY_FROM_RESOURCES}] : []),
   ...(process.env.APPDIR ? [${ENTRY_FROM_APPDIR}] : []),
@@ -108,15 +111,12 @@ export type EntryProbe = {
   execPath: string;
   resourcesPath?: string;
   appDir?: string;
-  cliEntry?: string;
   exists?: (path: string) => boolean;
 };
 
-/** First packaged CLI entry that exists. `HUD_CLI_ENTRY` wins and does not fall through. */
+/** First CLI entry inside this AppImage. `HUD_CLI_ENTRY` is not a candidate: a stale dev path must not block install or replace the mount. */
 export function resolveAppImageCliEntry(probe?: EntryProbe): string | undefined {
   const exists = probe?.exists ?? existsSync;
-  const cliEntry = probe ? probe.cliEntry : process.env.HUD_CLI_ENTRY;
-  if (cliEntry) return exists(cliEntry) ? cliEntry : undefined;
   const execPath = probe?.execPath ?? process.execPath;
   const resourcesPath = probe ? probe.resourcesPath : (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
   const appDir = probe ? probe.appDir : process.env.APPDIR;
@@ -132,7 +132,8 @@ export function resolveAppImageCliEntry(probe?: EntryProbe): string | undefined 
  * Spawn the `.AppImage` itself, not the temporary mount. The child runtime builds a new mount
  * and keeps it after the parent exits, which is what `hud start` and "keep server running" need.
  * `APPDIR` / `LD_LIBRARY_PATH` from the parent point at the parent's mount and are left for the
- * new runtime to set.
+ * new runtime to set. `HUD_CLI_ENTRY` is a dev override and is dropped for the same reason: a
+ * stale checkout path must not replace the mounted CLI.
  */
 export function appImageCliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } | null {
   const image = appImageTarget();
@@ -141,5 +142,6 @@ export function appImageCliInvocation(): { cmd: string; prefix: string[]; env: N
   delete env.APPDIR;
   delete env.ARGV0;
   delete env.LD_LIBRARY_PATH;
+  delete env.HUD_CLI_ENTRY;
   return { cmd: image.path, prefix: [ensureAppImageBootstrap()], env };
 }

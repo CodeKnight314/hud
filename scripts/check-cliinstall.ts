@@ -77,8 +77,7 @@ try {
   assert.equal(appimage.resolveAppImageCliEntry({ execPath, resourcesPath, appDir, exists: (path) => path === fromExec }), fromExec);
   assert.equal(appimage.resolveAppImageCliEntry({ execPath, resourcesPath, appDir, exists: (path) => path === fromResources }), fromResources);
   assert.equal(appimage.resolveAppImageCliEntry({ execPath, appDir, exists: (path) => path === fromAppDir }), fromAppDir);
-  assert.equal(appimage.resolveAppImageCliEntry({ execPath, cliEntry: join('/asked', 'hud.mjs'), appDir, exists: (path) => path === fromAppDir }), undefined);
-  assert.match(appimage.appImageBootstrapSource(), /HUD_CLI_ENTRY/);
+  assert.equal(appimage.appImageBootstrapSource().includes('HUD_CLI_ENTRY'), false, 'the AppImage bootstrap must not consult HUD_CLI_ENTRY');
   assert.match(appimage.appImageBootstrapSource(), /join\(dirname\(process\.execPath\), 'resources', 'hud', 'bin', 'hud\.mjs'\)/);
   assert.match(appimage.appImageBootstrapSource(), /join\(process\.resourcesPath, 'hud', 'bin', 'hud\.mjs'\)/);
   assert.match(appimage.appImageBootstrapSource(), /join\(process\.env\.APPDIR, 'resources', 'hud', 'bin', 'hud\.mjs'\)/);
@@ -128,6 +127,7 @@ try {
     assert.match(switched, /re-run "Install hud command" after moving the AppImage/);
     const shimText = readFileSync(foreign, 'utf8');
     assert.equal(shimText.includes(`hud'\\''s app.AppImage`), true, 'shim stores the real AppImage path, not the symlink or the mount');
+    assert.equal(shimText.includes('unset HUD_CLI_ENTRY'), true, 'AppImage shim drops a leaked dev CLI entry');
     assert.equal(shimText.includes('hud-link.AppImage'), false);
     assert.equal(readFileSync(foreign, 'utf8').includes(entry), false, 'shim does not bake the mount-local CLI path');
     const ready = cli.managedCommandStatus();
@@ -139,6 +139,7 @@ try {
     delete childEnv.APPDIR;
     assert.deepEqual(JSON.parse(run(foreign, args, childEnv)), args, 'AppImage shim forwards arguments through the fake runtime');
 
+    process.env.HUD_CLI_ENTRY = plainEntry;
     const launch = appimage.appImageCliInvocation();
     assert.ok(launch);
     assert.equal(launch.cmd, image);
@@ -146,6 +147,8 @@ try {
     assert.equal(launch.env.APPDIR, undefined);
     assert.equal(launch.env.ARGV0, undefined);
     assert.equal(launch.env.LD_LIBRARY_PATH, undefined);
+    assert.equal(launch.env.HUD_CLI_ENTRY, undefined);
+    assert.equal(process.env.HUD_CLI_ENTRY, plainEntry, 'scrubbing the child env leaves the parent override in place');
     assert.equal(process.env.APPDIR, mount, 'scrubbing the child env leaves the parent mount in place');
     assert.deepEqual(JSON.parse(run(launch.cmd, [...launch.prefix, 'serve'], launch.env)), ['serve']);
     const sourceLaunch = runtime.cliInvocation();
@@ -155,7 +158,10 @@ try {
     assert.equal(gui.ELECTRON_RUN_AS_NODE, undefined);
     assert.equal(gui.APPDIR, undefined);
     assert.equal(gui.LD_LIBRARY_PATH, undefined);
+    assert.equal(gui.HUD_CLI_ENTRY, undefined);
+    assert.equal(process.env.HUD_CLI_ENTRY, plainEntry, 'the GUI launch scrub leaves the parent override in place');
     assert.equal(process.env.LD_LIBRARY_PATH, join(mount, 'usr', 'lib'));
+    delete process.env.HUD_CLI_ENTRY;
 
     writeFileSync(appimage.appImageBootstrapPath(), 'stale bootstrap\n');
     assert.equal(cli.managedCommandStatus().ready, false);
@@ -166,24 +172,45 @@ try {
     const override = join(root, 'override.mjs');
     writeCli(override, 'console.log("override:" + JSON.stringify(process.argv.slice(2)));\n');
     const overrideEnv = { ...childEnv, HUD_CLI_ENTRY: override, APPDIR: mount };
-    assert.equal(run(foreign, ['mcp'], overrideEnv), 'override:["mcp"]\n');
+    assert.equal(run(foreign, ['mcp'], overrideEnv), '["mcp"]\n', 'AppImage shim ignores HUD_CLI_ENTRY and runs the mounted CLI');
+    assert.equal(run(process.execPath, [appimage.appImageBootstrapPath(), 'mcp'], overrideEnv), '["mcp"]\n', 'bootstrap ignores HUD_CLI_ENTRY when the mount has a CLI');
+
+    process.env.HUD_CLI_ENTRY = join(root, 'missing-cli.mjs');
+    process.env.APPDIR = mount;
+    process.env.APPIMAGE = link;
+    assert.match(cli.installManagedCli(), /^installed /, 'a missing HUD_CLI_ENTRY does not block AppImage install');
+    assert.equal(cli.managedCommandStatus().ready, true, cli.managedCommandStatus().detail);
+    process.env.HUD_CLI_ENTRY = override;
+    assert.equal(cli.managedCommandStatus().ready, true, 'an existing dev CLI entry does not replace the mounted one');
 
     const broken = join(root, 'broken-mount');
     mkdirSync(broken, { recursive: true });
     process.env.APPDIR = broken;
-    delete process.env.HUD_CLI_ENTRY;
+    process.env.HUD_CLI_ENTRY = override;
     const preserved = readFileSync(foreign, 'utf8');
     assert.match(cli.installManagedCli(), /not installing: the packaged CLI was not found/);
-    assert.equal(readFileSync(foreign, 'utf8'), preserved, 'a mount without a CLI does not replace the shim');
+    assert.equal(readFileSync(foreign, 'utf8'), preserved, 'a dev CLI entry does not satisfy an AppImage whose mount has no CLI');
     assert.equal(cli.managedCommandStatus().ready, false);
+    delete process.env.HUD_CLI_ENTRY;
 
     process.env.APPIMAGE = `bad\npath`;
     assert.match(cli.installManagedCli(), /not installing: AppImage path contains a newline/);
+    assert.throws(() => runtime.packagedCliInvocation(), /hud cannot start from this AppImage: AppImage path contains a newline/);
     chmodSync(image, 0o644);
     process.env.APPIMAGE = image;
     process.env.APPDIR = mount;
+    process.env.HUD_CLI_ENTRY = plainEntry;
     assert.match(cli.installManagedCli(), /not installing: AppImage is missing or not executable/);
+    assert.throws(() => runtime.packagedCliInvocation(), /hud cannot start from this AppImage: AppImage is missing or not executable/, 'a non-executable AppImage does not fall back to the mount path');
+    process.env.APPIMAGE = join(root, 'missing.AppImage');
+    assert.throws(() => runtime.packagedCliInvocation(), /hud cannot start from this AppImage: AppImage is missing or not executable/);
     chmodSync(image, 0o755);
+    process.env.APPIMAGE = image;
+    const repaired = runtime.packagedCliInvocation();
+    assert.equal(repaired.cmd, image, 'a readable AppImage re-execs the file instead of the mount');
+    assert.notEqual(repaired.cmd, process.execPath);
+    assert.equal(repaired.env.HUD_CLI_ENTRY, undefined);
+    delete process.env.HUD_CLI_ENTRY;
 
     delete process.env.HUD_CLI_ENTRY;
     delete process.env.APPDIR;
