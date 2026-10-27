@@ -81,9 +81,8 @@ See [GUIDE.md](GUIDE.md#coordination) and [PLAYBOOKS.md](PLAYBOOKS.md).
 
 ## Everyday use
 
-Press `?` in the app for the full key map. The left rail switches Attention, Runs and boards; `⌘/Ctrl+K` searches
-everything; `l` toggles the canvas and ticket list; `:` opens the command palette. A single inspector on the right
-holds overview, activity, coordination and settings in one scroll.
+Press `?` for the full key map. The left rail switches Attention, Runs and boards; `⌘/Ctrl+K` searches everything;
+`l` toggles canvas and list; `:` opens the command palette. One inspector scrolls overview, activity and settings.
 
 ## Learn more
 

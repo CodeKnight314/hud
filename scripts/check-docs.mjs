@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { guideText, quickstartText } from '../src/docs.ts';
+import { guideToc, parseGuide, renderGuide } from '../src/guide.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 let failures = 0;
@@ -121,7 +122,7 @@ ok(/from:\s*GUIDE\.md\s*\n\s*to:\s*hud\/GUIDE\.md/.test(builder), 'electron-buil
 const serverSrc = readFileSync(join(root, 'src/server.ts'), 'utf8');
 ok(serverSrc.includes("'/api/quickstart'"), 'server registers GET /api/quickstart');
 const cliSrc = readFileSync(join(root, 'src/cli.ts'), 'utf8');
-ok(cliSrc.includes('guideText(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
+ok(cliSrc.includes('renderGuide(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
 const docsSrc = readFileSync(join(root, 'src/docs.ts'), 'utf8');
 ok(docsSrc.includes('export function guideText') && docsSrc.includes('export function quickstartText'), 'src/docs.ts exports the served doc builders');
 for (const name of readdirSync(join(root, 'src'))) {

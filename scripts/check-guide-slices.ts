@@ -68,8 +68,8 @@ for (const section of fileSections) {
 
 const toc = guideToc(guide).map((entry) => entry.anchor);
 assert.ok(toc.includes('coordination') && toc.includes('monitors'));
-assert.equal(toc.includes('utilities'), false);
-assert.equal(toc.includes('conventions'), false);
+assert.equal(toc.includes('status'), false, 'the appended visual contract is not a guide slice');
+assert.equal(toc.includes('surfaces'), false, 'the appended visual contract is not a guide slice');
 const level2 = new Set(h2.map((s) => s.anchor));
 for (const anchor of toc) assert.ok(level2.has(anchor), `TOC anchor ${anchor} is not an h2 slice`);
 
@@ -127,15 +127,15 @@ assert.doesNotMatch(String(monitors.body), /^## Coordination/m);
 assert.ok(String(monitors.body).length < String(full.body).length / 2);
 
 assert.equal(renderGuide(7317, 'metrics-observations-and-freshness', null).status, 400);
-assert.equal(renderGuide(7317, 'utilities', null).status, 400);
-assert.equal(renderGuide(7317, 'conventions', null).status, 400);
+assert.equal(renderGuide(7317, 'utilities', null).status, 200, 'utilities is a guide h2');
+assert.equal(renderGuide(7317, 'conventions', null).status, 200, 'conventions is a guide h2');
 assert.equal(renderGuide(7317, 'palette-and-state', null).status, 400);
 assert.equal(String(renderGuide(7317, '#coordination', null).body), String(coordination.body));
 assert.equal(String(renderGuide(7317, 'DECISIONS-WHEN-YOURE-BLOCKED', null).body).startsWith('## Decisions'), true);
 
 const renderers = renderGuide(7317, 'renderers', null);
 assert.match(String(renderers.body), /^## Renderers\n/);
-assert.match(String(renderers.body), /^## Utilities/m);
+assert.doesNotMatch(String(renderers.body), /^## Utilities/m);
 assert.doesNotMatch(String(renderers.body), /^## Attention, runs and incremental changes/m);
 assert.match(String(renderers.body), /\]\(http:\/\/localhost:7317\/api\/guide#hud-visual-contract\)/);
 assert.doesNotMatch(String(renderers.body), /\]\(#hud-visual-contract\)/);
@@ -143,7 +143,7 @@ assert.match(String(renderers.body), /https:\/\/github.com\/CodeKnight314\/hud\/
 assert.deepEqual(unresolved(String(renderers.body)), []);
 const trash = renderGuide(7317, 'trash-backups-and-undo', null);
 assert.match(String(trash.body), /^## Trash, backups and undo\n/);
-assert.match(String(trash.body), /^## Conventions/m);
+assert.doesNotMatch(String(trash.body), /^## Conventions/m);
 assert.doesNotMatch(String(trash.body), /^## Install hud as an app/m);
 
 const connect = renderGuide(7317, 'connect-your-agent', null);
@@ -179,8 +179,8 @@ const listed = catalog.body.sections;
 assert.equal('markdown' in listed[0], false);
 const anchors = listed.map((s) => s.anchor);
 assert.deepEqual(anchors, toc);
-assert.equal(anchors.includes('utilities'), false);
-assert.equal(anchors.includes('conventions'), false);
+assert.equal(anchors.includes('status'), false, 'the appended visual contract is not a catalog section');
+assert.equal(anchors.includes('surfaces'), false, 'the appended visual contract is not a catalog section');
 assert.equal(anchors.includes('palette-and-state'), false);
 assert.equal(anchors.includes('metrics-observations-and-freshness'), false);
 
@@ -200,7 +200,7 @@ assert.match(missing.body.error, /unknown guide section "nope"/);
 assert.ok(missing.body.sections?.includes('coordination'));
 assert.ok(missing.body.sections?.includes('monitors'));
 assert.deepEqual(missing.body.sections, toc);
-assert.equal(missing.body.sections?.includes('utilities'), false);
+assert.equal(missing.body.sections?.includes('status'), false, 'the appended visual contract is not a guide slice');
 const both = renderGuide(7317, { section: 'monitors', playbook: 'lead' });
 assert.equal(both.status, 400);
 assert.match(String((both.body as { error?: string }).error), /section or playbook/);
@@ -394,7 +394,7 @@ async function httpSlices() {
     assert.equal(oneRes.status, 200);
     assert.equal(oneJson.anchor, 'renderers');
     assert.match(oneJson.markdown, /^## Renderers\n/);
-    assert.match(oneJson.markdown, /^## Utilities/m);
+    assert.doesNotMatch(oneJson.markdown, /^## Utilities/m);
     assert.doesNotMatch(oneJson.markdown, /^## Attention, runs and incremental changes/m);
     assert.match(oneJson.markdown, new RegExp(`\\]\\(http://localhost:${listen}/api/guide#hud-visual-contract\\)`));
     assert.doesNotMatch(oneJson.markdown, /\]\(#hud-visual-contract\)/);
@@ -406,7 +406,7 @@ async function httpSlices() {
     assert.match(err.error, /unknown guide section "nope"/);
     assert.ok(err.sections.includes('coordination'));
     assert.ok(err.sections.includes('monitors'));
-    assert.equal(err.sections.includes('utilities'), false);
+    assert.equal(err.sections.includes('status'), false, 'the appended visual contract is not a guide slice');
     assert.equal(err.sections.includes('palette-and-state'), false);
 
     const play = await fetch(`${base}/api/guide?playbook=nope`);
