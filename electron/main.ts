@@ -8,6 +8,7 @@ import { isElectronNodeMode, primeLoginEnv } from '../src/electron-runtime.ts';
 import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
 import { refreshInstalledCli } from '../src/cliinstall.ts';
+import { RECONNECT_DIALOG, clientsFromSessions } from '../src/reconnect.ts';
 import { prepareBackendUpdate, stopBackendForUpdate } from '../src/updates.ts';
 import { desktopSettings } from './settings.ts';
 
@@ -82,6 +83,18 @@ const settings = desktopSettings({
     await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
     quittingForUpdate = true;
     app.quit();
+  },
+  connectedClients: async () => {
+    try { return clientsFromSessions((await new Hud({ actor: 'user', autostart: false }).sessions()).items.filter((item) => item.live)); }
+    catch { return []; }
+  },
+  ackReconnect: async () => new Hud({ actor: 'user', autostart: false }).reconnectAck(),
+  reconnectSource: async () => {
+    try {
+      const client = new Hud({ actor: 'user', autostart: false });
+      if (!(await client.healthInfo())) return null;
+      return await client.reconnect();
+    } catch { return null; }
   },
 });
 const settingsEntry: Electron.MenuItemConstructorOptions = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => settings.show() };
@@ -237,6 +250,26 @@ async function heal(retries = 20): Promise<void> {
   }
 }
 
+/** One dialog per launch when a newer build still has MCP clients on the previous process. */
+async function offerClientReconnect(): Promise<void> {
+  try {
+    const offer = await hud.reconnect();
+    if (!offer.pending) return;
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      buttons: [...RECONNECT_DIALOG.buttons],
+      defaultId: RECONNECT_DIALOG.defaultId,
+      cancelId: RECONNECT_DIALOG.cancelId,
+      title: 'Reconnect MCP clients',
+      message: `hud v${offer.serverVersion} is running. MCP clients keep their previous process until you reconnect them.`,
+      detail: offer.text,
+    });
+    if (response === RECONNECT_DIALOG.dismissResponse) await hud.reconnectAck();
+  } catch (error) {
+    console.error(`[hud] reconnect checklist: ${(error as Error).message}`);
+  }
+}
+
 /** start (or find) the server, then load it; never silently respawn after an explicit stop */
 async function connect(): Promise<void> {
   try {
@@ -369,6 +402,7 @@ if (!app.requestSingleInstanceLock()) {
       try { refreshInstalledCli(); } catch (error) { console.error(`[hud] command repair failed: ${(error as Error).message}`); }
     }
     await connect();
+    void offerClientReconnect();
     if (process.env.HUD_SCRATCH !== '1') void settings.checkAtLaunch();
     console.log(`[hud] app ready — ${url} (data: ${dataDir})`);
   });

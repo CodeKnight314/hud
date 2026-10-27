@@ -47,6 +47,7 @@ src/electron-runtime.ts  `cliInvocation()` / `bundledCli()` — how the app shel
 src/cliinstall.ts  `hud cli install|uninstall|status` — the PATH shim the desktop app writes. AppImage shims exec the
   `.AppImage` file (`src/appimage-cli.ts` resolves the CLI inside each new mount) so agents keep a stable command.
 src/mcpinstall.ts `hud mcp install|uninstall|status|print` — wires hud into other agents' MCP configs
+src/reconnect.ts post-update MCP version skew and the one-shot reconnect checklist (`<data>/reconnect.json`, `<data>/server-version`; not board state)
 src/updates.ts     stable GitHub release checks and safe replacement of the app's older packaged backend
 electron/main.ts the desktop shell: window, tray, menu, single-instance lock, keep-server-on-quit
 electron/settings.ts native Settings window, update and connection actions, and its narrow IPC boundary

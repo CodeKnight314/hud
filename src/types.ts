@@ -465,6 +465,8 @@ export interface SessionView {
   kind: SessionKind;
   pid?: number;
   run?: string;
+  /** hud build reported by this session's MCP or CLI process */
+  clientVersion?: string;
   startedAt: number;
   lastSeenAt: number;
   endedAt?: number;

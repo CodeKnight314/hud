@@ -189,6 +189,12 @@
     $('open-release').textContent = externalBusy === 'openRelease' ? 'Opening…' : 'View release';
     $('check-on-launch').disabled = !bridgeAvailable || !appState || busy || !method('setCheckOnLaunch');
     $('check-on-launch').checked = pendingCheck === null ? Boolean(u.checkOnLaunch) : pendingCheck;
+    const offer = appState?.reconnect, pending = Boolean(offer?.pending);
+    $('reconnect-card').hidden = !pending;
+    $('reconnect-detail').textContent = pending ? `Reconnect MCP clients once so they load hud v${offer.serverVersion || appState?.version || ''}.` : 'Reconnect MCP clients once so they load this hud version.';
+    $('reconnect-text').textContent = pending ? String(offer.text || '') : '';
+    $('reconnect-dismiss').disabled = !bridgeAvailable || !pending || busy || !method('ackReconnect');
+    $('reconnect-dismiss').textContent = mutationBusy === 'ackReconnect' ? 'Dismissing…' : 'Dismiss checklist';
   }
 
   function renderTemplates() {
@@ -272,6 +278,7 @@
     external('openTemplateDocs', 'Opening the guide…', `Opened ${button.textContent}.`, [button.dataset.templateDocs]);
   });
   $('check-on-launch').addEventListener('change', savePreference);
+  $('reconnect-dismiss').addEventListener('click', () => mutate('ackReconnect', [], 'Dismissing the reconnect checklist…', (s) => s.reconnect?.pending ? { text: 'The reconnect checklist is still pending.', kind: 'bad' } : 'Reconnect checklist dismissed.'));
   function syncTabOrientation() { $('settings-tabs').setAttribute('aria-orientation', matchMedia('(max-width: 760px)').matches ? 'horizontal' : 'vertical'); }
   window.addEventListener('resize', syncTabOrientation, { passive: true });
   window.addEventListener('beforeunload', () => clearTimeout(updatePollTimer), { once: true });

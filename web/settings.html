@@ -67,7 +67,12 @@
             </div>
           </div>
           <label class="preference" for="check-on-launch"><span><strong>Check when HUD opens</strong><small>Look for releases when the desktop app starts.</small></span><input id="check-on-launch" type="checkbox" disabled></label>
-          <p class="footnote">Download the installer, quit HUD using this button, then replace the app and reopen it. Your saved boards stay in the data folder.</p>
+          <section id="reconnect-card" class="update-card" hidden>
+            <p id="reconnect-detail" class="update-detail">Reconnect MCP clients once so they load this hud version.</p>
+            <pre id="reconnect-text" class="reconnect-text"></pre>
+            <div class="update-actions"><button id="reconnect-dismiss" class="button" type="button" disabled>Dismiss checklist</button></div>
+          </section>
+          <p class="footnote">Download the installer, quit HUD using this button, then replace the app and reopen it. Your saved boards stay in the data folder. After an update, reconnect Claude Code with /mcp and restart Codex or OpenCode. A one-shot checklist for the clients that are still on the previous version appears here.</p>
         </section>
 
         <section id="panel-templates" role="tabpanel" aria-labelledby="tab-templates" tabindex="0" hidden>
