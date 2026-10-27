@@ -286,7 +286,9 @@ fields in `package-lock.json` agree, then run four native jobs for macOS arm64/x
 runs `npm test`, builds installers, checks the signature and the packaged runtime, normalizes names and uploads
 seven-day artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. Only after all four jobs pass, CI gathers
 exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
-release. A person must review and publish that draft; Settings ignores drafts and prereleases.
+release. A person must review and publish that draft; Settings ignores drafts and prereleases. Settings can then
+download the matching installer, verify `SHA256SUMS`, and replace the packaged app only after the person confirms.
+Launch-time checks never download or install.
 
 The package version is 0.2.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
 Settings reads that version. Leave published stable releases unchanged. A person publishes 0.2.0 by pushing

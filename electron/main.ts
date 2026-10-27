@@ -9,6 +9,7 @@ import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
 import { refreshInstalledCli } from '../src/cliinstall.ts';
 import { RECONNECT_DIALOG, clientsFromSessions } from '../src/reconnect.ts';
+import { spawnUpdateHelper } from '../src/update-apply.ts';
 import { prepareBackendUpdate, stopBackendForUpdate } from '../src/updates.ts';
 import { desktopSettings } from './settings.ts';
 
@@ -95,6 +96,17 @@ const settings = desktopSettings({
       if (!(await client.healthInfo())) return null;
       return await client.reconnect();
     } catch { return null; }
+  },
+  applyVerifiedUpdate: async (plan) => {
+    const child = await spawnUpdateHelper(plan, process.pid, join(dataDir, 'update-apply.log'));
+    try {
+      await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, plan.version);
+    } catch (error) {
+      try { if (!child.killed) child.kill(); } catch { /* the helper already exited */ }
+      throw error;
+    }
+    quittingForUpdate = true;
+    setTimeout(() => { app.quit(); }, 400);
   },
 });
 const settingsEntry: Electron.MenuItemConstructorOptions = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => settings.show() };

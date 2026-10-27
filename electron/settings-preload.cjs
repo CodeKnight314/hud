@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('hudSettings', Object.freeze({
   openRelease: () => call('open-release'),
   openTemplateDocs: (id) => call('open-template-docs', id),
   downloadUpdate: () => call('download-update'),
+  installUpdate: () => call('install-update'),
   quitForUpdate: () => call('quit-for-update'),
   ackReconnect: () => call('reconnect-ack'),
 }));

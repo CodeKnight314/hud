@@ -1,4 +1,5 @@
-import { BrowserWindow, clipboard, ipcMain, shell } from 'electron';
+import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SOURCE_ROOT, confineFileUrl, hasAsset } from '../src/assets.ts';
@@ -9,6 +10,8 @@ import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.
 import type { ClientId } from '../src/mcpinstall.ts';
 import { acknowledgeReconnect, armReconnectNotice, loadReconnectChecklist, readReconnectNotice } from '../src/reconnect.ts';
 import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
+import { installApprovedUpdate } from '../src/update-apply.ts';
+import type { UpdatePlan } from '../src/update-apply.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
 export function desktopSettings(options: {
@@ -18,6 +21,11 @@ export function desktopSettings(options: {
   connectedClients?: () => Promise<ReconnectClient[]>;
   reconnectSource?: () => Promise<ReconnectChecklist | null>;
   ackReconnect?: () => Promise<unknown>;
+  confirmVerifiedUpdate?: (summary: { version: string; name: string; sha256: string }) => Promise<boolean> | boolean;
+  applyVerifiedUpdate?: (plan: UpdatePlan) => Promise<void>;
+  downloadFetcher?: typeof fetch;
+  downloadDirectory?: string;
+  updateTarget?: () => { platform: string; execPath: string; appImage?: string };
   connectionService?: ConnectionService; updateChecker?: UpdateChecker;
   openExternal?: (url: string) => Promise<unknown>; copyText?: (text: string) => void; visible?: boolean;
 }) {
@@ -25,6 +33,7 @@ export function desktopSettings(options: {
   let service: ConnectionService | null = options.connectionService ?? null;
   let cachedConnections: Awaited<ReturnType<ConnectionService['list']>> | null = null;
   let changing = false;
+  let installing = false;
   const file = join(SOURCE_ROOT, 'web', 'settings.html');
   const settingsUrl = pathToFileURL(file).href;
   const updates = options.updateChecker ?? new UpdateChecker({ version: options.version });
@@ -109,6 +118,40 @@ export function desktopSettings(options: {
       await openExternal(update.downloadUrl);
       return;
     }
+    if (action === 'install-update') {
+      if (installing) throw new Error('HUD is already installing an update.');
+      if (changing) throw new Error('Wait for the current Settings change to finish before installing an update.');
+      changing = true;
+      try {
+        const outcome = await installApprovedUpdate({
+          packaged: options.packaged,
+          update: updates.state(options.checkOnLaunch()),
+          target: options.updateTarget?.() ?? { platform: process.platform, execPath: process.execPath, appImage: process.env.APPIMAGE },
+          directory: options.downloadDirectory ?? tmpdir(),
+          fetcher: options.downloadFetcher,
+          confirm: options.confirmVerifiedUpdate ?? (async (summary) => {
+            const prompt = {
+              type: 'question' as const,
+              buttons: ['Not now', 'Install and relaunch'],
+              defaultId: 0,
+              cancelId: 0,
+              noLink: true,
+              title: 'Update HUD',
+              message: `Install HUD v${summary.version}?`,
+              detail: `SHA256 ${summary.sha256} matches the published ${summary.name}. HUD will quit, replace this app, and open the new version. Saved boards stay in the data folder. HUD will not install this update unless you choose Install and relaunch.`,
+            };
+            const choice = window && !window.isDestroyed() ? await dialog.showMessageBox(window, prompt) : await dialog.showMessageBox(prompt);
+            return choice.response === 1;
+          }),
+          apply: async (plan) => {
+            if (!options.applyVerifiedUpdate) throw new Error('In-app update is only available in the packaged app.');
+            await options.applyVerifiedUpdate(plan);
+          },
+        });
+        if (outcome === 'started') installing = true;
+        return { ...(await state()), updateApply: outcome };
+      } finally { changing = false; }
+    }
     if (action === 'quit-for-update') {
       if (!options.packaged || !options.quitForUpdate) throw new Error('Quit for update is only available in the packaged app.');
       if (changing) throw new Error('Wait for the current Settings change to finish before quitting.');
@@ -164,6 +207,7 @@ export function desktopSettings(options: {
       return window;
     },
     close() { window?.close(); },
+    // Launch checks never download or install. Replacement stays on the explicit Install update action.
     async checkAtLaunch() { if (options.packaged && options.checkOnLaunch()) await updates.check(); },
   };
 }
