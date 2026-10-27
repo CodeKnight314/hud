@@ -1,4 +1,5 @@
 import { asset } from './assets.ts';
+import { guideText } from './docs.ts';
 
 /** Coordination playbooks an agent can follow without the rest of the guide. `centralized` is `lead`. */
 export const PLAYBOOKS = ['decentralized', 'lead'] as const;
@@ -58,9 +59,9 @@ export function playbookText(name: string): string {
   return `${slice}\n`;
 }
 
-/** Full guide plus the visual contract. `{{PORT}}` is filled from the server port. */
+/** Full guide plus the visual contract. Served text is `guideText`, so relative links are rewritten. */
 export function fullGuide(port: string | number): string {
-  return `${asset('GUIDE.md', 'utf8') ?? ''}\n\n${asset('STYLE.md', 'utf8') ?? ''}`.replaceAll('{{PORT}}', String(port));
+  return guideText(Number(port));
 }
 
 /**

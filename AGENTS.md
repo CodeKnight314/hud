@@ -34,7 +34,8 @@ src/mcp.ts       MCP stdio server (hand-written JSON-RPC) → HTTP client; also 
 src/cli.ts       `hud` CLI → HTTP client
 src/client.ts    the HTTP client (also the public TS API for external processes); autostarts the server
 src/summary.ts   plain-text board overview used by `hud ls` / hud_overview
-src/guide.ts     full guide and coordination playbooks served to the CLI, HTTP and MCP
+src/docs.ts      served guide text (`guideText`): relative links become URLs or in-page anchors
+src/guide.ts     full guide and coordination playbooks served to the CLI, HTTP and MCP; `fullGuide` is `guideText`
 src/config.ts    ROOT and env config (fixed port + per-user data dir; HUD_PORT/HUD_DATA/HUD_PROBES/HUD_VIEWS/HUD_URL need HUD_SCRATCH=1); packaged builds use per-user dirs
 src/assets.ts    source-vs-packaged file access. `isPackaged()` (Electron), `asset()`, `assetKeys()`,
                  SOURCE_ROOT, isElectron/isElectronDev. The ONLY place that knows where files live

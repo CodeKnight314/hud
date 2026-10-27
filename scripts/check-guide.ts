@@ -78,6 +78,30 @@ assert.ok(!read('src/cli.ts').includes('run:EGO-'));
 assert.ok(guide.includes('hud guide decentralized') && guide.includes('GET /api/guide?playbook=lead'));
 assert.ok(guide.includes('## Monitors'));
 assert.equal(coordinationDoc(undefined, 7317), guide);
+// Repo markdown stays relative for GitHub. The served guide (fullGuide → guideText) must not.
+const repoGuide = read('GUIDE.md');
+const repoStyle = read('STYLE.md');
+assert.ok(repoGuide.includes('](STYLE.md)') && repoGuide.includes('](views/README.md)'));
+assert.ok(repoStyle.includes('](views/README.md)'));
+function unresolved(markdown: string): string[] {
+  const found: string[] = [];
+  for (const m of markdown.matchAll(/\]\(([^)\s]+)/g)) {
+    const target = m[1];
+    if (target.startsWith('#') || target.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+    found.push(target);
+  }
+  return found;
+}
+const dead = unresolved(guide);
+assert.deepEqual(dead, [], `served guide has relative links: ${dead.join(', ')}`);
+assert.ok(guide.includes('](#hud-visual-contract)'));
+assert.ok(guide.includes('# HUD visual contract'));
+assert.ok(guide.includes('https://github.com/CodeKnight314/hud/blob/0.2.0/views/README.md'));
+assert.ok(!guide.includes('](STYLE.md)') && !guide.includes('](views/README.md)'));
+for (const [name, text] of [['decentralized', decentralized], ['lead', lead], ['playbooks', index]] as const) {
+  const links = unresolved(text);
+  assert.deepEqual(links, [], `${name} has relative links: ${links.join(', ')}`);
+}
 assert.equal(coordinationDoc('  ', 7317), guide);
 
 assert.throws(() => playbookText('pair'), (e) => e instanceof GuideError && e.status === 400 && /decentralized or lead/.test(e.message));
@@ -107,6 +131,8 @@ assert.equal(chooser.stdout.trimEnd(), index.trimEnd());
 const full = cli(['guide']);
 assert.equal(full.status, 0, full.stderr);
 assert.ok(full.stdout.includes('## Monitors') && full.stdout.includes('localhost:7317'));
+assert.deepEqual(unresolved(full.stdout), []);
+assert.ok(full.stdout.includes('](#hud-visual-contract)') && !full.stdout.includes('](STYLE.md)'));
 const bad = cli(['guide', 'nope']);
 assert.equal(bad.status, 2);
 assert.match(bad.stderr, /unknown playbook/);
