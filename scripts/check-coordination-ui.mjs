@@ -38,11 +38,16 @@ async function seed() {
   const open = await jsonRequest('/api/items', { method: 'POST', body: {
     id: `ui-${nonce}-open`, type: 'ticket', board: board.id, title: `Open task ${nonce}`, status: 'todo', body: 'Claim me.',
   } });
+  const held = await jsonRequest('/api/items', { method: 'POST', body: {
+    id: `ui-${nonce}-held`, type: 'ticket', board: board.id, title: `Held task ${nonce}`, status: 'todo', body: 'Already claimed.',
+  } });
+  await jsonRequest('/api/sessions', { method: 'POST', body: { id: `peer-${nonce}`, name: `Peer ${nonce}`, kind: 'agent' } });
+  await jsonRequest(`/api/items/${encodeURIComponent(held.id)}/claim`, { method: 'POST', body: { session: `peer-${nonce}`, ttl: 180 } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FACT', text: 'the parser drops trailing commas', session: 'peer' } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FAIL', text: 'retrying the printer path failed on empty input', session: 'peer' } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'SUMMARY', text: 'handoff: parser fix is in', session: 'peer' } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `project:${project.id}`, kind: 'SUMMARY', text: 'project handoff is ready for review', session: 'peer' } });
-  return { board, run, project, open, nonce };
+  return { board, run, project, open, held, nonce };
 }
 
 async function browserEval(win, expression) { return win.webContents.executeJavaScript(expression); }
@@ -67,6 +72,20 @@ async function runUI(seedData) {
   try {
     await win.loadURL(`${base.href}#${encodeURIComponent(seedData.board.id)}`);
     await waitForDOM(win, `(() => document.querySelector('#board-list .board-row.on .name')?.textContent?.includes(${JSON.stringify(seedData.nonce)}))()`, 'seeded board');
+    const peerName = JSON.stringify(`Peer ${seedData.nonce}`);
+    await waitForDOM(win, `(() => {
+      const el = document.querySelector('#claim-widget');
+      if (!el || el.hidden) return false;
+      const text = el.textContent || '';
+      const ttl = el.querySelector('[data-claim-ttl]')?.getAttribute('data-claim-ttl') || '';
+      return text.includes(${peerName}) && text.includes('2 ready') && /^(\\d+h( \\d+m)?|\\d+m( \\d+s)?|\\d+s)$/.test(ttl);
+    })()`, 'claim widget on the canvas');
+    assert.equal(await browserEval(win, `document.querySelector('#claim-widget [data-claim-session]')?.getAttribute('data-claim-session')`), `Peer ${seedData.nonce}`, 'widget shows the session name');
+    assert.equal(await browserEval(win, `document.querySelector('#claim-widget [data-ready]')?.getAttribute('data-ready')`), '2', 'widget shows the ready count');
+    assert.match(await browserEval(win, `document.querySelector('#claim-widget [data-claim-ttl]')?.getAttribute('data-claim-ttl')`), /^\d+m(?: \d+s)?$|^\d+s$/, 'widget shows the claim TTL');
+    assert.equal(await browserEval(win, `document.body.classList.contains('supervision')`), false, 'claim glance stays on the canvas');
+    await click(win, '#claim-widget [data-claim-focus]');
+    await waitForDOM(win, `(() => document.querySelector('#drawer.open') && !document.body.classList.contains('supervision') && document.querySelector('#claim-widget') && !document.querySelector('#claim-widget').hidden)()`, 'claim opens on the canvas');
     // sessions popover
     await click(win, '#btn-sessions');
     await waitForDOM(win, `(() => !document.querySelector('#sessions').hidden && document.querySelector('#sessions').textContent.includes('user'))()`, 'sessions popover');
@@ -126,7 +145,7 @@ app.on('ready', async () => {
   const seedData = await seed();
   try {
     const result = await runUI(seedData);
-    console.log(`PASS: coordination UI on ${base.href} (sessions, queue claim/release, inspector context, one-scroll sections)`);
+    console.log(`PASS: coordination UI on ${base.href} (canvas claim widget, sessions, queue claim/release, inspector context, one-scroll sections)`);
     if (artifactDir) console.log(`artifacts: ${artifactDir}/coordination.png`);
     assert.deepEqual(result.sections, ['overview', 'activity', 'settings']);
   } catch (e) {

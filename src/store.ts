@@ -1200,7 +1200,7 @@ export class Store extends EventEmitter {
         id: it.id, ident: this.ident(it), title: it.title, board: it.board, status: normStatus(it.status ?? 'todo'),
         ...(it.priority ? { priority: it.priority } : {}), ...(it.project ? { project: it.project } : {}), ...(it.assignee ? { assignee: it.assignee } : {}),
         blocked, blockedBy, claim, owner: claim?.actor ?? it.assignee ?? null,
-        session: session ? { id: session.id, live: this.sessionLive(session, at), lastSeenAt: session.lastSeenAt, kind: session.kind } : null,
+        session: session ? { id: session.id, name: session.name, live: this.sessionLive(session, at), lastSeenAt: session.lastSeenAt, kind: session.kind } : null,
         bucket, ready: !done && !claim && !blocked, updatedAt: it.updatedAt,
       };
       if (blocked && !done) blockedCount++;
