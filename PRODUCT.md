@@ -2,9 +2,9 @@
 
 hud is a local board a person and several agents share. The board coordinates the work. The person and the agents do the work. Monitors, notes and frames sit on the same board. MCP, the CLI and HTTP are one contract. Tool shapes and timings live in [GUIDE.md](GUIDE.md#coordination).
 
-This page and the Linear project description share the three rules below. The open 0.2 issues (RIC-7 through RIC-37) each map to one criterion.
+The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. The open 0.2 issues (RIC-7 through RIC-37) each map to one criterion.
 
-## Project description
+## Three rules
 
 hud is a local coordination board for a person and several agents. Three rules hold:
 
@@ -18,17 +18,17 @@ A claim is a lease the store grants. A second caller gets `409` `claimed`. The h
 
 The queue is the read model: ready work, then claimed, then done. A lead may pre-assign and link; everyone else pulls a ready row. Both are policies over the same leases.
 
-Open work: [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) shows the holder, the time-to-live and the ready count on the canvas. The claim/release smoke in [RIC-10](https://linear.app/richards-project-space/issue/RIC-10/complete-mcp-surface-for-trees-projects-claims) keeps lease visibility on the shared tool matrix (that issue's criterion is one contract).
+Open work: [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) is the copy-paste playbook for those two policies (claim, publish a fact, wait, finish), including the failure modes expired lease, blocked ticket and assignee conflict. [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) shows the holder, the time-to-live and the ready count on the canvas. The claim/release smoke in [RIC-10](https://linear.app/richards-project-space/issue/RIC-10/complete-mcp-surface-for-trees-projects-claims) keeps lease visibility on the shared tool matrix (that issue's criterion is one contract).
 
 ## Reclaim of stuck agents
 
 A session that stops heartbeating ends, and its leases release with it. A lease past its time-to-live releases on its own. While the holder is still live, takeover leaves the lease where it is. Once that session is gone and the lease has not yet expired, the next agent reclaims it with takeover (`hud claim <id> --takeover`). The lease also ends when the ticket is finished, canceled, trashed or reassigned, and when its board is cleared or deleted. Reopening a finished ticket does not restore the old lease. Leases are runtime-only, so a restart cannot pin a ticket to a dead agent.
 
-Open work: [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) is the copy-paste playbook (claim, publish a fact, wait, finish) and the failure modes expired lease, blocked ticket and assignee conflict.
+No open issue. Reclaim is already what the store and the guide do.
 
 ## Clear decomposition ownership (trees)
 
-`parent` is the ownership edge. The parent owns the decomposition; each child is a piece of that split and takes its own lease. Progress rolls up to the parent. Cycles are rejected. Deleting a ticket promotes its children to its parent. A project (`KEY-n`) groups tickets. It is not a node in the tree. `blockedBy` waits on another ticket; it does not transfer ownership.
+`parent` is the ownership edge. The parent owns the decomposition; each child is a piece of that split and takes its own lease. Progress rolls up to the parent. Cycles are rejected. Deleting a ticket promotes its children to its parent. A project (key `KEY`) groups tickets as `KEY-n`. It is not a node in the tree. `blockedBy` waits on another ticket; it does not transfer ownership.
 
 Already true: parent links, rollups, cycle checks, and the lead versus pull policies in the guide.
 
@@ -87,7 +87,7 @@ The packaged app is the board people run. Signing, the Linux agent path and the 
 
 ## Open issues
 
-Snapshot 2026-10-27. Each open issue on the 0.2 train maps to one criterion. [RIC-12](https://linear.app/richards-project-space/issue/RIC-12/rewrite-product-definition-for-board-as-coordination-trees) is this page: the in-repo text and the project description above stay the same three rules. An issue that is not in the table has no criterion yet; add the row when it opens.
+Snapshot 2026-10-27. Each open issue on the 0.2 train maps to one criterion. [RIC-12](https://linear.app/richards-project-space/issue/RIC-12/rewrite-product-definition-for-board-as-coordination-trees) is this page. Syncing the three rules into the Linear project description is out of scope here. An issue that is not in the table has no criterion yet; add the row when it opens.
 
 | Issue | Title | Criterion |
 | --- | --- | --- |
@@ -96,8 +96,8 @@ Snapshot 2026-10-27. Each open issue on the 0.2 train maps to one criterion. [RI
 | [RIC-9](https://linear.app/richards-project-space/issue/RIC-9/multi-project-board-with-clear-ownership) | Multi-project board with clear ownership | Clear decomposition ownership (trees) |
 | [RIC-10](https://linear.app/richards-project-space/issue/RIC-10/complete-mcp-surface-for-trees-projects-claims) | MCP surface for trees, projects, claims | One contract |
 | [RIC-11](https://linear.app/richards-project-space/issue/RIC-11/dark-mode-smooth-desktop-ui-leave-terminal-look) | Dark-mode desktop UI | A person can read the board |
-| [RIC-12](https://linear.app/richards-project-space/issue/RIC-12/rewrite-product-definition-for-board-as-coordination-trees) | This product definition | Project description |
-| [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) | Coordination playbooks | Reclaim of stuck agents |
+| [RIC-12](https://linear.app/richards-project-space/issue/RIC-12/rewrite-product-definition-for-board-as-coordination-trees) | This product definition | In-repo contract |
+| [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) | Coordination playbooks | Board-enforced leases |
 | [RIC-14](https://linear.app/richards-project-space/issue/RIC-14/notarize-code-sign-macos-and-windows-installers) | Notarize and code-sign installers | Install and keep the app |
 | [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) | AppImage CLI / MCP path | Install and keep the app |
 | [RIC-16](https://linear.app/richards-project-space/issue/RIC-16/one-click-in-app-update-apply-still-user-approved) | In-app update, user-approved | The human stays in charge |

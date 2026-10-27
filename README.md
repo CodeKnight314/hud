@@ -31,8 +31,8 @@ open` opens the board without the desktop shell.
 
 ## What you get
 
-- **Tickets with real structure.** Projects with `KEY-n` idents, a parent that owns its decomposition, dependencies,
-  assignees, decisions and a Linear-style list view. A `run` ticket can summarize a whole job.
+- **Tickets with real structure.** A project key (`KEY`) gives its tickets `KEY-n` idents. A parent owns its
+  decomposition. Dependencies, assignees, decisions and a Linear-style list view. A `run` ticket can summarize a whole job.
 - **Monitors that stay honest.** Command, HTTP, probe and cron-heartbeat sources with thresholds, staleness, history,
   24 h uptime and alerts. Readings carry provenance, evidence and freshness.
 - **A live board.** Frames, notes, utilities, annotations, comparisons, and a fixed 1600 × 900 surface that you and
