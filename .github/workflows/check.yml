@@ -15,4 +15,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Install headless Electron libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libxss1
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
       - run: npm test

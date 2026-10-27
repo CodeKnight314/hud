@@ -14,7 +14,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 
 ## Ways in (all equivalent)
 - **MCP**: tools `hud_overview`, `hud_tickets`, `hud_search`, `hud_project`, `hud_link`, `hud_create`, `hud_update`,
-  `hud_push`, `hud_comment`, `hud_get`, `hud_delete`, `hud_trash`, `hud_backup`, `hud_board`, `hud_organize`,
+  `hud_push`, `hud_comment`, `hud_get`, `hud_delete`, `hud_trash`, `hud_backup`, `hud_reveal`, `hud_board`, `hud_organize`,
   `hud_arrange`, `hud_run`, `hud_views`, `hud_watch`, `hud_alerts`, `hud_attention`, `hud_runs`, `hud_changes`,
   `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare`, `hud_lint`, `hud_graph`,
   `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_session`, `hud_claim`, `hud_queue`,
@@ -57,7 +57,8 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   - alerts: `GET /api/alerts[?all=1&notify=name&since=]` · `POST /api/alerts/ack {ids?}` · `POST /api/watch {name, ids?, boards?, off?}` ·
     `POST /api/attention/:id {action,revision,until?}` (`review`, `unreview`, `snooze`; review is separate from alert acknowledgement)
   - safety net: `GET /api/trash[?board=]` · `POST /api/trash/:id/restore` · `DELETE /api/trash/:id` and `DELETE /api/trash`
-    (permanent) · `GET|POST /api/backups` · `GET /api/export` · `POST /api/import {state, mode}`
+    (permanent) · `GET|POST /api/backups` · `POST /api/backups/:name/restore` · `POST /api/data/reveal` ·
+    `GET /api/export` · `POST /api/import {state, mode}`
   - lifecycle: `GET /api/health` (pid, port, mode, dataDir, version, stateVersion, items, `saveError?`, `recoveredFrom?`) ·
     `POST /api/shutdown`
 - **TypeScript**: `import { Hud } from '<repo>/src/client.ts'` → `new Hud({actor}).push(id, {...})`. Requests time out
@@ -82,6 +83,14 @@ Completed runs are hidden until **show completed** is selected.
 The top bar holds **search** (`⌘/Ctrl+K`), the live actor count, the session popover and the connection pill. Search is
 cross-board: titles, ids, UUIDs, ticket idents, bodies and notes. Opening a result switches to its board and opens the
 inspector without acknowledging attention or alerts.
+
+While `GET /api/health` reports `saveError` or `recoveredFrom`, a banner sits under the top bar. It is not a toast and
+it has no close control: it stays until health stops reporting that field (`saveError` clears on the next successful
+save; `recoveredFrom` stays until hud restarts on a readable `state.json`, or until that snapshot is removed from
+`backups/`). If health cannot be reached, the banner comes down instead of keeping the last report. **open data dir** reveals the data
+directory (`POST /api/data/reveal`, `hud reveal`, `hud_reveal`). **restore** replaces the live board with the recovery
+snapshot, or with the newest backup when this process did not recover one (`POST /api/backups/:name/restore`,
+`hud backup restore <name>`, `hud_backup {action:"restore", name}`). Restore backs up the current state first.
 
 ## Items
 Common fields: `id`, `type`, `board` (default `main`), `title`, `group`, `x`, `y`, `w`, `h` (board pixels),
@@ -914,7 +923,10 @@ before an import or board delete, and hourly; the newest 30 are kept. `hud backu
 `hud_backup`, `GET|POST /api/backups`. `hud export [file]` / `GET /api/export` dump the whole state; `hud import <file>
 [--merge]` / `POST /api/import {state, mode:"replace"|"merge"}` load one (replace takes a backup first). A corrupt
 `state.json` is moved aside as `state.json.corrupt-<ts>` and the newest valid backup is loaded; `GET /api/health` then
-reports `recoveredFrom`, and `saveError` if saving is failing (it is retried every 2 s). Only one server may use a data
+reports `recoveredFrom`, and `saveError` if saving is failing (it is retried every 2 s). `recoveredFrom` is cleared
+once that snapshot is no longer in `backups/` (only the newest 30 are kept). The desktop board repeats
+either field in a persistent banner and hides it when health cannot be reached (see Browser navigation). `hud backup restore <name>` / `POST /api/backups/:name/restore`
+loads one snapshot in replace mode. `hud reveal` / `POST /api/data/reveal` opens the data directory. Only one server may use a data
 dir (`hud.lock`); a second one refuses to start.
 
 ## Conventions

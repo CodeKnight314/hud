@@ -1,5 +1,6 @@
 // hud — canvas client. No build step; plain ES module.
 import { claimWidgetHTML } from './claim-widget.js';
+import { persistenceBannerHTML, persistenceNotice, restoreTarget } from './persistence-banner.js';
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
@@ -46,6 +47,7 @@ const S = {
   alerts: [],
   live: false,
   connected: false,
+  persistence: null,
   heartbeatAt: 0,
   readoutAt: 0,
   readoutBoards: new Map(),
@@ -1913,6 +1915,66 @@ function setLive(on) {
   S.connected = on;
   renderConnection();
   if (S.drawer) renderDrawer();
+}
+let persistenceBusy = false;
+function syncPersistenceBannerHeight() {
+  const el = $('#persistence-banner');
+  if (!el || el.hidden) return;
+  document.documentElement.style.setProperty('--persistence-banner-height', `${el.offsetHeight}px`);
+}
+function renderPersistenceBanner(health) {
+  const el = $('#persistence-banner');
+  if (!el || CAPTURE_READONLY) return;
+  // Unreachable health is not a report. Drop the last saveError / recoveredFrom instead of leaving it up.
+  const notice = health ? persistenceNotice(health) : null;
+  S.persistence = notice;
+  if (!notice) {
+    el.hidden = true;
+    el.replaceChildren();
+    delete el.dataset.rendered;
+    document.body.classList.remove('persistence-alert');
+    return;
+  }
+  const html = persistenceBannerHTML(notice);
+  if (el.dataset.rendered !== html) {
+    el.innerHTML = html;
+    el.dataset.rendered = html;
+  }
+  el.hidden = false;
+  document.body.classList.add('persistence-alert');
+  syncPersistenceBannerHeight();
+}
+async function refreshPersistenceBanner() {
+  if (CAPTURE_READONLY) return;
+  const health = await optionalGET('/api/health');
+  renderPersistenceBanner(health);
+}
+async function persistenceAction(action) {
+  if (persistenceBusy || !S.persistence) return;
+  persistenceBusy = true;
+  try {
+    if (action === 'open-data-dir') {
+      const opened = await api('POST', '/api/data/reveal');
+      toast(`opened ${opened.dataDir || 'data dir'}`);
+      return;
+    }
+    if (action !== 'restore') return;
+    const backups = await api('GET', '/api/backups');
+    const named = S.persistence.recoveredFrom;
+    if (named && !backups.some((backup) => backup?.name === named)) {
+      toast(`backup ${named} is no longer on disk`);
+      return;
+    }
+    const name = named || restoreTarget(S.persistence, backups);
+    if (!name) return toast('no backup to restore');
+    if (!confirm(`Restore ${name}? This replaces the live board. The current state is backed up first.`)) return;
+    await api('POST', `/api/backups/${encodeURIComponent(name)}/restore`);
+    toast(`restored ${name}`);
+    await load();
+  } finally {
+    persistenceBusy = false;
+    void refreshPersistenceBanner();
+  }
 }
 function renderConnection() {
   const c = $('#conn');
@@ -4240,7 +4302,16 @@ if (!CAPTURE_READONLY) setInterval(() => {
     if (it && ((it.type === 'util' && isLive(it)) || isAnimated(it))) renderItem(it, true);
   }
 }, 100);
-window.addEventListener('resize', () => { setDrawerWidth(S.drawerWidth, false); fit(); });
+window.addEventListener('resize', () => { setDrawerWidth(S.drawerWidth, false); fit(); syncPersistenceBannerHeight(); });
+$('#persistence-banner').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-persistence]');
+  if (!button) return;
+  persistenceAction(button.dataset.persistence).catch(() => {});
+});
+if (!CAPTURE_READONLY) {
+  void refreshPersistenceBanner();
+  setInterval(() => { void refreshPersistenceBanner(); }, 2000);
+}
 
 // ---------------------------------------------------------------- boot
 if (!CAPTURE_READONLY) try {

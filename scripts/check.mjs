@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,10 +27,12 @@ const suites = [
   'scripts/check-connections.ts',
   'scripts/check-cliinstall.ts',
   'scripts/check-updates.ts',
+  'scripts/check-persistence.ts',
+  'scripts/check-persistence-banner.mjs',
 ];
 
-function run(args, label) {
-  const result = spawnSync(process.execPath, args, { cwd: root, stdio: 'inherit' });
+function run(args, label, exec = process.execPath, env = process.env) {
+  const result = spawnSync(exec, args, { cwd: root, stdio: 'inherit', env });
   if (result.error) {
     console.error(`FAIL ${label}: ${result.error.message}`);
     process.exit(1);
@@ -50,5 +52,20 @@ for (const suite of suites) {
   run([resolve(root, suite)], suite);
   console.log(`PASS ${suite}`);
 }
+
+const electron = resolve(root, 'node_modules', '.bin', 'electron');
+const uiScript = resolve(root, 'scripts/check-persistence-ui.mjs');
+// GitHub's checkout cannot give chrome-sandbox the root setuid bit. The helper aborts
+// the process unless both the flag and ELECTRON_DISABLE_SANDBOX are set before startup.
+const electronArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage', uiScript];
+const electronEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' };
+console.log('RUN scripts/check-persistence-ui.mjs');
+if (!existsSync(electron)) {
+  console.error('FAIL scripts/check-persistence-ui.mjs: electron is not installed');
+  process.exit(1);
+}
+if (!process.env.DISPLAY && existsSync('/usr/bin/xvfb-run')) run(['-a', '--server-args=-screen 0 1280x800x24', electron, ...electronArgs], 'scripts/check-persistence-ui.mjs', '/usr/bin/xvfb-run', electronEnv);
+else run(electronArgs, 'scripts/check-persistence-ui.mjs', electron, electronEnv);
+console.log('PASS scripts/check-persistence-ui.mjs');
 
 console.log('PASS all HUD checks');
