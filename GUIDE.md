@@ -958,8 +958,9 @@ sessions must be restarted or reconnected to load changes.
 
 Use **Copy MCP configuration** for other clients or for manual setup. OpenCode JSONC is detected and left untouched so
 its comments are preserved; Settings provides copy/manual instructions. The **Install command** action requires the
-packaged app; a source checkout cannot install the app command. Linux AppImage command integration is unsupported; use
-the `.deb` package for stable CLI integration. The source CLI also supports:
+packaged app; a source checkout cannot install the app command. Linux AppImage and `.deb` builds both install a stable
+`hud` command: the AppImage shim stores the `.AppImage` path (the mount path changes on every launch) and resolves the
+CLI inside the fresh mount. Move the AppImage and run **Install command** again. The source CLI also supports:
 
     hud mcp status [--json]
     hud mcp install [clients...] [--json]
@@ -1010,4 +1011,5 @@ When run from a packaged binary it registers `<hud> mcp`, so nothing else needs 
 In the packaged desktop app, Settings → Connections → **Install command** (or `hud cli install`) puts the `hud` command
 on your `PATH`; the managed shim points at the app binary, so the CLI and MCP server use the same program. The app
 refreshes its managed shim on launch to keep registered client paths valid after normal app replacement.
-`HUD_BIN_DIR` chooses where it goes. Linux AppImage builds do not support this command integration; use the `.deb`.
+`HUD_BIN_DIR` chooses where it goes. An AppImage install points the shim at that `.AppImage` file; reinstall the
+command after moving the file. The `.deb` install points at the binary the package owns.

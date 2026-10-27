@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { appImageCliInvocation, appImageTarget } from './appimage-cli.ts';
 import { SOURCE_ROOT, isElectron, isPackaged } from './assets.ts';
 
 export { isElectron };
@@ -40,13 +41,36 @@ export function primeLoginEnv(refresh = false): Promise<void> {
   });
 }
 
+/**
+ * Packaged CLI launch. A bad `APPIMAGE` throws: falling through to `process.execPath` would start
+ * the server from the temporary mount, which disappears when this process exits.
+ */
+export function packagedCliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } {
+  const image = appImageTarget();
+  if (image && !image.ok) throw new Error(`hud cannot start from this AppImage: ${image.detail}`);
+  const appImage = appImageCliInvocation();
+  if (appImage) return appImage;
+  // the app binary is its own CLI in node mode — no second runtime to ship
+  return { cmd: process.execPath, prefix: [bundledCli()], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+}
+
 /** how to run the hud CLI here: command, args to prefix, and the env it needs */
 export function cliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } {
-  if (isElectron()) {
-    // the app binary is its own CLI in node mode — no second runtime to ship
-    return { cmd: process.execPath, prefix: [bundledCli()], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
-  }
+  if (isElectron()) return packagedCliInvocation();
   return { cmd: process.execPath, prefix: [join(SOURCE_ROOT, 'src', 'server.ts')], env: process.env };
+}
+
+/** Env for a fresh GUI process. The installed command sets node mode; a window must not inherit it, the parent mount, or a dev CLI override. */
+export function guiLaunchEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  if (env.APPIMAGE) {
+    delete env.APPDIR;
+    delete env.ARGV0;
+    delete env.LD_LIBRARY_PATH;
+    delete env.HUD_CLI_ENTRY;
+  }
+  return env;
 }
 
 /** how to start the isolated Electron capture runner, when this checkout has Electron available */

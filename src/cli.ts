@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { isElectron } from './assets.ts';
 import { coordinationDoc, GuideError } from './guide.ts';
+import { guiLaunchEnv } from './electron-runtime.ts';
 import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
@@ -21,7 +22,7 @@ function openApp(url: string): void {
       }
     }
     // a second launch focuses the running app (single-instance lock) or starts it
-    spawn(process.env.APPIMAGE || process.execPath, [], { stdio: 'ignore', detached: true }).unref();
+    spawn(process.env.APPIMAGE || process.execPath, [], { stdio: 'ignore', detached: true, env: guiLaunchEnv() }).unref();
     return;
   }
   const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
@@ -138,7 +139,7 @@ usage:
   hud mcp uninstall [clients...]     remove the hud MCP entry again
   hud mcp status                     show where hud is configured and which command is used
   hud mcp print [client]             print the command / config snippet to paste in by hand
-  hud cli [install|uninstall|status] put the 'hud' command on PATH (from the desktop app)
+  hud cli [install|uninstall|status] put the 'hud' command on PATH (desktop app, .deb, or AppImage)
 
 every command takes --help; --json prints machine-readable output; '--' ends flag parsing;
 use --flag=value for values that start with '-'. Exit codes: 0 ok, 1 failure, 2 usage error.
