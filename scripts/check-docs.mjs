@@ -6,6 +6,8 @@ import { guideText, quickstartText } from '../src/docs.ts';
 import { guideToc, parseGuide, renderGuide } from '../src/guide.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+/** Windows checkouts carry CRLF; these checks compare line structure, so read LF only. */
+const readText = (path) => readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 let failures = 0;
 const ok = (cond, msg) => {
   if (cond) return;
@@ -13,9 +15,9 @@ const ok = (cond, msg) => {
   console.error(`FAIL ${msg}`);
 };
 
-const readme = readFileSync(join(root, 'README.md'), 'utf8');
-const guide = readFileSync(join(root, 'GUIDE.md'), 'utf8');
-const quickstart = readFileSync(join(root, 'QUICKSTART.md'), 'utf8');
+const readme = readText(join(root, 'README.md'), 'utf8');
+const guide = readText(join(root, 'GUIDE.md'), 'utf8');
+const quickstart = readText(join(root, 'QUICKSTART.md'), 'utf8');
 const lines = readme.split('\n').length;
 const quickLines = quickstart.split('\n').length;
 
@@ -90,7 +92,7 @@ ok(guide.includes('](QUICKSTART.md'), 'GUIDE links the quickstart with a relativ
 
 const servedGuide = guideText(7317);
 const servedQuick = quickstartText(7317);
-const style = readFileSync(join(root, 'STYLE.md'), 'utf8');
+const style = readText(join(root, 'STYLE.md'), 'utf8');
 const styleSlug = slug((/^#\s+(.+)$/m.exec(style)?.[1] ?? '').trim());
 const servedHeadings = new Set(headingSlugs(servedGuide, /^#{1,3} [^#]/));
 /** A markdown link target the served text can open: in-page anchor or an absolute URL. */
@@ -116,24 +118,24 @@ for (const m of servedGuide.matchAll(/\/api\/quickstart#([\w-]+)/g)) ok(quickSlu
 for (const m of servedQuick.matchAll(/\/api\/guide#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `served quickstart anchor /api/guide#${m[1]} resolves`);
 for (const m of servedGuide.matchAll(/\]\(#([\w-]+)\)/g)) ok(servedHeadings.has(m[1]), `served guide in-page anchor #${m[1]} resolves`);
 
-const builder = readFileSync(join(root, 'electron-builder.yml'), 'utf8');
+const builder = readText(join(root, 'electron-builder.yml'), 'utf8');
 ok(/from:\s*QUICKSTART\.md\s*\n\s*to:\s*hud\/QUICKSTART\.md/.test(builder), 'electron-builder ships QUICKSTART.md to hud/QUICKSTART.md');
 ok(/from:\s*GUIDE\.md\s*\n\s*to:\s*hud\/GUIDE\.md/.test(builder), 'electron-builder ships GUIDE.md to hud/GUIDE.md');
-const serverSrc = readFileSync(join(root, 'src/server.ts'), 'utf8');
+const serverSrc = readText(join(root, 'src/server.ts'), 'utf8');
 ok(serverSrc.includes("'/api/quickstart'"), 'server registers GET /api/quickstart');
-const cliSrc = readFileSync(join(root, 'src/cli.ts'), 'utf8');
+const cliSrc = readText(join(root, 'src/cli.ts'), 'utf8');
 ok(cliSrc.includes('renderGuide(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
-const docsSrc = readFileSync(join(root, 'src/docs.ts'), 'utf8');
+const docsSrc = readText(join(root, 'src/docs.ts'), 'utf8');
 ok(docsSrc.includes('export function guideText') && docsSrc.includes('export function quickstartText'), 'src/docs.ts exports the served doc builders');
 for (const name of readdirSync(join(root, 'src'))) {
   if (!name.endsWith('.ts') || name === 'docs.ts') continue;
-  const text = readFileSync(join(root, 'src', name), 'utf8');
+  const text = readText(join(root, 'src', name), 'utf8');
   ok(!/asset\(\s*['"](?:GUIDE|STYLE|QUICKSTART)\.md['"]/.test(text), `${name} reads a served doc; only src/docs.ts may`);
   ok(!/\]\((?:\.\/)?(?:GUIDE|STYLE|QUICKSTART|views\/README)\.md/.test(text), `${name} rewrites a doc link; only src/docs.ts may`);
 }
 
-const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
-const store = readFileSync(join(root, 'src/store.ts'), 'utf8');
+const agents = readText(join(root, 'AGENTS.md'), 'utf8');
+const store = readText(join(root, 'src/store.ts'), 'utf8');
 const version = Number(/STATE_VERSION = (\d+)/.exec(store)?.[1]);
 ok(Number.isFinite(version), 'STATE_VERSION is declared');
 ok(agents.includes(`STATE_VERSION ${version}`), `AGENTS.md mentions the current state version (${version})`);
@@ -161,10 +163,10 @@ if (change) {
 
 // The comments worked example is a copy target. These tokens have to exist on the
 // live surfaces, or a rename leaves AGENTS.md describing code that is gone.
-const server = readFileSync(join(root, 'src/server.ts'), 'utf8');
-const client = readFileSync(join(root, 'src/client.ts'), 'utf8');
-const mcp = readFileSync(join(root, 'src/mcp.ts'), 'utf8');
-const cli = readFileSync(join(root, 'src/cli.ts'), 'utf8');
+const server = readText(join(root, 'src/server.ts'), 'utf8');
+const client = readText(join(root, 'src/client.ts'), 'utf8');
+const mcp = readText(join(root, 'src/mcp.ts'), 'utf8');
+const cli = readText(join(root, 'src/cli.ts'), 'utf8');
 ok(
   /route\('POST', '\/api\/items\/:id\/comments'[\s\S]{0,400}?store\.comment\(/.test(server),
   'comments example route: POST /api/items/:id/comments calls store.comment()',
