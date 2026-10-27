@@ -2,11 +2,12 @@
 
 <h1 align="center">hud</h1>
 
-<p align="center">A local, live canvas of tickets and monitors, shared by you and your agents.</p>
+<p align="center">A local coordination board for you and your agents.</p>
 
-hud is a desktop app backed by one local server. You see a fixed board of tickets, monitors, notes and charts; agents
-reach the same board through MCP, the CLI or HTTP. It runs on your machine, binds to loopback only, and keeps your data
-in a per-user directory.
+hud is a desktop app backed by one local server. You and your agents share a fixed board of tickets, monitors, notes
+and charts. The board grants exclusive leases, takes work back from an agent that goes silent, and treats a ticket
+tree as the owned decomposition of a job. Agents reach it through MCP, the CLI or HTTP. It runs on your machine, binds
+to loopback only, and keeps your data in a per-user directory. The contract is [PRODUCT.md](PRODUCT.md).
 
 ## Install
 
@@ -30,16 +31,17 @@ open` opens the board without the desktop shell.
 
 ## What you get
 
-- **Tickets with real structure.** Projects with `KEY-n` idents, sub-tickets, dependencies, assignees, decisions and a
-  Linear-style list view. A `run` ticket can summarize a whole job.
+- **Tickets with real structure.** A project key (`KEY`) gives its tickets `KEY-n` idents. A parent owns its
+  decomposition. Dependencies, assignees, decisions and a Linear-style list view. A `run` ticket can summarize a whole job.
 - **Monitors that stay honest.** Command, HTTP, probe and cron-heartbeat sources with thresholds, staleness, history,
   24 h uptime and alerts. Readings carry provenance, evidence and freshness.
 - **A live board.** Frames, notes, utilities, annotations, comparisons, and a fixed 1600 × 900 surface that you and
   agents arrange together.
 - **Attention and runs.** One inbox for decisions, blocked work, warnings, errors and stale monitors; a run view with
   explicit progress and ETA.
-- **Coordination for several agents.** Presence, exclusive work claims, a queue, typed shared context, file
-  attachments and an event-driven wait, so parallel agents reuse findings instead of duplicating work.
+- **Coordination for several agents.** The board enforces exclusive leases. A silent agent loses its hold, and a
+  live lease stays with its holder. A queue, typed shared context, file attachments and an event-driven wait let
+  parallel agents reuse findings.
 
 ## Connect an agent
 
@@ -84,6 +86,7 @@ holds overview, activity, coordination and settings in one scroll.
 
 ## Learn more
 
+- [PRODUCT.md](PRODUCT.md) — the product contract: leases, reclaim, trees, and which issue serves which criterion.
 - [GUIDE.md](GUIDE.md) — the agent and operator guide: tools, schemas, renderers, coordination, install and updates.
 - [STYLE.md](STYLE.md) — the dark desktop visual contract.
 - [AGENTS.md](AGENTS.md) — architecture and contributor conventions.
@@ -91,7 +94,6 @@ holds overview, activity, coordination and settings in one scroll.
 
 ## Security
 
-hud binds to `127.0.0.1`/`::1`, rejects foreign `Host`/`Origin` headers, and sends a strict CSP. Command monitors and
-`apply` run with your permissions, so review anything an agent asks hud to execute. Your board, backups and the
+hud binds to `127.0.0.1`/`::1`, rejects foreign `Host`/`Origin` headers, and sends a strict CSP. Command monitors and `apply` run with your permissions, so review anything an agent asks hud to execute. Your board, backups and the
 single-server lock live in the per-user data directory (`~/Library/Application Support/hud` on macOS,
 `%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere).

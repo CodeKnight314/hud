@@ -1,7 +1,9 @@
 # hud — agent guide
 
 hud is a local, live canvas shared between a human and agents. It holds **tickets**, **monitors**,
-**notes** and **frames** on one or more **boards**. Everything you change appears instantly in the
+**notes** and **frames** on one or more **boards**. The product contract — board-enforced leases,
+reclaim of a stuck agent, and a parent that owns its decomposition — is [PRODUCT.md](PRODUCT.md).
+Everything you change appears instantly in the
 human's browser at http://localhost:{{PORT}} and vice versa. The human rearranges things too, so
 re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 

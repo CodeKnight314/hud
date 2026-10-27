@@ -41,6 +41,8 @@ const store = readFileSync(join(root, 'src/store.ts'), 'utf8');
 const version = Number(/STATE_VERSION = (\d+)/.exec(store)?.[1]);
 ok(Number.isFinite(version), 'STATE_VERSION is declared');
 ok(agents.includes(`STATE_VERSION ${version}`), `AGENTS.md mentions the current state version (${version})`);
+ok(existsSync(join(root, 'PRODUCT.md')), 'PRODUCT.md exists');
+ok(readme.includes('PRODUCT.md'), 'README links PRODUCT.md');
 
 const change = agents.split(/^## /m).find((part) => part.startsWith('Change surfaces\n'));
 ok(!!change, 'AGENTS.md has a Change surfaces section');
@@ -108,4 +110,4 @@ if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, latest stable links, version gates, GUIDE anchors, change surfaces match comments');
+console.log('PASS docs: README shape, PRODUCT.md link, latest stable links, version gates, GUIDE anchors, change surfaces match comments');
