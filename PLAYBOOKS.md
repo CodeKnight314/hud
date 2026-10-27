@@ -12,12 +12,15 @@ Follow one playbook. Fetch it on its own, then do what it says:
 Decentralized: every agent pulls ready work. There is no planner.
 Lead: one agent creates the run, the links and the assignees. Everyone else runs the worker loop in that playbook.
 
-A lead FACT is stored on `run:<uuid>`, so a read of `board:main` does not show it. Look first:
+A lead FACT is stored on `run:<uuid>`, so a read of `board:main` does not show it. A live lead is an open ticket tagged `run` (`backlog`, `todo`, `doing`, `review`, or `blocked`). Look first:
 
-    hud_tickets {tag: "run"}
+    hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
     hud_context {action: "scopes"}
 
-Then `hud_get` the run ticket and read `run:` plus its `id` (a uuid, for example `run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80`). A FACT there, or any ticket tagged `run`, means follow `hud guide lead`. Follow `hud guide decentralized` only when that lookup is empty. Both playbooks start with the same lookup.
+    hud tickets --tag run --status backlog,todo,doing,review,blocked
+    hud context scopes
+
+Then `hud_get` / `hud show` a ticket from that open list and read `run:` plus its `id` (a uuid, for example `run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80`). A FACT there, or an empty read of that open ticket, means follow `hud guide lead`. A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty. Both playbooks start with the same lookup.
 
 Each playbook is claim, publish a FACT, wait, finish. The same page covers an expired lease, a blocked ticket, and an assignee conflict.
 
@@ -29,29 +32,29 @@ Every agent pulls from the same queue. Run the four steps in order. Recovery for
 
 Your actor is `HUD_ACTOR`, or the MCP client name (`claude`, `codex`, `cursor`, and so on). MCP registers your session on connect and heartbeats every 20 seconds, which renews a lease. On the CLI, renew with `hud session heartbeat` or by claiming the same ticket again. One session holds one unfinished claim.
 
-A lead FACT lives on `run:<uuid>` (the run ticket's `id` from `hud_get`). Reading `board:main` does not return it. Do step 0 before you claim. When step 0 finds no run, publish on `board:<board id>` from the queue header (`board:main` on the default board). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
+A lead FACT lives on `run:<uuid>` (the run ticket's `id` from `hud_get`). Reading `board:main` does not return it. Do step 0 before you claim. When step 0 finds no open run, publish on `board:<board id>` from the queue header (`board:main` on the default board). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
 
 ### 0. Read a lead FACT
 
 ```
-hud_tickets {tag: "run"}
+hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
 hud_context {action: "scopes"}
 hud_get {id: "EGO-1"}
 hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
 ```
 
 ```
-hud tickets --tag run
+hud tickets --tag run --status backlog,todo,doing,review,blocked
 hud context scopes
 hud show EGO-1
 hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
 ```
 
-`scopes` prints every scope that already has entries, including `run:<uuid>`. `hud_tickets {tag: "run"}` finds the run ticket before the first publish. `hud_get` / `hud show` returns its `id`. Read `run:` plus that uuid. The uuid in the example is the shape of `id`.
+The status filter is the open list. It finds the run ticket before the first publish. `hud_get` / `hud show` returns its `id` and `status`. Read `run:` plus that uuid. The uuid in the example is the shape of `id`. `scopes` prints every scope that already has entries, including a finished run.
 
-A FACT on that scope means a lead is running this board. Stop this playbook and follow `hud guide lead` from the worker loop, on that same scope. An empty read of a ticket tagged `run` means the same: join the lead playbook and publish on `run:<uuid>`.
+A FACT on an open run's scope means a lead is running this board. Stop this playbook and follow `hud guide lead` from the worker loop, on that same scope. An empty read of an open ticket tagged `run` means the same: join the lead playbook and publish on `run:<uuid>`.
 
-When there is no ticket tagged `run` and `scopes` lists no `run:` scope, continue at step 1 and use `board:main`.
+A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty. Continue at step 1 and use `board:main`.
 
 ### 1. Claim
 
@@ -272,6 +275,8 @@ hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-1 done: traili
 hud finish EGO-1 --note "run complete" --no-organize
 ```
 
+Finishing the run ticket is what makes the open list empty, so the next joiner follows `hud guide decentralized`. The `run` tag and the scope log stay.
+
 ### Worker loop
 
 The failure modes below are part of this loop. Start by reading the lead FACT. It is not on `board:main`.
@@ -279,20 +284,20 @@ The failure modes below are part of this loop. Start by reading the lead FACT. I
 #### 0. Read the lead FACT
 
 ```
-hud_tickets {tag: "run"}
+hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
 hud_context {action: "scopes"}
 hud_get {id: "EGO-1"}
 hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
 ```
 
 ```
-hud tickets --tag run
+hud tickets --tag run --status backlog,todo,doing,review,blocked
 hud context scopes
 hud show EGO-1
 hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
 ```
 
-`EGO-1` is the ident from `hud_tickets` or the queue. The scope is `run:` plus the `id` uuid from `hud_get` / `hud show`. `scopes` prints that scope once the lead has published. Copy the scope string from the lead FACT when the text names one. Every later read and publish in this loop uses that scope.
+`EGO-1` is the ident from the open list. The scope is `run:` plus the `id` uuid from `hud_get` / `hud show`. Copy the scope string from the lead FACT when the text names one. Every later read and publish in this loop uses that scope. A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty.
 
 #### 1. Claim
 

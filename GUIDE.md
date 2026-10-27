@@ -251,7 +251,9 @@ The queue says *what* to do; the shared context records *what was learned*. It i
   that ticket must be tagged `run`. `project:<id>` is the project item's id. `board:<board id>` is the board id
   (`board:main`). Claim, link, wait and finish take a `KEY-n` ident such as `EGO-1`; the scope takes the uuid. The board is
   derived from the scope, so entries never drift across boards. A lead FACT on `run:<uuid>` is not included in a
-  `board:main` read — list scopes, or `hud_get` the run ticket, and read `run:<uuid>`.
+  `board:main` read — list scopes, or `hud_get` the run ticket, and read `run:<uuid>`. A finished run (`done` or
+  `canceled`) keeps the tag and the scope log. The playbooks follow lead only while that ticket is open (`backlog`,
+  `todo`, `doing`, `review`, or `blocked`).
 - **Kinds:** `FACT` is a finding supported by observations; `FAIL` is an approach or hypothesis that was contradicted,
   with the conditions under which it failed; `SUMMARY` is the state of a finished or handed-off piece of work;
   `STATUS` is a short progress note. Facts and failures are what let a peer skip a dead end.
