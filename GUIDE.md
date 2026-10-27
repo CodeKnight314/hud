@@ -18,6 +18,14 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   [Trash and backups](#trash-backups-and-undo) · [Conventions](#conventions) ·
   [Install and connect](#install-and-connect) · [Connect your agent](#connect-your-agent)
 
+`hud guide` and `GET /api/guide` return this whole document. A table-of-contents anchor reads one part:
+`hud guide --section coordination`, `hud_guide {section:"monitors"}`, or `GET /api/guide?section=renderers`. The slice
+is that heading and its body, through the line before the next table-of-contents heading. `hud guide --json` and
+`GET /api/guide?format=json` list those anchors as `{anchor,title,level}`; with a section they return
+`{anchor,title,level,markdown}`. An unknown section is an error whose `sections` list is that table of contents.
+`?playbook=` (`decentralized` or `lead`) is a separate optional filter and cannot be combined with `section`.
+`hud://guide#<anchor>` reads the same slice.
+
 ## Ways in (all equivalent)
 - **MCP**: tools `hud_overview`, `hud_tickets`, `hud_search`, `hud_project`, `hud_link`, `hud_create`, `hud_update`,
   `hud_push`, `hud_comment`, `hud_get`, `hud_delete`, `hud_trash`, `hud_backup`, `hud_reveal`, `hud_board`, `hud_organize`,
@@ -31,7 +39,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud project`, `hud tree`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
-  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud approve`, `hud guide [decentralized|lead]`, `hud quickstart`, … (`hud help`;
+  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud approve`, `hud guide [decentralized|lead] [--section anchor]`, `hud quickstart`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
   `node <repo>/bin/hud.js`. Set `HUD_ACTOR=<your-name>` (or `--as`) so changes are attributed to you.
 - **HTTP** (JSON, localhost only; send header `x-hud-actor: <name>`). Malformed input is a 400, an unknown id or board
@@ -40,7 +48,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
     `GET /api/tickets[?format=text]` · `GET /api/claims[?session=&board=]` live leases (omit `session` for every lease on the board) · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
-    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]` · `GET /api/quickstart`
+    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?section=<anchor>|?playbook=decentralized|lead]` · `GET /api/quickstart`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
     owner project tag q overdue=1 parent limit`. `owner` is the claimer while a lease is held, otherwise the
     assignee; `owner=none` (or `-`) matches tickets with neither. An unknown board is a 404.

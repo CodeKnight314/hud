@@ -3847,8 +3847,8 @@ const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
 
 <b>agents</b>
   MCP     hud mcp install · hud mcp reconnect (/mcp in Claude Code)
-  CLI     hud ls · hud add ticket "…" · hud push &lt;id&gt; 42 · hud guide decentralized|lead
-  HTTP    GET /api/guide?playbook=decentralized|lead
+  CLI     hud ls · hud add ticket "…" · hud push &lt;id&gt; 42 · hud guide [decentralized|lead] [--section anchor]
+  HTTP    GET /api/guide[?section=&playbook=]
 
 esc to close`;
 function toggleHelp(on) {

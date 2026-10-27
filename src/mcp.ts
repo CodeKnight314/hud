@@ -7,7 +7,8 @@
 import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { Hud } from './client.ts';
+import { Hud, HudRequestError } from './client.ts';
+import { parseGuideResource } from './guide.ts';
 import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
 import { formatMonitorTemplateList } from './monitor-templates.ts';
@@ -228,15 +229,17 @@ const TOOLS = [
   {
     name: 'hud_guide',
     description:
-      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide. Quickstart links in this text point at GET /api/quickstart. Humans install and use the app from QUICKSTART.md.',
+      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Omit section and playbook for the whole guide. section is a table-of-contents anchor (coordination, monitors) for one slice. playbook is decentralized or lead (centralized is lead) for that coordination runbook. format "json" lists the TOC anchors, or returns one slice as {anchor,title,level,markdown}. An unknown section names those anchors. Do not pass section and playbook together. Quickstart links in this text point at GET /api/quickstart; humans install and use the app from QUICKSTART.md.',
     inputSchema: {
       type: 'object',
       properties: {
+        section: { type: 'string', description: 'TOC anchor, for example coordination, monitors, or renderers. Omit for the full guide.' },
         playbook: {
           type: 'string',
           enum: ['decentralized', 'lead', 'centralized', 'playbooks'],
           description: 'decentralized: every agent pulls ready work. lead (alias centralized): one lead links and assigns, workers pull. playbooks: which one to fetch. Omit for the full guide.',
         },
+        format: { type: 'string', enum: ['markdown', 'json'], description: 'markdown (default) or json' },
       },
     },
   },
@@ -862,6 +865,18 @@ const richResult = (value: Record<string, unknown>, text: string, image?: { mime
   structuredContent: image ? { ...value, image: { mimeType: image.mimeType, bytes: Math.floor(image.data.length * 3 / 4) } } : value,
 });
 
+async function readGuide(hud: Hud, opts: { section?: string; playbook?: string; format?: 'json' } = {}): Promise<string> {
+  try {
+    const body = await hud.guide({ section: opts.section, playbook: opts.playbook, format: opts.format });
+    return typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+  } catch (e) {
+    if (e instanceof HudRequestError && Array.isArray(e.details?.sections)) {
+      throw new Error(`${e.message}; sections: ${(e.details.sections as string[]).join(', ')}`);
+    }
+    throw e;
+  }
+}
+
 async function call(name: string, a: any): Promise<string | RichToolResult> {
   validate(name, a);
   const { actor, ...args } = a ?? {};
@@ -874,7 +889,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       return cap(`${await hud.summary(args.board)}${al}\n\nlive canvas: ${hud.url}`);
     }
     case 'hud_guide':
-      return hud.guide(args.playbook);
+      return readGuide(hud, { section: args.section, playbook: args.playbook, format: args.format === 'json' ? 'json' : undefined });
     case 'hud_quickstart':
       return hud.quickstart();
     case 'hud_search': {
@@ -1586,7 +1601,7 @@ async function handleOne(msg: any): Promise<void> {
       case 'resources/list':
         return void reply({
           resources: [
-            { uri: 'hud://guide', name: 'Hud guide', description: 'Agent contract: metric fields, dashboard schemas, and rendering conventions. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
+            { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide: metric fields, dashboard schemas, and rendering conventions. Append #<anchor> for one table-of-contents section. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
             { uri: 'hud://quickstart', name: 'Hud quickstart', description: 'Human quickstart: install, Settings, Attention and Tickets.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/decentralized', name: 'Decentralized coordination playbook', description: 'Copy-paste runbook: claim, publish a FACT, wait, finish. No lead. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/lead', name: 'Lead coordination playbook', description: 'Copy-paste runbook for a lead who links and assigns work, and for workers who pull. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
@@ -1594,20 +1609,14 @@ async function handleOne(msg: any): Promise<void> {
         });
       case 'resources/read': {
         const uri = String(params?.uri ?? '');
-        const play = /^hud:\/\/playbook\/([A-Za-z0-9_-]+)$/.exec(uri);
-        if (uri === 'hud://guide') {
-          const text = await baseHud.guide();
-          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
-        }
         if (uri === 'hud://quickstart') {
           const text = await baseHud.quickstart();
           return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
         }
-        if (play) {
-          const text = await baseHud.guide(play[1]);
-          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
-        }
-        throw new Error(`unknown resource ${uri}`);
+        const parsed = parseGuideResource(uri);
+        if (!parsed) throw new Error(`unknown resource ${uri}`);
+        const text = await readGuide(baseHud, parsed);
+        return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
       }
       case 'prompts/list':
         return void reply({ prompts: [] });

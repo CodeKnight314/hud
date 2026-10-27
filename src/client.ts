@@ -443,10 +443,13 @@ export class Hud {
   unlink(id: string, keys: ('project' | 'parent' | 'blockedBy' | 'refs')[]): Promise<Item> {
     return this.request('POST', `/api/items/${encodeURIComponent(id)}/unlink`, Object.fromEntries(keys.map((k) => [k, true])));
   }
-  /** Full guide, or one coordination playbook (`decentralized`, `lead`; `centralized` is `lead`). */
-  guide(playbook?: string): Promise<string> {
-    const q = playbook ? `?playbook=${encodeURIComponent(playbook)}` : '';
-    return this.request('GET', `/api/guide${q}`);
+  /**
+   * Full guide, one TOC slice, or one playbook. A string is a playbook name (`decentralized`, `lead`).
+   * Pass `{section}` for a table-of-contents anchor. `section` and `playbook` cannot be combined.
+   */
+  guide(sectionOrOpts?: string | { section?: string; playbook?: string; format?: 'markdown' | 'json' }): Promise<string | { sections: { anchor: string; title: string; level: number }[] } | { anchor: string; title: string; level: number; markdown: string } | { playbook: string; markdown: string }> {
+    const opts = typeof sectionOrOpts === 'string' ? { playbook: sectionOrOpts } : sectionOrOpts ?? {};
+    return this.request('GET', '/api/guide' + qs({ section: opts.section, playbook: opts.playbook, format: opts.format === 'json' ? 'json' : undefined }));
   }
   /** human quickstart; served links point back at GET /api/guide */
   quickstart(): Promise<string> {

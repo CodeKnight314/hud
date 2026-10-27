@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { guideText, quickstartText } from '../src/docs.ts';
+import { guideToc, parseGuide, renderGuide } from '../src/guide.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 let failures = 0;
@@ -121,7 +122,7 @@ ok(/from:\s*GUIDE\.md\s*\n\s*to:\s*hud\/GUIDE\.md/.test(builder), 'electron-buil
 const serverSrc = readFileSync(join(root, 'src/server.ts'), 'utf8');
 ok(serverSrc.includes("'/api/quickstart'"), 'server registers GET /api/quickstart');
 const cliSrc = readFileSync(join(root, 'src/cli.ts'), 'utf8');
-ok(cliSrc.includes('guideText(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
+ok(cliSrc.includes('renderGuide(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
 const docsSrc = readFileSync(join(root, 'src/docs.ts'), 'utf8');
 ok(docsSrc.includes('export function guideText') && docsSrc.includes('export function quickstartText'), 'src/docs.ts exports the served doc builders');
 for (const name of readdirSync(join(root, 'src'))) {
@@ -200,6 +201,25 @@ ok(guide.includes('0.1.0 has none'), 'GUIDE keeps the 0.1.0 manual-upgrade gate'
 ok(guide.includes('leave every published stable release unchanged'), 'GUIDE does not freeze one historical release');
 ok(!/v0\.1\.0/.test(agents), 'AGENTS.md must not treat v0.1.0 as the standing release');
 ok(agents.includes('published stable releases unchanged'), 'AGENTS.md leaves published releases unchanged');
+
+/** The unscoped path stays the default. A doc that only shows `?section=` teaches that the filter is required. */
+function advertisesBareGuide(text, name) {
+  ok(/GET \/api\/guide(?!\?)/.test(text), `${name} advertises bare GET /api/guide (section is optional)`);
+  ok(/\bhud guide(?!\s+--section\b)/.test(text), `${name} advertises bare hud guide (section is optional)`);
+}
+advertisesBareGuide(readme, 'README.md');
+advertisesBareGuide(guide, 'GUIDE.md');
+advertisesBareGuide(agents, 'AGENTS.md');
+
+const toc = guideToc(guide).map((entry) => entry.anchor);
+const h2 = new Set(parseGuide(guide).filter((s) => s.level === 2).map((s) => s.anchor));
+ok(toc.length > 0, 'GUIDE table of contents is empty');
+for (const anchor of toc) ok(h2.has(anchor), `GUIDE TOC #${anchor} is not an h2 from parseGuide`);
+const catalog = renderGuide(7317, undefined, 'json');
+const listed = catalog.status === 200 && catalog.body && typeof catalog.body === 'object' && 'sections' in catalog.body
+  ? catalog.body.sections.map((s) => s.anchor)
+  : [];
+ok(listed.join('|') === toc.join('|'), `served guide sections are not the TOC\n  TOC: ${toc.join(' | ')}\n  API: ${listed.join(' | ')}`);
 
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);

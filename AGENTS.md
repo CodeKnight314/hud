@@ -3,6 +3,7 @@
 Instructions for coding agents working **on** hud. If you're here to **use** hud (create tickets, push monitor
 readings), read `GUIDE.md` instead. Agents sharing a board fetch one coordination playbook
 (`hud guide decentralized` or `hud guide lead`). The guide is served at `GET /api/guide` and by `hud guide`.
+`?section=<anchor>` or `--section <anchor>` returns one table-of-contents slice.
 
 ## What this is
 hud is a local, live canvas of tickets, monitors, notes and frames, shared by a human (browser) and agents
