@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord } from './types.ts';
+import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord, TicketForest, TicketNode } from './types.ts';
 import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
@@ -1196,6 +1196,51 @@ export class Store extends EventEmitter {
   claimOf(ref: string): ClaimView | null {
     const c = this.claims.get(this.resolveId(String(ref ?? '')));
     return c ? this.claimView(c) : null;
+  }
+
+  /** active leases, optionally limited to one session or board. Each row carries expiry and liveness. */
+  claimsList(filter: { session?: string; board?: string } = {}): { items: ClaimView[]; now: number } {
+    const at = now();
+    const board = filter.board ? this.requireBoard(filter.board).id : undefined;
+    const session = filter.session ? this.sessionId(filter.session) : undefined;
+    const items: ClaimView[] = [];
+    for (const c of this.claims.values()) {
+      if (session && c.session !== session) continue;
+      const tk = this.state.items[c.ticket];
+      if (board && tk?.board !== board) continue;
+      items.push(this.claimView(c));
+    }
+    items.sort((a, b) => a.expiresAt - b.expiresAt || a.ident.localeCompare(b.ident));
+    return { items, now: at };
+  }
+
+  /**
+   * Nested ticket tree for a board. A project filter keeps that project's tickets and treats a parent
+   * outside the filter as a root, matching the list view. A parent cycle is still emitted, once.
+   */
+  ticketForest(board = 'main', projectRef?: string): TicketForest {
+    const b = this.requireBoard(board).id;
+    const projectId = projectRef ? this.requireProject(projectRef, b).id : undefined;
+    const tickets = Object.values(this.state.items)
+      .filter((it) => it.type === 'ticket' && it.board === b && (projectId === undefined || it.project === projectId))
+      .sort((a, c) => (a.num ?? 0) - (c.num ?? 0) || a.id.localeCompare(c.id));
+    const ids = new Set(tickets.map((t) => t.id));
+    const seen = new Set<string>();
+    const build = (t: Item): TicketNode => {
+      seen.add(t.id);
+      return {
+        id: t.id,
+        ident: this.ident(t),
+        title: t.title,
+        status: t.status ?? 'todo',
+        ...(t.project ? { project: t.project } : {}),
+        ...(t.parent && ids.has(t.parent) ? { parent: t.parent } : {}),
+        children: this.childrenOf(t.id).filter((c) => ids.has(c.id) && !seen.has(c.id)).map(build),
+      };
+    };
+    const nodes = tickets.filter((t) => !t.parent || !ids.has(t.parent)).map(build);
+    for (const t of tickets) if (!seen.has(t.id)) nodes.push(build(t));
+    return { board: b, ...(projectId ? { project: projectId } : {}), nodes };
   }
 
   queue(board = 'main', filter: { status?: string | string[]; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): QueueResult {

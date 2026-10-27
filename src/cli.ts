@@ -54,6 +54,9 @@ usage:
   hud project [list]                 projects on a board (KEY, name, ticket count)
   hud project new <name> [--key EGO] [--lead @who] [--target 2026-01-31] [--body "…"]
   hud project set <id> --key NEW     rename a project and its tickets' idents
+  hud tree [board] [--project KEY]   nested ticket tree
+  hud tree move <id> [--parent EGO-1] [--project KEY]   reparent a ticket and/or move it into a project
+  hud tree detach <id>               clear a ticket's parent
   hud add ticket "title" [--project EGO] [--parent EGO-1] [--blockedBy EGO-2] [--assignee me]
                                      [--priority high] [--status todo] [--target 2026-01-31] [--body "…"]
   hud link <id> [project=EGO] [parent=EGO-1] [blockedBy=EGO-2,EGO-3] [refs=EGO-4] [branch=regen]
@@ -81,6 +84,9 @@ usage:
                                      register presence for coordination (default: list)
   hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]
                                      take an exclusive lease on a ticket; --start also moves it to doing
+  hud claim status <id>              the lease on one ticket (holder, expiry, live)
+  hud claim list [--session s] [--board b]   every active lease, or one session's
+  hud claim renew <id> [--ttl sec]   extend the lease this session already holds
   hud release <id> [--session s] [--reason text]   release a claim
   hud context read [--scope run:<uuid>] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
   hud context publish --scope run:<uuid> --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
@@ -222,7 +228,8 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   ls: { u: 'hud ls [board] | hud ls tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 2, f: ['board', 'json', ...FILTERS] },
   tickets: { u: 'hud tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 1, f: ['board', 'json', ...FILTERS] },
   find: { u: 'hud find <text...> [--board b] [--type t] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', min: 1, f: ['json', ...FILTERS] },
-  project: { u: 'hud project [list] | hud project new <name> [--key EGO] [--lead @who] [--target date] [--body text] | hud project set <id> --key NEW', f: '*' },
+  project: { u: 'hud project [list] | hud project new <name> [--key EGO] [--lead @who] [--target date] [--body text] | hud project set <id> --key NEW [--title t] [--lead @who] [--target date] [--body text]', f: '*' },
+  tree: { u: 'hud tree [board] [--project KEY] | hud tree move <id> [--parent EGO-1] [--project KEY] | hud tree detach <id>', max: 2, f: ['board', 'project', 'parent', 'json'] },
   link: { u: 'hud link <id> [project=EGO] [parent=EGO-1] [blockedBy=EGO-2,EGO-3] [refs=EGO-4] [branch=name]', min: 1, f: ['project', 'parent', 'blockedBy', 'refs', 'branch', 'json'] },
   unlink: { u: 'hud unlink <id> [parent blockedBy refs project ...]', min: 1, f: ['json'] },
   show: { u: 'hud show <id>', min: 1, max: 1, f: ['json'] },
@@ -235,7 +242,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
   queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'all', 'limit', 'board', 'json'] },
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
-  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--json]', min: 1, max: 1, f: ['session', 'ttl', 'start', 'takeover', 'json'] },
+  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
   context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
   attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
@@ -272,7 +279,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
   cli: { u: 'hud cli [install|uninstall|status]', max: 1, f: [] },
 };
-const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', update: 'set', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment' };
+const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', update: 'set', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment', trees: 'tree' };
 
 function detectActor() {
   if (process.env.HUD_ACTOR) return process.env.HUD_ACTOR;
@@ -412,7 +419,7 @@ async function main() {
       if (sub === 'new' || sub === 'add' || sub === 'create') {
         const title = flags.title ?? name.join(' ');
         if (!title) throw new UsageError('missing project name');
-        const p = await hud.create({ type: 'project', title, key: flags.key, board: flags.board, body: flags.body, lead: flags.lead, target: flags.target });
+        const p = await hud.createProject({ title, key: flags.key, board: flags.board, body: flags.body, lead: flags.lead, target: flags.target });
         return emit(p, `created project ${p.key} "${p.title}" (${p.id})`);
       }
       if (sub === 'set' || sub === 'update') {
@@ -420,10 +427,37 @@ async function main() {
         if (!id) throw new UsageError('missing project id');
         const patch = { ...flags };
         delete patch.id;
-        const p = await hud.update(id, patch);
+        delete patch.session;
+        const p = await hud.updateProject(id, patch);
         return emit(p, `updated project ${p.key} "${p.title}"`);
       }
       throw new UsageError(`unknown project command "${sub}"`);
+    }
+    case 'tree': {
+      const sub = rest[0];
+      if (sub === 'move' || sub === 'detach') {
+        const id = rest[1];
+        if (!id) throw new UsageError(`usage: hud tree ${sub} <id>`);
+        if (sub === 'detach') {
+          const t = await hud.treeDetach(id);
+          return emit(t, `detached ${brief(t)}`);
+        }
+        const patch: { parent?: string; project?: string } = {};
+        if (flags.parent !== undefined) patch.parent = String(flags.parent);
+        if (flags.project !== undefined) patch.project = String(flags.project);
+        if (!('parent' in patch) && !('project' in patch)) throw new UsageError('hud tree move needs --parent and/or --project');
+        const t = await hud.treeMove(id, patch);
+        return emit(t, `moved ${brief(t)}`);
+      }
+      const board = sub && sub !== 'get' ? sub : (flags.board ?? 'main');
+      const forest = await hud.tree(board, flags.project);
+      const lines: string[] = [];
+      const walk = (n: { ident: string; status: string; title: string; children?: { ident: string; status: string; title: string; children?: any[] }[] }, depth: number) => {
+        lines.push(`${'  '.repeat(depth)}${n.ident} [${n.status}] ${n.title}`);
+        for (const c of n.children ?? []) walk(c, depth + 1);
+      };
+      for (const n of forest.nodes) walk(n, 0);
+      return emit(forest, lines.length ? lines.join('\n') : `no tickets on board ${forest.board}`);
     }
     case 'link': {
       const [id, ...pairs] = rest;
@@ -550,12 +584,30 @@ async function main() {
       throw new UsageError(`unknown session command "${sub}" — try: hud session start|heartbeat|end|list`);
     }
     case 'claim': {
-      const c = await hud.claim(rest[0]!, { session, ttl: flags.ttl === undefined ? undefined : Number(flags.ttl), start: !!flags.start, takeover: !!flags.takeover });
+      const sub = rest[0];
+      if (sub === 'list') {
+        const r = await hud.claims({ session: flags.session, board: flags.board });
+        const lines = r.items.map((c) => `${c.ident} claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleString()} live=${c.live} sessionLive=${c.sessionLive}`);
+        return emit(r, lines.length ? lines.join('\n') : 'no active claims');
+      }
+      if (sub === 'status') {
+        const id = rest[1];
+        if (!id) throw new UsageError('usage: hud claim status <id>');
+        const c = await hud.claimOf(id);
+        return emit(c, c ? `${c.ident} claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleString()} live=${c.live} sessionLive=${c.sessionLive} expiresAt=${c.expiresAt}` : `${id} is not claimed`);
+      }
+      if (sub === 'renew') {
+        const id = rest[1];
+        if (!id) throw new UsageError('usage: hud claim renew <id>');
+        const c = await hud.claim(id, { session, ttl: flags.ttl === undefined ? undefined : Number(flags.ttl) });
+        return emit(c, `${c.ident} renewed until ${new Date(c.expiresAt).toLocaleTimeString()} live=${c.live} sessionLive=${c.sessionLive}`);
+      }
+      const c = await hud.claim(sub!, { session, ttl: flags.ttl === undefined ? undefined : Number(flags.ttl), start: !!flags.start, takeover: !!flags.takeover });
       return emit(c, `${c.ident} "${c.title}" claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleTimeString()}${flags.start ? '; ticket moved to doing' : ''}`);
     }
     case 'release': {
-      const c = await hud.releaseClaim(rest[0]!, flags.session);
-      return emit(c, `released ${c.ident}`);
+      const c = await hud.releaseClaim(rest[0]!, { session, reason: flags.reason });
+      return emit(c, `released ${c.ident}${flags.reason ? ` (${flags.reason})` : ''}`);
     }
     case 'attach': {
       const sub = rest[0] ?? 'list';
