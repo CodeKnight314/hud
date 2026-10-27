@@ -25,6 +25,12 @@ ok(existsSync(join(root, 'build/icon.svg')), 'build/icon.svg exists');
 ok(!/npm run dist/.test(readme), 'README leaves release mechanics to AGENTS.md');
 ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT/.test(readme), 'README leaves dev env vars to AGENTS.md');
 ok(readme.includes('GUIDE.md'), 'README links the guide');
+ok(readme.includes('Developer ID') && readme.includes('notarized'), 'README says signed macOS releases are Developer ID-signed and notarized');
+ok(readme.includes('Authenticode'), 'README says signed Windows installers are Authenticode-signed');
+const signedReadme = readme.split(/Unsigned/)[0];
+ok(!/right-click/.test(signedReadme), 'signed-release instructions do not use the right-click workaround');
+ok(/Unsigned[\s\S]{0,400}right-click/.test(readme), 'the right-click workaround stays attached to unsigned builds');
+ok(guide.includes('Developer ID') && guide.includes('Authenticode'), 'GUIDE distinguishes signed macOS and Windows releases');
 
 function slug(heading) {
   return heading

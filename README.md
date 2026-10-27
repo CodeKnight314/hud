@@ -13,9 +13,11 @@ to loopback only, and keeps your data in a per-user directory. The contract is [
 
 Download the installer for your platform from the
 [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
-or Linux (x64 AppImage or `.deb`). Builds are not notarized: on macOS, right-click the app and choose **Open** the first
-time (and again after each update); Windows may show a SmartScreen prompt. On Linux, both packages can install the
-`hud` command that agents use. From the app, choose Settings → Connections → **Install command**. If you move an
+or Linux (x64 AppImage or `.deb`). A signed release opens normally: macOS is Developer ID–signed and notarized, and Windows
+is Authenticode-signed. Unsigned builds — a release produced without signing secrets, or a package built on your own
+machine — still need a first-launch bypass: on macOS, right-click the app and choose **Open**; Windows may show a
+SmartScreen prompt. On Linux, both packages can install the `hud` command that agents use. From the app, choose
+Settings → Connections → **Install command**. If you move an
 AppImage, run that action again so the command follows the file.
 
 From a source checkout:

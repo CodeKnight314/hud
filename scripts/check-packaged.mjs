@@ -371,8 +371,8 @@ async function shutdownGracefully(handle, baseUrl, dataDir, port) {
 
 async function runSmoke(outputDir, requestedArch) {
   const packaged = locatePackagedApp(outputDir, requestedArch);
-  // An unsigned arm64 app keeps Electron's linker-only signature and macOS calls the
-  // downloaded copy damaged, so the ad-hoc signature is part of a usable package.
+  // A linker-only signature is reported as damaged after download. Unsigned packages are
+  // ad-hoc signed; Developer ID signatures satisfy the same check.
   if (process.platform === 'darwin') {
     execFileSync('codesign', ['--verify', '--deep', '--strict', packaged.appRoot], { stdio: 'pipe' });
   }

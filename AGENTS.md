@@ -61,8 +61,11 @@ scripts/build.mjs  esbuild bundles -> bundle/{hud,main}.mjs (npm run bundle); bu
 scripts/dev.mjs    dev launcher: Electron against the repo, scratch port + scratch data dir
 scripts/icons.mjs  generates build/icon.svg + icon.png, tray PNGs, web favicons from one geometry
 scripts/adhoc-sign.mjs  electron-builder afterPack hook: ad-hoc signs unsigned macOS builds so downloads launch
+scripts/signing.mjs      release signing plan: Developer ID + notarization, or Authenticode, when credentials exist
+scripts/notarize-dmg.mjs electron-builder hook: notarize the DMG after the app is stapled
 scripts/check.mjs               JavaScript syntax checks and all pure regression suites (`npm test`)
 scripts/check-release.mjs       v0.2.0 version agreement, installer checksums, and the manual draft-release workflow
+scripts/check-signing.mjs       credential plan, private API-key file, and unsigned notarization skip
 scripts/check-packaged.mjs      packaged runtime smoke test using a temporary data dir and loopback port
 scripts/check-layout.ts          fixed 1600×900 layout, UUID, persistence and migration checks
 scripts/check-monitoring.ts      metric provenance/freshness, native views and dashboard transaction checks
@@ -279,8 +282,8 @@ To exercise the packaged path without installing, run the built binary with `HUD
 The native GitHub Actions workflow `.github/workflows/build.yml` runs on pushes to `release/**` branches or manual
 dispatch, and `v*` tag pushes. Branch/manual runs validate that `package.json`, `appdir/package.json` and both version
 fields in `package-lock.json` agree, then run four native jobs for macOS arm64/x64, Windows x64 and Linux x64. Each job
-runs `npm test`, builds unsigned installers, checks the packaged runtime, normalizes names and uploads seven-day
-artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. Only after all four jobs pass, CI gathers
+runs `npm test`, builds installers, checks the signature and the packaged runtime, normalizes names and uploads
+seven-day artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. Only after all four jobs pass, CI gathers
 exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
 release. A person must review and publish that draft; Settings ignores drafts and prereleases.
 
@@ -289,6 +292,39 @@ Settings reads that version. Leave published stable releases unchanged. A person
 the tag `v0.2.0`, reviewing the draft CI creates (five installers plus `SHA256SUMS`), and publishing that draft by hand.
 Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual
 workflow dispatch build temporary artifacts but do not create a release.
+
+### Release signing
+Stable macOS releases are Developer ID–signed and notarized, and stable Windows releases are Authenticode-signed, when
+the GitHub Actions secrets below are set on the repository. `scripts/signing.mjs` reads them in the native workflow.
+No certificate or password belongs in the repo. If a platform's secrets are all absent, that job stays unsigned,
+macOS notarization is turned off, and macOS falls back to the ad-hoc signature. If only some of a platform's secrets
+are set, the job fails.
+
+`APPLE_API_KEY` may be the `.p8` PEM or base64 of that file. The script writes it to a private temporary file
+(mode 0600, in a unique 0700 directory) and passes that path: electron-builder 26 forwards `APPLE_API_KEY` to
+`notarytool --key`, which requires a file. The directory is removed when the build step finishes. Prefer the API key. When
+both notarization methods are fully set, the API key is used. `CSC_NAME` is optional and is the identity name without
+the `Developer ID Application:` prefix. Leave `CSC_IDENTITY_AUTO_DISCOVERY` unset when `CSC_LINK` is set; `false`
+makes electron-builder ignore the imported certificate unless `CSC_NAME` is also set.
+
+| Secret | Value |
+|---|---|
+| `CSC_LINK` | base64 of a **Developer ID Application** `.p12` (certificate and private key). Not an Apple Development, Mac App Distribution or Developer ID Installer certificate. |
+| `CSC_KEY_PASSWORD` | Password for that `.p12`. |
+| `APPLE_API_KEY` | App Store Connect API key (`.p8`, **Developer** role): PEM text or base64 of the file. |
+| `APPLE_API_KEY_ID` | Key ID of that API key. |
+| `APPLE_API_ISSUER` | Issuer ID from App Store Connect → Users and Access → Integrations → App Store Connect API. |
+| `APPLE_ID` | Apple ID email. Alternate notarization, instead of the API key trio. |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password from appleid.apple.com. Not the Apple ID password. |
+| `APPLE_TEAM_ID` | 10-character Team ID. Required with `APPLE_ID`. |
+| `WIN_CSC_LINK` | base64 of an exportable Authenticode `.pfx` (certificate and private key). EV hardware tokens do not work on GitHub-hosted runners. Re-export without the full chain if the value exceeds 8192 characters. |
+| `WIN_CSC_KEY_PASSWORD` | Password for that `.pfx`. |
+
+macOS needs `CSC_LINK` and `CSC_KEY_PASSWORD`, plus either `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`,
+or `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`. Windows needs `WIN_CSC_LINK` and
+`WIN_CSC_KEY_PASSWORD`. Linux is unsigned. Encode with `base64 -i file | tr -d '\n'` on macOS or `base64 -w 0 file`
+on Linux. The workflow runs on `release/**`, manual dispatch and `v*` tags, not on pull requests. Do not create a tag
+or publish a draft just to try signing.
 
 ## Running & deploying
 The runtime the user actually uses is the **packaged desktop app** (`dist/mac-arm64/hud.app` on macOS). It owns the
@@ -355,5 +391,5 @@ process — new or changed MCP tools appear only after they reconnect (`/mcp` in
   cleaning, and the file is then omitted from the app directory (the build fails with "package.json was not found").
   That is why `appdir/package.json` is injected into the app dir through `extraResources` (`to: app/package.json`)
   instead of being copied by the `files` filter. Don't "simplify" that away without re-testing `npm run pack`.
-- `scripts/build.mjs` writes to `bundle/`; `build/` is electron-builder's `buildResources` (icons only; there is no entitlements file, builds are unsigned).
+- `scripts/build.mjs` writes to `bundle/`; `build/` is electron-builder's `buildResources` (icons plus `entitlements.mac.plist`, used only when a Developer ID identity signs the app).
   They are deliberately separate — a bundler that cleans its own output dir must not delete the icons.
