@@ -256,10 +256,13 @@ The queue says *what* to do; the shared context records *what was learned*. It i
 
 The run inspector and the project inspector show that scope as a timeline, not a raw log. Each entry is labeled
 **FACT** (a finding), **FAIL** (a dead end), **SUMMARY** (a handoff) or **STATUS** (a progress note), with who wrote it
-and when. Filter chips narrow the list. **copy for handoff** puts the standing findings, the dead ends and the latest
-handoff on the clipboard; an entry that a later one corrects is listed under Corrected so a peer does not treat it as
-current. A ticket that is not a run shows its project's timeline, or the board timeline when it has no project. Agents
-remain the primary writers. Context entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
+and when. Filter chips narrow the list. A read is oldest-first and one page can omit the newest entries, so the
+inspector follows the cursor until every retained entry for that scope is loaded. **copy for handoff** puts the
+standing findings, the dead ends and the latest handoff on the clipboard only when that forward read is complete; it
+refuses while newer entries are still missing. An entry that a later one corrects is listed under Corrected. If older
+entries were dropped, the copy says so and includes only the context still retained. A ticket that is not a run shows
+its project's timeline, or the board timeline when it has no project. Agents remain the primary writers. Context
+entries never appear in `/api/state` or item SSE payloads — fetch them explicitly.
 
 ### Attachments
 Publish a file by reference so peers can inspect it without pasting it into the context log.

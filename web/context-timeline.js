@@ -144,8 +144,52 @@ function byKind(rows, kind) {
   return chronological(rows.filter((row) => row.kind === kind));
 }
 
+/**
+ * `contextRead` walks oldest-first and `slice`s at `limit`, so one page of a busy scope
+ * omits the newest entries. Follow `cursor` until the server reports the forward read complete.
+ * A page cap leaves `newerMissing` set; `truncated` means entries older than the retained window
+ * were already dropped and cannot be paged back.
+ */
+export async function loadContextPages(read, options = {}) {
+  const maxPages = Math.max(1, Math.floor(Number(options.maxPages) || 5));
+  const entries = [];
+  const seen = new Set();
+  let since;
+  let truncated = false;
+  let pages = 0;
+  while (pages < maxPages) {
+    const page = await read(since);
+    pages += 1;
+    if (!page || typeof page !== 'object') return { entries, complete: false, truncated, newerMissing: true, pages };
+    if (page.truncated === true) truncated = true;
+    for (const entry of page.entries || []) {
+      if (!entry || entry.id == null || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      entries.push(entry);
+    }
+    if (page.complete === true) return { entries, complete: true, truncated, newerMissing: false, pages };
+    const cursor = page.cursor;
+    const stuck = cursor == null || (since != null && cursor <= since) || !(page.entries || []).length;
+    if (stuck) return { entries, complete: false, truncated, newerMissing: page.truncated !== true, pages };
+    since = cursor;
+  }
+  return { entries, complete: false, truncated, newerMissing: true, pages };
+}
+
+/** Which side of the log a partial read is missing. A limit cut drops the newest entries, not the oldest. */
+export function contextGaps({ complete = true, truncated = false, newerMissing } = {}) {
+  const olderMissing = truncated === true;
+  const missingNewer = newerMissing == null ? complete === false && !olderMissing : newerMissing === true;
+  const lines = [];
+  if (missingNewer) lines.push('✕ newer entries were not loaded');
+  if (olderMissing) lines.push('▲ older entries were dropped');
+  return { newerMissing: missingNewer, olderMissing, lines };
+}
+
 /** Standing findings, dead ends and the latest handoff. Corrected entries are listed apart so they are not current. */
 export function contextHandoff(entries, options = {}) {
+  const gaps = contextGaps(options);
+  if (gaps.newerMissing) return null;
   const scope = options.scope || '';
   const title = options.title || scope || 'shared context';
   const formatTime = typeof options.formatTime === 'function' ? options.formatTime : defaultTime;
@@ -153,7 +197,8 @@ export function contextHandoff(entries, options = {}) {
   const header = [`Handoff · ${title}`, `scope: ${scope || '—'}`];
   if (options.now != null) header.push(`as of: ${formatTime(options.now)}`);
   const list = asList(entries);
-  if (!list.length) return `${header.join('\n')}\n\nNothing published for this scope yet.\n`;
+  const finish = (body) => (gaps.olderMissing ? `▲ Older entries were dropped; this handoff is the context still retained.\n\n${body}` : body);
+  if (!list.length) return finish(`${header.join('\n')}\n\nNothing published for this scope yet.\n`);
 
   const rows = contextTimeline(list, { filter: 'all' });
   const standing = rows.filter((row) => !row.superseded);
@@ -174,7 +219,7 @@ export function contextHandoff(entries, options = {}) {
     `Progress\n${notes.length ? notes.map((row) => writeEntry(row, formatTime, nameOf, true)).join('\n') : 'None.'}`,
   );
   if (corrected.length) parts.push(`Corrected\n${corrected.map((row) => writeEntry(row, formatTime, nameOf, true)).join('\n')}`);
-  return `${header.join('\n')}\n\n${parts.join('\n\n')}\n`;
+  return finish(`${header.join('\n')}\n\n${parts.join('\n\n')}\n`);
 }
 
 const KIND_PLURAL = { finding: 'findings', 'dead end': 'dead ends', handoff: 'handoffs', progress: 'progress notes' };
@@ -200,7 +245,7 @@ function rowHTML(row, esc, when, nameOf) {
 }
 
 /** Inspector markup for one scope. `esc` is required so entry text cannot become HTML. */
-export function renderContextTimeline({ entries, filter = 'all', scope = '', where = '', esc, when, nameOf, complete = true }) {
+export function renderContextTimeline({ entries, filter = 'all', scope = '', where = '', esc, when, nameOf, complete = true, truncated = false, newerMissing } = {}) {
   if (typeof esc !== 'function') throw new Error('esc is required');
   const showWhen = typeof when === 'function' ? when : () => '';
   const labelOf = typeof nameOf === 'function' ? nameOf : (id) => id;
@@ -212,6 +257,8 @@ export function renderContextTimeline({ entries, filter = 'all', scope = '', whe
   const body = rows.length
     ? rows.map((row) => rowHTML(row, esc, showWhen, labelOf)).join('')
     : `<div class="faint">${esc(published ? emptyFilterMessage(selectedKey, where) : 'Nothing published for this scope yet.')}</div>`;
-  const older = complete === false ? '<div class="faint">older entries were not loaded</div>' : '';
-  return `<div class="context-head"><h4>shared context</h4><button class="btn" type="button" data-act="copy-handoff" title="copy findings, dead ends and the latest handoff">copy for handoff</button></div><div class="meta">${esc(where)} · ${esc(scope)} · ${esc(contextSummaryText(entries))}</div><div class="chips" data-chips="context-kind">${chips}</div><div class="context-timeline" role="list">${body}</div>${older}`;
+  const gaps = contextGaps({ complete, truncated, newerMissing });
+  const gapHTML = gaps.lines.map((line) => `<div class="context-gap">${esc(line)}</div>`).join('');
+  const copyTitle = gaps.newerMissing ? 'newer entries were not loaded' : 'copy findings, dead ends and the latest handoff';
+  return `<div class="context-head"><h4>shared context</h4><button class="btn" type="button" data-act="copy-handoff" title="${esc(copyTitle)}">copy for handoff</button></div><div class="meta">${esc(where)} · ${esc(scope)} · ${esc(contextSummaryText(entries))}</div><div class="chips" data-chips="context-kind">${chips}</div><div class="context-timeline" role="list">${body}</div>${gapHTML}`;
 }

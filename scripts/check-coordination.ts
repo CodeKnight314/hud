@@ -6,6 +6,7 @@ import { HudError, STATE_VERSION, Store } from '../src/store.ts';
 import { attachmentPath, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
 import { unifiedDiff } from '../src/diff.ts';
 import type { Item } from '../src/types.ts';
+import { contextHandoff, loadContextPages } from '../web/context-timeline.js';
 
 const ACTOR = 'coordination-check';
 const roots: string[] = [];
@@ -308,6 +309,37 @@ function attachments() {
   finish(store);
 }
 
+async function contextPagesKeepNewest() {
+  const { store } = fresh('coord-context-pages');
+  const run = ticket(store, 'busy', { tags: ['run'] });
+  const scope = `run:${run.id}`;
+  let earlyId = '';
+  for (let i = 0; i < 205; i++) {
+    const entry = store.contextPublish({ scope, kind: 'STATUS', text: `note ${i}` }, 'claude');
+    if (i === 0) earlyId = entry.id;
+  }
+  const summary = store.contextPublish({ scope, kind: 'SUMMARY', text: 'latest handoff still stands' }, 'claude');
+  const correction = store.contextPublish({ scope, kind: 'FAIL', text: 'the first note was wrong', corrects: earlyId }, 'claude');
+  const limited = store.contextRead({ scope, limit: 200 });
+  assert.equal(limited.complete, false);
+  assert.equal(limited.truncated, false);
+  assert.equal(limited.entries.some(entry => entry.id === summary.id), false, 'oldest-first limit drops the newest summary');
+  assert.equal(limited.entries.some(entry => entry.id === correction.id), false, 'oldest-first limit drops the correcting entry');
+
+  const loaded = await loadContextPages((since) => store.contextRead({ scope, since, limit: 200 }));
+  assert.equal(loaded.complete, true, 'paging reaches the retained tail');
+  assert.equal(loaded.newerMissing, false);
+  assert.equal(loaded.entries.at(-1)?.id, correction.id);
+  const handoff = contextHandoff(loaded.entries, { scope, title: 'busy', complete: true, formatTime: () => 't' });
+  assert.match(String(handoff), /latest handoff still stands/);
+  assert.match(String(handoff), /the first note was wrong/);
+
+  const partial = await loadContextPages((since) => store.contextRead({ scope, since, limit: 200 }), { maxPages: 1 });
+  assert.equal(partial.newerMissing, true);
+  assert.equal(contextHandoff(partial.entries, { scope, title: 'busy', complete: false }), null);
+  finish(store);
+}
+
 migration();
 sessions();
 claims();
@@ -316,4 +348,5 @@ queues();
 contexts();
 attachments();
 exportImport();
+await contextPagesKeepNewest();
 console.log('PASS coordination store checks');

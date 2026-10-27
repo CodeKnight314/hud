@@ -1,6 +1,6 @@
 // Readable shared-context timeline: kind labels, filters, corrections, and handoff text.
 import assert from 'node:assert/strict';
-import { contextDataLine, contextHandoff, contextSummaryText, contextTimeline, renderContextTimeline } from '../web/context-timeline.js';
+import { contextDataLine, contextHandoff, contextSummaryText, contextTimeline, loadContextPages, renderContextTimeline } from '../web/context-timeline.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const when = (t) => `t${t}`;
@@ -76,7 +76,8 @@ assert.match(html, /retrying the printer path failed on empty input/);
 assert.match(html, /corrects: the parser drops trailing commas/);
 assert.doesNotMatch(html, /writing the regression/, 'the FAIL filter hides other kinds');
 assert.match(html, /kind-fail/);
-assert.match(html, /older entries were not loaded/);
+assert.match(html, /newer entries were not loaded/);
+assert.doesNotMatch(html, /older entries were not loaded/);
 assert.match(html, /1 finding · 1 dead end · 1 handoff · 1 progress note · 2 corrected/);
 
 const hostile = renderContextTimeline({
@@ -122,6 +123,42 @@ assert.match(renderContextTimeline({
   nameOf: (id) => id,
   complete: true,
 }), /No dead ends in this run/);
+assert.match(renderContextTimeline({
+  entries,
+  filter: 'all',
+  scope: 'run:run-1',
+  where: 'this run',
+  esc,
+  when: () => 'now',
+  nameOf: (id) => id,
+  complete: true,
+  truncated: true,
+}), /older entries were dropped/);
+
+const paged = [];
+for (let i = 1; i <= 5; i++) paged.push({ id: `s${i}`, seq: i, t: i, actor: 'claude', kind: 'STATUS', text: `note ${i}` });
+paged.push({ id: 'late-sum', seq: 6, t: 6, actor: 'claude', kind: 'SUMMARY', text: 'latest handoff still stands' });
+paged.push({ id: 'late-fix', seq: 7, t: 7, actor: 'codex', kind: 'FAIL', text: 'note 1 was wrong', corrects: 's1' });
+function oldestFirst(since, limit) {
+  const all = paged.filter((entry) => since == null || entry.seq > since);
+  const page = all.slice(0, limit);
+  return { entries: page, cursor: page.length ? page[page.length - 1].seq : since, complete: page.length === all.length, truncated: false };
+}
+const full = await loadContextPages((since) => oldestFirst(since, 3));
+assert.equal(full.complete, true);
+assert.equal(full.newerMissing, false);
+assert.equal(full.entries.at(-1).id, 'late-fix');
+const pagedHandoff = contextHandoff(full.entries, { scope: 'run:busy', title: 'Busy run', complete: true, formatTime: when });
+assert.match(pagedHandoff, /Current handoff\nSUMMARY t6 @claude — latest handoff still stands/);
+assert.match(pagedHandoff, /FAIL t7 @codex — note 1 was wrong/);
+const cut = await loadContextPages((since) => oldestFirst(since, 3), { maxPages: 1 });
+assert.equal(cut.complete, false);
+assert.equal(cut.newerMissing, true);
+assert.equal(cut.entries.some((entry) => entry.id === 'late-sum'), false, 'one oldest-first page drops the latest handoff');
+assert.equal(contextHandoff(cut.entries, { scope: 'run:busy', title: 'Busy run', complete: false, formatTime: when }), null);
+const retained = contextHandoff(full.entries, { scope: 'run:busy', title: 'Busy run', complete: true, truncated: true, formatTime: when });
+assert.match(retained, /^▲ Older entries were dropped; this handoff is the context still retained\.\n/);
+assert.match(retained, /latest handoff still stands/);
 
 function section(text, name) {
   const match = text.match(new RegExp(`(?:^|\\n)${name}\\n([\\s\\S]*?)(?=\\n(?:Current handoff|Earlier handoffs|Dead ends|Findings|Progress|Corrected)\\n|$)`));

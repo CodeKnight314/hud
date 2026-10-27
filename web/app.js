@@ -1,6 +1,6 @@
 // hud — canvas client. No build step; plain ES module.
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
-import { contextHandoff, renderContextTimeline } from './context-timeline.js';
+import { contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
@@ -3026,19 +3026,25 @@ function contextName(id) {
   return item ? identOf(item) : id;
 }
 
+async function readContextPage(scope, since) {
+  const q = new URLSearchParams({ scope, limit: '1000' });
+  if (since != null) q.set('since', String(since));
+  return optionalGET(`/api/context?${q}`);
+}
+
 async function fillContext(it) {
   const box = $('#context-box');
   if (!box) return;
   const scope = scopeFor(it);
   let data = S.contextCache.get(scope);
   if (!data) {
-    data = await optionalGET(`/api/context?scope=${encodeURIComponent(scope)}&limit=200`);
+    data = await loadContextPages((since) => readContextPage(scope, since));
     if (S.drawer !== it.id) return;
-    S.contextCache.set(scope, data || { entries: [] });
+    if (data.entries.length || data.complete || data.truncated) S.contextCache.set(scope, data);
   }
   const host = $('#context-box');
   if (!host || S.drawer !== it.id) return;
-  const payload = S.contextCache.get(scope) || { entries: [] };
+  const payload = data || { entries: [], complete: false, newerMissing: true };
   host.innerHTML = renderContextTimeline({
     entries: payload.entries || [],
     filter: S.contextKind || 'all',
@@ -3048,19 +3054,28 @@ async function fillContext(it) {
     when: (t) => `${ago(t)} · ${localDT(t)}`,
     nameOf: contextName,
     complete: payload.complete !== false,
+    truncated: payload.truncated === true,
+    newerMissing: payload.newerMissing === true,
   });
 }
 
 function copyContextHandoff(it) {
   const scope = scopeFor(it);
-  const payload = S.contextCache.get(scope) || { entries: [] };
+  const payload = S.contextCache.get(scope);
+  if (!payload || payload.newerMissing === true || (payload.complete === false && payload.truncated !== true)) {
+    return toast('newer entries were not loaded — handoff not copied');
+  }
   const text = contextHandoff(payload.entries || [], {
     scope,
     title: it.title || identOf(it) || scope,
     now: displayNow(),
     formatTime: (t) => localDT(t),
     nameOf: contextName,
+    complete: payload.complete !== false,
+    truncated: payload.truncated === true,
+    newerMissing: false,
   });
+  if (!text) return toast('newer entries were not loaded — handoff not copied');
   const preview = text.length > 240 ? `${text.slice(0, 240)}…` : text;
   return (navigator.clipboard?.writeText(text) ?? Promise.reject()).then(() => toast('handoff copied'), () => toast(preview));
 }

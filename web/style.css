@@ -121,6 +121,7 @@ textarea { resize: vertical; border: 1px solid var(--line); padding: 6px; min-he
 .context-entry .ct { margin: 3px 0 0; overflow-wrap: anywhere; }
 .context-entry .context-note { color: var(--dim); font-size: 11px; margin-top: 3px; }
 .context-entry.is-corrected { opacity: .62; }
+.context-gap { color: var(--dim); margin-top: 6px; }
 
 /* ---------- cross-board supervision ---------- */
 #global-search { position: fixed; top: calc(var(--top-height) + 6px); left: 50%; transform: translateX(-50%); width: min(720px, calc(100vw - 24px)); max-height: min(75vh, 720px); overflow: auto; background: var(--panel); border: 1px solid var(--line2); box-shadow: 0 12px 44px #000; z-index: 85; padding-bottom: 8px; }
