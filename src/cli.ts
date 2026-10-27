@@ -111,9 +111,10 @@ usage:
                                        (--options '[{"label":"A","detail":"…","status":"done"}]' for detail/status)
   hud decide <id> <optionId> --version UUID [--note "…"]
                                      record the choice using the current decision version (prevents stale answers)
-  hud finish [ids...] [--board b] [--note "…"] [--no-organize] [--export]
+  hud finish [ids...] [--board b] [--note "…"] [--no-organize] [--export] [--all]
                                      mark items done and tidy the board (how an agent ends a run);
-                                     --export snapshots finished run tickets; with no ids, owned done and canceled runs are included
+                                     --export snapshots runs this call finishes; pass ids to include an already
+                                     finished run; --all with --export snapshots every owned done or canceled run
   hud run <id>                       run an automatic monitor now
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)
@@ -242,7 +243,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   log: { u: 'hud log <id> [--limit n] [--json]', min: 1, max: 1, f: ['limit', 'json'] },
   ask: { u: 'hud ask <id> --option A --option B [--question q] [--questionFormat plain|markdown] [--options json]', min: 1, max: 1, f: ['option', 'options', 'question', 'questionFormat', 'json'] },
   decide: { u: 'hud decide <id> <optionId> --version UUID [--note text]', min: 1, max: 2, f: ['optionId', 'note', 'version', 'json'] },
-  finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize] [--export]', f: ['board', 'note', 'no-organize', 'export', 'json'] },
+  finish: { u: 'hud finish [ids...] [--board b] [--note text] [--no-organize] [--export] [--all]', f: ['board', 'note', 'no-organize', 'export', 'all', 'json'] },
   run: { u: 'hud run <id>', min: 1, max: 1, f: ['json'] },
   rm: { u: 'hud rm <id...>', min: 1, f: ['json'] },
   trash: { u: 'hud trash [--board b] [--json]', max: 0, f: ['board', 'json'] },
@@ -823,7 +824,8 @@ async function main() {
       return emit(tk, `decided ${tk.ident ?? tk.id} → ${tk.status}`);
     }
     case 'finish': {
-      const r = await hud.finish({ board: flags.board, ids: rest.length ? rest : undefined, note: flags.note, organize: flags['no-organize'] ? false : undefined, export: flags.export ? true : undefined });
+      if (flags.all && !flags.export) throw new UsageError('--all requires --export');
+      const r = await hud.finish({ board: flags.board, ids: rest.length ? rest : undefined, note: flags.note, organize: flags['no-organize'] ? false : undefined, export: flags.export ? true : undefined, exportAll: flags.all ? true : undefined });
       const exported = r.exports?.length ? `\n${r.exports.map((e) => `exported ${e.ident} → backups/${e.name} (${e.entries} entries, ${e.attachments} files)`).join('\n')}` : '';
       return emit(r, (r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`) + exported);
     }

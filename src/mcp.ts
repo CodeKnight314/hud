@@ -438,7 +438,7 @@ const TOOLS = [
   {
     name: 'hud_finish',
     description:
-      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Pass export:true to snapshot finished run tickets\' context and attachments to backups/context-<id>-<ts>.zip. With no ids, that includes runs you own that are already done or canceled, so a retry still writes a snapshot. Polled monitors will report again on their next run.',
+      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Pass export:true to snapshot each run this call finishes to backups/context-<id>-<ts>.zip. Pass ids to also snapshot a run that is already done or canceled. Pass exportAll:true with export to snapshot every done or canceled run you own on the board. A bare export does not re-snapshot finished history. Polled monitors will report again on their next run.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -446,7 +446,8 @@ const TOOLS = [
         ids: { type: 'array', items: { type: 'string' }, description: 'finish just these items' },
         note: { type: 'string', description: 'added as a final comment' },
         organize: { type: 'boolean', description: 'tidy the board afterwards (default true)' },
-        export: { type: 'boolean', description: 'snapshot finished run tickets (context markdown plus attachment bytes) under backups/' },
+        export: { type: 'boolean', description: 'snapshot runs this call finishes (context markdown plus attachment bytes) under backups/. With ids, also snapshot those runs if they are already done or canceled' },
+        exportAll: { type: 'boolean', description: 'with export, also snapshot every done or canceled run you own on the board. Requires export' },
       },
     },
   },
@@ -1215,7 +1216,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_finish': {
       await needBoard(args.board);
-      const r = await hud.finish({ board: args.board, ids: args.ids, note: args.note, organize: args.organize, export: args.export });
+      const r = await hud.finish({ board: args.board, ids: args.ids, note: args.note, organize: args.organize, export: args.export, exportAll: args.exportAll });
       const exported = r.exports?.length ? `\n${r.exports.map((e) => `exported ${e.ident} → backups/${e.name} (${e.entries} entries, ${e.attachments} files)`).join('\n')}` : '';
       return (r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`) + exported;
     }

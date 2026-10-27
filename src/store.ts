@@ -2467,12 +2467,15 @@ export class Store extends EventEmitter {
    * An agent signals it is finished. With ids: those items are marked complete. Without: only what this
    * actor created or is assigned — open tickets and push/manual monitors — never tickets awaiting a human
    * decision, canceled tickets or other actors' work. Polled monitors report again on their next run.
-   * `export` writes a snapshot for each run this call finishes. Named ids also snapshot a run that is
-   * already done or canceled. With no ids, every done or canceled run this actor owns is snapshotted
-   * again, so a retry still exports after `done` was saved. A canceled run is not marked done to export it.
+   * `export` snapshots each run this call marks done. Named ids also snapshot a run that is already done
+   * or canceled, which is how a failed zip is retried. `exportAll` snapshots every done or canceled run
+   * this actor owns on the board. A bare export does not walk that history. `exportAll` does not mark a
+   * canceled run done; naming it in `ids` still completes it, like any other finish target.
    */
-  finish(input: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean }, actor: string): { board: string; done: string[]; exports?: RunContextExport[] } {
+  finish(input: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean; exportAll?: boolean }, actor: string): { board: string; done: string[]; exports?: RunContextExport[] } {
     if (input.export !== undefined && typeof input.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
+    if (input.exportAll !== undefined && typeof input.exportAll !== 'boolean') throw new HudError(400, 'exportAll must be a boolean');
+    if (input.exportAll && !input.export) throw new HudError(400, 'exportAll requires export');
     const ids = Array.isArray(input.ids) ? input.ids : [];
     const first = ids.length ? this.get(this.resolveId(String(ids[0]), input.board)) : undefined;
     const board = this.requireBoard(input.board ?? first?.board).id;
@@ -2514,7 +2517,8 @@ export class Store extends EventEmitter {
           const item = this.state.items[this.resolveId(String(raw), board)];
           if (isRun(item) && this.isFinished(item)) want.add(item.id);
         }
-      } else {
+      }
+      if (input.exportAll) {
         for (const item of Object.values(this.state.items)) {
           if (isRun(item) && mine(item) && this.isFinished(item)) want.add(item.id);
         }

@@ -773,7 +773,8 @@ route('POST', '/api/items/:id/decide', async (req, _s, [id], q) => {
 route('POST', '/api/finish', async (req) => {
   const b = await readObj(req);
   if (b.export !== undefined && typeof b.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
-  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize, export: b.export }, actorOf(req, b));
+  if (b.exportAll !== undefined && typeof b.exportAll !== 'boolean') throw new HudError(400, 'exportAll must be a boolean');
+  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize, export: b.export, exportAll: b.exportAll }, actorOf(req, b));
   // report idents so the CLI/MCP messages read the same as everywhere else
   return { ...r, done: r.done.map((x: string) => store.identOf(store.resolveId(x))) };
 });

@@ -469,8 +469,8 @@ export class Hud {
   decide(id: string, optionId: string, note?: string, decisionVersion?: string): Promise<Item> {
     return this.request('POST', `/api/items/${encodeURIComponent(id)}/decide`, { optionId, note, decisionVersion });
   }
-  /** Signal that work is finished: complete the board's items (or the named ones) and tidy up. `export` snapshots finished run tickets. */
-  finish(opts: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean } = {}): Promise<{ board: string; done: string[]; exports?: RunContextExport[] }> {
+  /** Signal that work is finished: complete the board's items (or the named ones) and tidy up. `export` snapshots runs this call finishes; `exportAll` also snapshots owned finished runs. */
+  finish(opts: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean; exportAll?: boolean } = {}): Promise<{ board: string; done: string[]; exports?: RunContextExport[] }> {
     return this.request('POST', '/api/finish', opts);
   }
   /** Report a reading; creates a push monitor named `id` if it doesn't exist. */

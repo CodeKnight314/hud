@@ -45,7 +45,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     heartbeat **`/ping/:id`** (see Monitors)
   - decisions and runs: `POST /api/items/:id/ask {question?,questionFormat?,options}` ·
     `POST /api/items/:id/decide {optionId,note?,decisionVersion}` ·
-    `POST /api/finish {board?,ids?,note?,organize?,export?}` ·
+    `POST /api/finish {board?,ids?,note?,organize?,export?,exportAll?}` ·
     `POST /api/runs/:id/export` · `GET /api/runs/exports` · `GET /api/runs/:id/exports` ·
     `GET /api/runs/:id/exports/:name` (zip, or `?format=markdown`)
   - boards: `GET/POST /api/boards` · `PATCH|DELETE /api/boards/:id` (`main` cannot be deleted; a delete goes to the
@@ -750,7 +750,7 @@ and `restore`/`purge` with `id:"all"`). The operation argument shapes are:
 | `annotate`, `compare`, `ackAlerts` | `{board?,time,text}`; `{board?,rule:{left,right,relation,...}}` or rule fields directly; `{ids:[alertId,...]}` or `{ids:"all"}` |
 | `reviewAttention`, `link`, `unlink` | `{id,action,revision,until?}`; `{id,patch}`; `{id,keys:["parent",...]}` |
 | `comment`, `ask`, `decide`, `run` | `{id,text,format?}`; `{id,question?,options}`; `{id,optionId,decisionVersion,note?}`; `{id}` |
-| `finish` | `{board?,ids?,note?,organize?,export?}` |
+| `finish` | `{board?,ids?,note?,organize?,export?,exportAll?}` |
 | `importState`, `exportState`, `backup`, `shutdown` | `{state,mode:"replace"|"merge"}`; `{}`; `{reason?}`; `{}`; all require `*` |
 
 Omitted `board` uses the program's target board. `hud.action()` resolves to `{result,revision}` and rejects on a broker
@@ -868,15 +868,12 @@ report a response or completion. Creating a follow-up ticket records a request; 
 responded.
 
 ## Finishing a run
-When you're done, call `hud_finish {board?, ids?, note?, export?}` (`hud finish [--export]`). It marks the named items complete and tidies
+When you're done, call `hud_finish {board?, ids?, note?, export?, exportAll?}` (`hud finish [--export] [--all]`). It marks the named items complete and tidies
 the board (re-runs organize) so the canvas ends up clean. Pass `organize: false` to leave the layout alone. With no `ids` it only completes items you created or are assigned, and
 only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work.
 Finishing releases your claim on those tickets. If you coordinated with peers, publish a final `SUMMARY` entry before
-finishing so the next session can start from what you learned. `export: true` (`--export`) snapshots run tickets to
-`backups/context-<id>-<ts>.zip`. With `ids`, that is every run this call finishes and any named run that is already
-`done` or `canceled`. With no `ids`, it snapshots every `done` or `canceled` run you created or are assigned, including
-ones already finished, so a retry still writes a zip after `done` was saved. A canceled run is snapshotted without
-being marked `done`. The response includes `exports`. The same snapshot is `hud context export <run>`
+finishing so the next session can start from what you learned. `export: true` (`--export`) snapshots each run ticket this call marks `done`, to
+`backups/context-<id>-<ts>.zip`. It does not walk back through runs that are already finished. Pass `ids` to snapshot those runs as well, including one that is already `done` or `canceled` (`hud finish <id> --export`, or `hud context export <id>` after the fact). `exportAll: true` (`--export --all`) snapshots every `done` or `canceled` run you created or are assigned on the board, and leaves a canceled run `canceled`. The response includes `exports`. The same snapshot is `hud context export <run>`
 after the run is finished.
 
 ## Trash, backups and undo
