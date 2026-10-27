@@ -155,7 +155,8 @@ deleted. The UI exposes these as separate actions. CLI is `hud board clear <id>`
   at 300% (or Fit on an unusually large display), and panning cannot lose the board. A remembered zoom above
   that letterbox is discarded on open. A camera at or under the fit keeps its pan, clamped so the board stays visible.
   Switching boards closes the inspector first and keeps that pan. Resizing the window, or returning to the board,
-  refits a centered letterbox only; a kept pan or a zoom stays.
+  refits a centered letterbox only; a kept pan or a zoom stays. Coming back from the ticket list with the
+  inspector still open uses that full-window camera, then fits a centered letterbox into the remaining strip.
 
 Existing boards are backed up before migration to this layout. Their cards and relationships are retained,
 and auto layout is enabled once during migration.

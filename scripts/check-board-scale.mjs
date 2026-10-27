@@ -1,7 +1,7 @@
 // The on-screen canvas letterboxes a fixed 1600×900 board. Layout coordinates do not follow the window.
 import assert from 'node:assert/strict';
 import { layout, BOARD_WIDTH, BOARD_HEIGHT } from '../src/layout.ts';
-import { cameraOnBoardOpen, containAxis, letterboxBoard, restingView, shouldRefit, viewAfterViewportChange } from '../web/board-scale.js';
+import { cameraOnBoardOpen, cameraOnPendingOpen, containAxis, letterboxBoard, restingView, shouldRefit, viewAfterViewportChange } from '../web/board-scale.js';
 
 function contained(boardW, boardH, viewW, viewH, view = letterboxBoard(boardW, boardH, viewW, viewH)) {
   assert(view.z > 0 && Number.isFinite(view.x) && Number.isFinite(view.y), view);
@@ -90,6 +90,32 @@ const midZoom = { x: 30, y: 8, z: (beside.z + fit.z) / 2 };
 assert(midZoom.z > beside.z && midZoom.z <= fit.z, 'fixture sits between the covered fit and the wide fit');
 assert.deepEqual(restingView(midZoom, beside), beside, 'judging that zoom against the open drawer would drop it');
 assert.deepEqual(cameraOnBoardOpen(midZoom, fit, 1064), { x: 30, y: 8, z: fit.z }, 'board open judges the saved camera against the full window');
+
+// List → canvas, or a deep link, settles after the inspector is already open.
+// Judging that pending camera against the strip would drop a full-window fit zoom.
+const pending = { x: 4, y: 18, z: fit.z };
+const besideW = 1064 - 420;
+assert.deepEqual(cameraOnBoardOpen(pending, beside, besideW), beside, 'the drawer strip would discard this full-window zoom');
+assert.deepEqual(
+  cameraOnPendingOpen(pending, fit, beside, true, besideW, 1064),
+  { x: 4, y: 18, z: fit.z },
+  'pending open with the drawer keeps a full-window pan',
+);
+assert.deepEqual(
+  cameraOnPendingOpen({ ...fit }, fit, beside, true, besideW, 1064),
+  beside,
+  'a pending centered letterbox refits beside the open drawer',
+);
+assert.deepEqual(
+  cameraOnPendingOpen(midZoom, fit, beside, true, besideW, 1064),
+  { x: 30, y: 8, z: fit.z },
+  'pending open does not discard a zoom that fits the full window',
+);
+assert.deepEqual(
+  cameraOnPendingOpen(pending, fit, beside, false, besideW, 1064),
+  { x: 4, y: 18, z: fit.z },
+  'pending open with the drawer closed keeps the pan',
+);
 
 const grown = letterboxBoard(BOARD_WIDTH, BOARD_HEIGHT, 1600, 1000);
 assert.deepEqual(viewAfterViewportChange(fit, fit, grown, 1600), grown, 'resize refits a centered letterbox');

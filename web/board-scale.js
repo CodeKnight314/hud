@@ -67,3 +67,15 @@ export function cameraOnBoardOpen(saved, wide, viewportW) {
   const opened = restingView(saved, wide);
   return viewAfterViewportChange(opened, wide, wide, viewportW);
 }
+
+/**
+ * Deferred open, once a hidden canvas (ticket list, deep link) has a size.
+ * `wide` ignores the inspector. The saved zoom is judged against that full
+ * window. If the inspector is already open, a centered letterbox then adopts
+ * the strip beside it; a kept pan stays.
+ */
+export function cameraOnPendingOpen(saved, wide, beside, drawerOpen, besideW, wideW = besideW) {
+  const opened = cameraOnBoardOpen(saved, wide, wideW);
+  if (!drawerOpen) return opened;
+  return viewAfterViewportChange(opened, wide, beside, besideW);
+}

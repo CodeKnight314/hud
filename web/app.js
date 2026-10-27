@@ -6,7 +6,7 @@ import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeli
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
-import { cameraOnBoardOpen, containAxis, letterboxBoard, viewAfterViewportChange } from './board-scale.js';
+import { cameraOnBoardOpen, cameraOnPendingOpen, containAxis, letterboxBoard, viewAfterViewportChange } from './board-scale.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const GRID = 20;
@@ -518,14 +518,18 @@ function applyView() {
 function settleCamera() {
   const raw = canvas.getBoundingClientRect();
   if (S.page !== 'board' || S.mode !== 'canvas' || raw.width < 1 || raw.height < 1) return;
-  const r = viewport();
   const b = boardSize();
-  const next = letterboxBoard(b.w, b.h, r.w, r.h);
+  const full = viewport(true);
+  const wide = letterboxBoard(b.w, b.h, full.w, full.h);
+  const visible = viewport();
+  const beside = letterboxBoard(b.w, b.h, visible.w, visible.h);
   if (S.viewPending || !S.fit) {
-    S.view = cameraOnBoardOpen(S.view, next, r.w);
+    // The canvas was hidden when the camera was saved. Judge it against the full
+    // window, then let an already-open inspector take the centered letterbox only.
+    S.view = cameraOnPendingOpen(S.view, wide, beside, !!S.drawer, visible.w, full.w);
     S.viewPending = false;
   } else {
-    S.view = viewAfterViewportChange(S.view, S.fit, next, r.w);
+    S.view = viewAfterViewportChange(S.view, S.fit, beside, visible.w);
   }
   applyView();
 }
