@@ -105,9 +105,11 @@ bundle/, dist/   build output (git-ignored)
   are fetched through `/api/context`. Cursors are runtime-only. Attachment bytes live under
   `<dataDir>/attachments`, never in `state.json`; `apply` runs in the CLI/MCP process, not the server.
 - **Generated views are trusted code, not a sandbox.** `src/views.ts` static checks are advisory; the Electron render
-  gate is the real check, and the module runs in the board page. Only write a view through `hud_view`/`hud view`, and
-  keep the trust warning in every tool result and in `views/README.md`. Sandboxed `hud_graph`/`hud_canvas` remain the
-  choice for untrusted UI.
+  gate is the real check, and the module runs in the board page. `generate` may write its own output. Caller-supplied
+  source (`hud_view` write / `hud view set`) is staged: the tool result shows a review diff, and the file lands only
+  after `approve` of that proposal id and sha256. `hud_view` write does not stage a proposal when the full diff does
+  not fit in the tool result. Keep the trust warning in every tool result and in `views/README.md`.
+  Sandboxed `hud_graph`/`hud_canvas` remain the choice for untrusted UI.
 - **`trend` is heavy.** `Store.lite()` strips it from SSE, `/api/state` and `/api/items` lists; keep it out of anything
   that is not a single-item read (`GET /api/items/:id`, which also adds `uptime`).
 - **Files come from `assets.ts`.** Anything the app reads from its own tree (web/, views/, GUIDE.md, PLAYBOOKS.md, package.json, example

@@ -15,7 +15,7 @@ import { publicState, registerMonitoring } from './monitoring-server.ts';
 import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, textOf, writeAttachmentBytes } from './attachments.ts';
 import { unifiedDiff } from './diff.ts';
 import { capturePage } from './render.ts';
-import { deleteViewFile, generateViewCode, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
+import { deleteViewFile, generateViewCode, installUntrustedView, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
 const WEB = join(ROOT, 'web');
@@ -410,7 +410,9 @@ route('GET', '/api/views', () => ({
   views: listViewInfos(viewsDir).map(({ name, mtime, bytes, sha256, validation }) => ({ name: `${name}.js`, mtime, bytes, sha256, valid: validation.ok, errors: validation.errors })),
 }));
 
-// ---------- generated view modules (trusted local code: they run in the board page) ----------
+// ---------- view modules (they run unsandboxed in the board page) ----------
+// Generated modules are written by this process. Caller-supplied source is staged and
+// installed only when a later request approves that exact review.
 const viewPreviews = new Map<string, { name: string; code: string; expires: number }>();
 const viewPreviewUrl = (token: string) => `http://127.0.0.1:${PORT}/api/view-preview/${token}`;
 
@@ -421,9 +423,17 @@ route('GET', '/api/views/:name', (_req, _res, [name]) => {
 });
 route('PUT', '/api/views/:name', async (req, _res, [name]) => {
   const b = await readObj(req);
-  if (typeof b.code !== 'string') throw new HudError(400, 'code is required');
-  const r = writeViewFile(dec(name).replace(/\.js$/i, ''), b.code, { overwrite: b.overwrite === true, expectedSha256: b.expectedSha256 === undefined ? undefined : String(b.expectedSha256) });
-  return { name: dec(name).replace(/\.js$/i, ''), ...r, validation: validateViewCode(b.code) };
+  // Clock and ttl stay server-side. A client cannot approve a module that was never staged.
+  if (b.maxChars !== undefined && (!Number.isInteger(b.maxChars) || b.maxChars < 1)) throw new HudError(400, 'maxChars must be a positive integer');
+  return installUntrustedView(dec(name).replace(/\.js$/i, ''), {
+    code: typeof b.code === 'string' ? b.code : undefined,
+    overwrite: b.overwrite === true,
+    expectedSha256: b.expectedSha256 === undefined ? undefined : String(b.expectedSha256),
+    approve: b.approve === true,
+    proposalId: typeof b.proposalId === 'string' ? b.proposalId : undefined,
+    sha256: typeof b.sha256 === 'string' ? b.sha256 : undefined,
+    maxChars: b.maxChars === undefined ? undefined : b.maxChars,
+  });
 });
 route('POST', '/api/views', async (req) => {
   const b = await readObj(req);

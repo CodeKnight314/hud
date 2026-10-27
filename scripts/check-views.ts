@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { deleteViewFile, generateViewCode, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, writeViewFile } from '../src/views.ts';
+import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, MAX_VIEW_REVIEWS, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'hud-views-'));
 setViewsDir(dir);
@@ -85,5 +85,99 @@ assert.equal(readdirSync(dir).includes('bad-view.js'), false);
 
 writeFileSync(join(dir, 'unrelated.txt'), 'ignored');
 assert.equal(listViewInfos().some((v) => v.name === 'unrelated'), false, 'non-js files are ignored');
+
+// caller-supplied modules are untrusted: a review diff is surfaced and nothing lands until that exact review is approved
+const remote = "export function render() { return '<div>' + esc('remote') + '</div>'; }\n";
+const absent = (name: string) => readdirSync(dir).includes(`${name}.js`);
+const staged = installUntrustedView('remote-mod', { code: remote, now: 1_000, ttlMs: 60_000 });
+assert.equal(staged.installed, false);
+assert.equal(staged.trust, 'untrusted');
+assert.equal(absent('remote-mod'), false, 'staging a remote module does not write it');
+assert.match(staged.diff, /\+export function render/);
+const reviewText = formatViewReview(staged);
+assert.match(reviewText, /NOT INSTALLED/);
+assert.match(reviewText, /remote-mod/);
+assert.match(reviewText, new RegExp(staged.id));
+assert.match(reviewText, /\+export function render/);
+
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, code: remote, sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(absent('remote-mod'), false, 'approve on the submit itself does not install');
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: 'not-a-review', sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(absent('remote-mod'), false, 'an unknown review cannot install a module');
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: '0'.repeat(64), now: 1_000 }), /reviewed/);
+assert.equal(absent('remote-mod'), false, 'a mismatched sha256 cannot install a module');
+const other = "export function render() { return '<div>' + esc('other') + '</div>'; }\n";
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, code: other, now: 1_000 }), /reviewed|approval/);
+assert.equal(absent('remote-mod'), false, 'different code cannot ride along with an approval');
+
+const installed = installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, now: 1_000 });
+assert.equal(installed.installed, true);
+assert.equal(readViewFile('remote-mod'), remote);
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(readViewFile('remote-mod'), remote, 'a spent review cannot write again');
+
+const expired = installUntrustedView('expired-mod', { code: remote, now: 2_000, ttlMs: 0 });
+assert.equal(expired.installed, false);
+assert.match(formatViewReview(expired), /NOT INSTALLED/);
+assert.throws(() => installUntrustedView('expired-mod', { approve: true, proposalId: expired.id, sha256: expired.sha256, now: 2_000 }), /approval/);
+assert.equal(absent('expired-mod'), false, 'an expired review cannot install a module');
+
+assert.throws(() => installUntrustedView('blocked-mod', { code: "export function render() { return fetch('/api/state'); }" }), /did not validate/);
+assert.equal(absent('blocked-mod'), false, 'a module that fails static checks is not staged or written');
+
+const nextCode = "export function render() { return '<div>' + esc('next') + '</div>'; }\n";
+const pending = installUntrustedView('remote-mod', { code: nextCode, overwrite: true, now: 3_000, ttlMs: 60_000 });
+assert.equal(pending.installed, false);
+assert.match(pending.diff, /^-export function render/m);
+assert.match(pending.diff, /^\+export function render/m);
+assert.equal(readViewFile('remote-mod'), remote, 'a replacement review leaves the installed module untouched');
+writeViewFile('remote-mod', other, { overwrite: true });
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: pending.id, sha256: pending.sha256, now: 3_000 }), /changed since/);
+assert.equal(readViewFile('remote-mod'), other, 'approval does not overwrite a module that changed after review');
+
+assert.throws(() => installUntrustedView('remote-mod', { code: remote, now: 4_000 }), /already exists/);
+assert.equal(readViewFile('remote-mod'), other);
+
+deleteViewFile('remote-mod');
+
+// hud_view results are capped at 60_000 chars while a module may be up to VIEW_MAX_BYTES.
+// A review that does not fit must not stay approvable: the agent would otherwise approve unseen bytes.
+const agentResultMax = VIEW_REVIEW_MAX_CHARS;
+const marker = 'UNSEEN_TAIL';
+const bulky = `export function render() { return '<div>' + esc('${'a'.repeat(agentResultMax)}${marker}') + '</div>'; }\n`;
+assert.ok(bulky.length > agentResultMax && bulky.length < VIEW_MAX_BYTES, 'fixture sits between the tool cap and the module limit');
+const hidden = installUntrustedView('capped-mod', { code: bulky, maxChars: agentResultMax, now: 5_000, ttlMs: 60_000 });
+assert.equal(hidden.installed, false);
+assert.equal(hidden.approvable, false);
+assert.equal('id' in hidden, false);
+assert.equal(JSON.stringify(hidden).includes(marker), false, 'the unseen tail is not part of the review result');
+assert.equal(absent('capped-mod'), false, 'an oversized review does not write the module');
+if ('id' in hidden && hidden.id && hidden.sha256) installUntrustedView('capped-mod', { approve: true, proposalId: hidden.id, sha256: hidden.sha256, now: 5_000 });
+assert.equal(absent('capped-mod'), false, 'bytes past the tool cap cannot be approved');
+
+const visible = installUntrustedView('shown-mod', { code: remote, maxChars: agentResultMax, now: 5_000, ttlMs: 60_000 });
+assert.equal(visible.approvable, true);
+assert.match(visible.diff, /esc\('remote'\)/);
+const shownInstall = installUntrustedView('shown-mod', { approve: true, proposalId: visible.id, sha256: visible.sha256, now: 5_000 });
+assert.equal(shownInstall.installed, true);
+assert.equal(readViewFile('shown-mod'), remote);
+deleteViewFile('shown-mod');
+
+// A budget refusal must not occupy a review slot. At the queue cap, staging it used to prune an unrelated approval.
+const queueLimit = MAX_VIEW_REVIEWS;
+const queued = [];
+for (let i = 0; i < queueLimit; i++) {
+  const review = installUntrustedView(`keep-${i}`, { code: remote, maxChars: agentResultMax, now: 6_000, ttlMs: 60_000 });
+  assert.equal(review.approvable, true);
+  queued.push(review);
+}
+const refusal = installUntrustedView('queue-bomb', { code: bulky, maxChars: agentResultMax, now: 6_000, ttlMs: 60_000 });
+assert.equal(refusal.approvable, false);
+assert.equal(absent('queue-bomb'), false, 'a refused review does not write the module');
+const oldest = queued[0];
+const oldestStill = installUntrustedView(oldest.name, { approve: true, proposalId: oldest.id, sha256: oldest.sha256, now: 6_000 });
+assert.equal(oldestStill.installed, true, 'a budget refusal must not evict an unrelated pending approval');
+assert.equal(readViewFile(oldest.name), remote);
+deleteViewFile(oldest.name);
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

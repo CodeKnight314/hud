@@ -1,13 +1,16 @@
 /** Agent-authored renderer modules (`display: "view:<name>"`): generation, static validation and file writes. */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { Script } from 'node:vm';
 import { config } from './config.ts';
+import { unifiedDiff } from './diff.ts';
 import { HudError } from './store.ts';
 
 export const VIEW_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const VIEW_MAX_BYTES = 256 * 1024;
+/** hud_view tool results stop at this many characters. A review that does not fit is not approvable. */
+export const VIEW_REVIEW_MAX_CHARS = 60_000;
 
 /** tests redirect module storage here; the server always uses config().viewsDir */
 let dirOverride: string | null = null;
@@ -211,6 +214,7 @@ export function readViewFile(name: string): string {
   return readFileSync(file, 'utf8');
 }
 
+/** direct write used by the local generator and by an approved review. Caller-supplied source goes through `installUntrustedView`. */
 export function writeViewFile(name: string, code: string, opts: { overwrite?: boolean; expectedSha256?: string } = {}): { sha256: string; mtime: number; path: string } {
   const file = viewFilePath(name);
   const validation = validateViewCode(code);
@@ -225,6 +229,182 @@ export function writeViewFile(name: string, code: string, opts: { overwrite?: bo
   writeFileSync(tmp, code);
   renameSync(tmp, file);
   return { sha256: validation.sha256, mtime: statSync(file).mtimeMs, path: file };
+}
+
+const VIEW_REVIEW_TTL_MS = 15 * 60 * 1000;
+export const MAX_VIEW_REVIEWS = 32;
+
+/** a caller-supplied module staged for review. It is not installed, and it is not served. */
+export interface ViewReview {
+  installed: false;
+  trust: 'untrusted';
+  id: string;
+  name: string;
+  sha256: string;
+  baseSha256: string | null;
+  diff: string;
+  added: number;
+  removed: number;
+  truncated: boolean;
+  validation: ViewValidation;
+  expiresAt: number;
+  approvable: true;
+}
+
+/** staged source whose review does not fit in the caller's result budget. Nothing was kept to approve. */
+export interface ViewReviewRefusal {
+  installed: false;
+  trust: 'untrusted';
+  approvable: false;
+  name: string;
+  limit: number;
+  reviewChars: number;
+  text: string;
+}
+
+/** the module that landed after its review was approved. */
+export interface ViewInstall {
+  installed: true;
+  trust: 'untrusted';
+  name: string;
+  sha256: string;
+  mtime: number;
+  path: string;
+  proposalId: string;
+}
+
+interface StoredReview extends ViewReview {
+  code: string;
+}
+
+const reviews = new Map<string, StoredReview>();
+
+function expireReviews(now: number) {
+  for (const [id, review] of reviews) if (review.expiresAt <= now) reviews.delete(id);
+}
+
+/** drop expired reviews, then the oldest ones, until another review can be stored */
+function makeRoom(now: number) {
+  expireReviews(now);
+  while (reviews.size >= MAX_VIEW_REVIEWS) {
+    const oldest = reviews.keys().next().value;
+    if (oldest === undefined) break;
+    reviews.delete(oldest);
+  }
+}
+
+function readInstalled(name: string): { code: string; sha256: string } | null {
+  try {
+    const code = readViewFile(name);
+    return { code, sha256: sha256(code) };
+  } catch (e) {
+    if (e instanceof HudError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+export function formatViewReview(review: ViewReview): string {
+  return [
+    `NOT INSTALLED — untrusted view ${review.name} is waiting for approval`,
+    `proposal ${review.id}`,
+    `sha256 ${review.sha256}`,
+    `Approve this exact module with proposal ${review.id} and sha256 ${review.sha256}.`,
+    'Trust: this module runs unsandboxed in the board page. Only approve code you have reviewed.',
+    `diff: +${review.added} -${review.removed}${review.truncated ? ' (truncated)' : ''}`,
+    review.diff || '(no textual changes)',
+  ].join('\n');
+}
+
+/** the hud_view write result: the approve recipe and the full diff, or nothing that can be approved */
+export function formatAgentViewReview(review: ViewReview): string {
+  return `hud_view {action:"approve", name:"${review.name}", proposalId:"${review.id}", sha256:"${review.sha256}"}\n${formatViewReview(review)}`;
+}
+
+/**
+ * Stage caller-supplied renderer source, or install a previously staged review.
+ * `approve` without a live proposal id never writes: the diff has to be surfaced first,
+ * and the bytes that land are the bytes that were reviewed.
+ */
+export function installUntrustedView(name: string, body: {
+  code?: string;
+  overwrite?: boolean;
+  expectedSha256?: string;
+  approve?: boolean;
+  proposalId?: string;
+  sha256?: string;
+  now?: number;
+  ttlMs?: number;
+  /** when set, a review that does not fit in this many characters is dropped instead of returned */
+  maxChars?: number;
+} = {}): ViewReview | ViewInstall | ViewReviewRefusal {
+  const now = body.now ?? Date.now();
+  if (body.approve === true) {
+    if (!body.proposalId || !body.sha256) throw new HudError(409, 'untrusted modules cannot land without approval of a staged review', { code: 'approval-required' });
+    if (typeof body.code === 'string' && sha256(body.code) !== body.sha256) throw new HudError(409, 'code does not match the reviewed module', { code: 'approval-required' });
+    return approveReviewedView(name, body.proposalId, body.sha256, now);
+  }
+  if (typeof body.code !== 'string') throw new HudError(400, 'code is required');
+  if (body.maxChars !== undefined && (!Number.isInteger(body.maxChars) || body.maxChars < 1)) throw new HudError(400, 'maxChars must be a positive integer');
+  const review = buildViewReview(name, body.code, { overwrite: body.overwrite, expectedSha256: body.expectedSha256, now, ttlMs: body.ttlMs });
+  if (body.maxChars !== undefined) {
+    const text = formatAgentViewReview(review);
+    if (text.length > body.maxChars) {
+      // Never insert a review we are about to refuse: insertion prunes the oldest pending approval.
+      return {
+        installed: false,
+        trust: 'untrusted',
+        approvable: false,
+        name: review.name,
+        limit: body.maxChars,
+        reviewChars: text.length,
+        text: `NOT INSTALLED — untrusted view ${review.name} was not shown in full (${text.length} characters exceeds the ${body.maxChars} character review limit). No proposal was staged, so it cannot be approved. Shorten the module and submit it again.`,
+      };
+    }
+  }
+  makeRoom(now);
+  reviews.set(review.id, { ...review, code: body.code });
+  return review;
+}
+
+function buildViewReview(name: string, code: string, opts: { overwrite?: boolean; expectedSha256?: string; now: number; ttlMs?: number }): ViewReview {
+  const n = normalizeViewName(name);
+  const validation = validateViewCode(code);
+  if (!validation.ok) throw new HudError(400, `view did not validate: ${validation.errors.join('; ')}`, { code: 'invalid', errors: validation.errors });
+  const current = readInstalled(n);
+  if (current && !opts.overwrite) throw new HudError(409, `view ${n} already exists; pass overwrite`, { code: 'exists' });
+  if (current && opts.expectedSha256 && opts.expectedSha256 !== current.sha256) throw new HudError(409, 'view changed since you read it', { code: 'conflict', expected: opts.expectedSha256, actual: current.sha256 });
+  const diff = unifiedDiff(current?.code ?? '', code);
+  const review: ViewReview = {
+    installed: false,
+    trust: 'untrusted',
+    id: randomUUID(),
+    name: n,
+    sha256: validation.sha256,
+    baseSha256: current?.sha256 ?? null,
+    diff: diff.text,
+    added: diff.added,
+    removed: diff.removed,
+    truncated: diff.truncated,
+    validation,
+    expiresAt: opts.now + (opts.ttlMs ?? VIEW_REVIEW_TTL_MS),
+    approvable: true,
+  };
+  return review;
+}
+
+function approveReviewedView(name: string, proposalId: string, hash: string, now: number): ViewInstall {
+  const n = normalizeViewName(name);
+  expireReviews(now);
+  const review = reviews.get(proposalId);
+  if (!review || review.expiresAt <= now) throw new HudError(404, 'no pending approval for that review', { code: 'approval-required' });
+  if (review.name !== n) throw new HudError(409, 'proposal is for a different view', { code: 'approval-required' });
+  if (hash !== review.sha256) throw new HudError(409, 'sha256 does not match the reviewed module', { code: 'approval-required' });
+  const current = readInstalled(n);
+  const base = current?.sha256 ?? null;
+  if (base !== review.baseSha256) throw new HudError(409, 'view changed since it was reviewed', { code: 'conflict', expected: review.baseSha256, actual: base });
+  const wrote = writeViewFile(n, review.code, { overwrite: base !== null, expectedSha256: base ?? undefined });
+  reviews.delete(proposalId);
+  return { installed: true, trust: 'untrusted', name: n, sha256: wrote.sha256, mtime: wrote.mtime, path: wrote.path, proposalId };
 }
 
 export function deleteViewFile(name: string, expectedSha256?: string): { deleted: boolean } {
