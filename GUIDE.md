@@ -25,7 +25,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
-  `hud comment`, `hud ask`, `hud decide`, `hud finish`, … (`hud help`;
+  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud guide [decentralized|lead]`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
   `node <repo>/bin/hud.js`. Set `HUD_ACTOR=<your-name>` (or `--as`) so changes are attributed to you.
 - **HTTP** (JSON, localhost only; send header `x-hud-actor: <name>`). Malformed input is a 400, an unknown id or board
@@ -34,7 +34,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
     `GET /api/tickets[?format=text]` · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
-    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide`
+    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
     project tag q overdue=1 parent limit`. An unknown board is a 404.
   - write: `POST /api/items` (one or an array) · `PATCH /api/items/:id` · `PATCH /api/items` (array of `{id,...}`) ·
@@ -222,12 +222,22 @@ the agents decide the work.
   blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
   `hud_queue {includeDone: true}` includes finished tickets.
 
-Two coordination policies use the same primitives:
+Two coordination policies use the same primitives. Each has a copy-paste playbook — claim, publish a FACT, wait,
+finish — plus what to do on an expired lease, a blocked ticket, and an assignee conflict. Fetch that playbook on its
+own:
 
-- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, works, publishes
-  findings, and finishes. No planner and no closure step.
-- **Centralized:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
-  fixed, and leaves the rest in the queue for pull. The lead's waits are visible as blocked or claimed rows.
+    hud guide decentralized          # every agent pulls ready work; no lead
+    hud guide lead                   # one lead links and assigns; the others pull
+    hud_guide {playbook: "decentralized"}
+    GET /api/guide?playbook=lead
+
+`centralized` is an alias of `lead`. The playbook is the procedure. The primitives above are the reference.
+
+- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, publishes a
+  FACT, waits when a peer holds the next fact, and finishes. No planner.
+- **Lead:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
+  fixed, and leaves the rest in the queue for pull. Workers run the worker loop in the lead playbook. The lead's
+  waits show up as blocked or claimed rows.
 
 ## Shared context
 The queue says *what* to do; the shared context records *what was learned*. It is an append-only log scoped to a
@@ -854,8 +864,8 @@ dir (`hud.lock`); a second one refuses to start.
 ## Conventions
 - Start with `hud_overview`. Reuse existing boards/frames/tickets instead of duplicating them.
 - One board per project or area; frames for sub-areas (e.g. "CI", "Release 1.4", "Agent: claude").
-- When several agents work the same board, call `hud_queue` and `hud_claim` before starting. Take one claim at a time,
-  publish a `FACT` as soon as it can unblock a peer, and release or finish the claim when you stop.
+- When several agents work the same board, follow one playbook (`hud guide decentralized` or `hud guide lead`).
+  Take one claim at a time, publish a `FACT` as soon as it can unblock a peer, and release or finish the claim when you stop.
 - Track your own work as tickets: set `status: doing` when you start (or claim with `start: true`), `hud_comment`
   progress notes, `done` when finished, `blocked` with a comment saying what you need from the human — and if you are
   waiting on another *ticket*, set `blockedBy` instead so it clears itself when that ticket finishes.

@@ -56,14 +56,20 @@ Claude Code) to pick up new tools.
 ```sh
 hud queue                                   # ready / open / claimed work
 hud claim EGO-3 --start                     # exclusive lease; moves it to doing
-hud context publish --scope run:EGO-1 --kind FACT --text "parser drops trailing commas"
-hud context read --scope run:EGO-1          # delta reads since your cursor
-hud wait --scope run:EGO-1 --timeout 20     # wake on a peer publish or session end
-hud attach add notes.md --scope run:EGO-1   # share a file by reference
+hud context publish --scope board:main --kind FACT --text "parser drops trailing commas"
+hud context read --scope board:main         # delta reads since your cursor
+hud wait --scope board:main --timeout 20    # wake on a peer publish or session end
+hud attach add notes.md --scope board:main  # share a file by reference
 ```
 
-A lead can instead pre-assign and link work; agents self-claim the rest. Both are policies over the same primitives.
-See [GUIDE.md](GUIDE.md#coordination).
+When several agents share a board, follow one playbook:
+
+```sh
+hud guide decentralized    # everyone pulls ready work
+hud guide lead             # one lead links and assigns; the others pull
+```
+
+See [GUIDE.md](GUIDE.md#coordination) and [PLAYBOOKS.md](PLAYBOOKS.md).
 
 ## Everyday use
 

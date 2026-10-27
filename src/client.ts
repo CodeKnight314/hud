@@ -397,8 +397,10 @@ export class Hud {
   unlink(id: string, keys: ('project' | 'parent' | 'blockedBy' | 'refs')[]): Promise<Item> {
     return this.request('POST', `/api/items/${encodeURIComponent(id)}/unlink`, Object.fromEntries(keys.map((k) => [k, true])));
   }
-  guide(): Promise<string> {
-    return this.request('GET', '/api/guide');
+  /** Full guide, or one coordination playbook (`decentralized`, `lead`; `centralized` is `lead`). */
+  guide(playbook?: string): Promise<string> {
+    const q = playbook ? `?playbook=${encodeURIComponent(playbook)}` : '';
+    return this.request('GET', `/api/guide${q}`);
   }
   /** the chart renderer modules agents can use (`display: 'view:<name>'`) */
   views(): Promise<{ dir: string; views: { name: string; mtime: number; bytes: number; sha256?: string; valid?: boolean; errors?: string[] }[] }> {

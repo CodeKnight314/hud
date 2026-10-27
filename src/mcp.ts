@@ -201,8 +201,18 @@ const TOOLS = [
   },
   {
     name: 'hud_guide',
-    description: 'Full usage guide for hud (data model, monitor sources, probe modules, layout conventions, HTTP API).',
-    inputSchema: { type: 'object', properties: {} },
+    description:
+      'Full usage guide for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        playbook: {
+          type: 'string',
+          enum: ['decentralized', 'lead', 'centralized', 'playbooks'],
+          description: 'decentralized: every agent pulls ready work. lead (alias centralized): one lead links and assigns, workers pull. playbooks: which one to fetch. Omit for the full guide.',
+        },
+      },
+    },
   },
   {
     name: 'hud_create',
@@ -757,7 +767,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       return cap(`${await hud.summary(args.board)}${al}\n\nlive canvas: ${hud.url}`);
     }
     case 'hud_guide':
-      return hud.guide();
+      return hud.guide(args.playbook);
     case 'hud_search': {
       await needBoard(args.board, hud);
       const q = filters(args);
@@ -1290,6 +1300,7 @@ const INSTRUCTIONS =
   'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view opens rows in a scrollable sidebar and tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. ' +
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
   'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes projects, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
+  'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 
@@ -1387,11 +1398,25 @@ async function handleOne(msg: any): Promise<void> {
           return void reply({ content: [{ type: 'text', text: `error: ${(e as Error).message}` }], isError: true });
         }
       case 'resources/list':
-        return void reply({ resources: [{ uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide, metric fields, dashboard schemas, and rendering conventions.', mimeType: 'text/markdown' }] });
+        return void reply({
+          resources: [
+            { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide, metric fields, dashboard schemas, and rendering conventions.', mimeType: 'text/markdown' },
+            { uri: 'hud://playbook/decentralized', name: 'Decentralized coordination playbook', description: 'Copy-paste runbook: claim, publish a FACT, wait, finish. No lead. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
+            { uri: 'hud://playbook/lead', name: 'Lead coordination playbook', description: 'Copy-paste runbook for a lead who links and assigns work, and for workers who pull. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
+          ],
+        });
       case 'resources/read': {
-        if (params?.uri !== 'hud://guide') throw new Error(`unknown resource ${String(params?.uri ?? '')}`);
-        const text = await baseHud.guide();
-        return void reply({ contents: [{ uri: 'hud://guide', mimeType: 'text/markdown', text }] });
+        const uri = String(params?.uri ?? '');
+        const play = /^hud:\/\/playbook\/([A-Za-z0-9_-]+)$/.exec(uri);
+        if (uri === 'hud://guide') {
+          const text = await baseHud.guide();
+          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
+        }
+        if (play) {
+          const text = await baseHud.guide(play[1]);
+          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
+        }
+        throw new Error(`unknown resource ${uri}`);
       }
       case 'prompts/list':
         return void reply({ prompts: [] });
