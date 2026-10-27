@@ -631,6 +631,9 @@ const by = (it) => (it.createdBy && it.createdBy !== ME ? `<span class="agent">$
 /** a ticket is awaiting a decision while it has options and no answer yet */
 const needsDecision = (it) => it.type === 'ticket' && (it.options?.length ?? 0) > 0 && !it.decision;
 
+/** an agent-authored command stays pending until the human approves this command and cwd */
+const commandPending = (it) => it?.type === 'monitor' && it.source?.kind === 'command' && it.commandApproval?.status === 'pending';
+
 /** the classes that carry the two semantic colours: red = needs attention, green = done */
 function stateClass(it) {
   if (it.type === 'ticket') {
@@ -638,7 +641,11 @@ function stateClass(it) {
     if (it.status === 'blocked' || needsDecision(it)) cls.push('needs-decision');
     return cls;
   }
-  if (it.type === 'monitor') return [`m-${monitorState(it)}`];
+  if (it.type === 'monitor') {
+    const cls = [`m-${monitorState(it)}`];
+    if (commandPending(it)) cls.push('awaiting-approval');
+    return cls;
+  }
   return [];
 }
 
@@ -779,6 +786,7 @@ function cardHTML(it) {
       const plotted = plotItemWithBoardContext({ ...it, value, label, unit: readingUnit, state: reading.state || it.state, progress: reading.progress ?? it.progress });
       const st = reading.state || it.state || 'unknown';
       const g = st === 'running' ? `<span class="g spin">${SPIN[0]}</span>` : `<span class="g">${MGLYPH[st]}</span>`;
+      const waiting = commandPending(it) ? '<span class="tag">awaiting approval</span>' : '';
       const stale = isStale(it) ? '<span class="tag">◌ stale</span>' : '';
       const lbl = label != null && label !== '';
       const v = lbl ? label : fmtVal(value);
@@ -827,7 +835,7 @@ function cardHTML(it) {
       const yhint = disp !== 'auto' && DISPLAYS.includes(disp) && CHART_SET.has(disp) ? `<span class="yhint" title="alt+scroll to stretch the y-range (meters/axes are auto by default)">⇕</span>` : '';
       const metaFooter = monitorMetaFooter(it);
       const observedTime = it.observation?.observedAt ?? it.observation?.receivedAt ?? it.lastUpdate;
-      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${stale}${bell}${yhint}<span class="r" title="observation ${esc(localDT(observedTime))}; received ${esc(localDT(it.observation?.receivedAt ?? it.lastUpdate))}">${ago(observedTime)}</span></div>
+      return `<div class="hd">${g}<span class="t">${esc(it.title) || esc(it.id)}</span>${waiting}${stale}${bell}${yhint}<span class="r" title="observation ${esc(localDT(observedTime))}; received ${esc(localDT(it.observation?.receivedAt ?? it.lastUpdate))}">${ago(observedTime)}</span></div>
         <div class="bd">${body}${msg}</div>
         <div class="ft${metaFooter ? ' readout-footer' : ''}"${metaFooter ? ` title="${esc(monitorMetadata(it).definition)}"` : ''}>${by(it)}<span>${esc(srcLabel)}</span>${metaFooter}<span class="r">${esc(it.id)}</span></div>`;
     }
@@ -950,6 +958,7 @@ function cardSignature(it, className) {
     it.pipelineView ? JSON.stringify(it.pipelineView) : '', it.program ? JSON.stringify(programSummary(it.program)) : '',
     it.title, it.num, it.kind, it.util ? JSON.stringify(it.util) : '', it.text, it.body, it.key, it.lead, it.target,
     it.messageFormat, it.details,
+    it.commandApproval ? `${it.commandApproval.status}:${it.commandApproval.fingerprint || ''}` : '',
     (it.comments || []).length, (it.tags || []).length, (it.monitors || []).join(','),
     (it.options || []).length, it.decision ? it.decision.optionId : '',
     (it.history || []).length, (it.log || []).length,
@@ -1216,10 +1225,13 @@ function renderMonitorAttentionStrip() {
   const host = $('#monitor-attention-strip');
   if (!host) return;
   if (S.page !== 'board') { host.hidden = true; document.body.classList.remove('monitor-attention'); return; }
-  const monitors = boardItems().filter((it) => it.type === 'monitor' && (monitorState(it) === 'error' || isStale(it)));
+  const pending = boardItems().filter((it) => commandPending(it));
+  const pendingIds = new Set(pending.map((it) => it.id));
+  const monitors = boardItems().filter((it) => it.type === 'monitor' && !pendingIds.has(it.id) && (monitorState(it) === 'error' || isStale(it)));
   const board = activeBoard();
   const comparisons = comparisonRows(board).filter((r) => r && r.state && r.state !== 'ok');
   const rows = [
+    ...pending.map((it) => ({ id: it.id, kind: 'command', text: `▸ ${it.title || it.id} awaiting approval` })),
     ...monitors.map((it) => ({ id: it.id, kind: monitorState(it) === 'error' ? 'error' : 'stale', text: `${monitorState(it) === 'error' ? '✕' : '◌'} ${it.title || it.id}` })),
     ...comparisons.map((r) => ({ id: comparisonFocusId(board, r), kind: r.state === 'conflict' ? 'conflict' : r.state === 'pending' ? 'pending' : 'unknown', text: `⇔ ${r.state}: ${r.reason || r.id}` })),
   ];
@@ -1464,8 +1476,8 @@ function upsertBoard(b) {
 }
 
 // ---------------------------------------------------------------- supervision: attention, runs, global navigation
-const ATTENTION_LABEL = { decision: 'decision', error: 'error', stale: 'stale', warn: 'warn', blocked: 'blocked' };
-const ATTENTION_GLYPH = { decision: '?', error: '✕', stale: '○', warn: '▲', blocked: '!' };
+const ATTENTION_LABEL = { command: 'command', decision: 'decision', error: 'error', stale: 'stale', warn: 'warn', blocked: 'blocked' };
+const ATTENTION_GLYPH = { command: '▸', decision: '?', error: '✕', stale: '○', warn: '▲', blocked: '!' };
 const localKey = (k) => `hud.${k}`;
 function rememberBoard(id) {
   if (CAPTURE_READONLY) return;
@@ -1519,11 +1531,18 @@ function attentionCardHTML(a, now = Date.now()) {
   const when = a.lastUpdate || a.openedAt;
   const review = a.reviewedAt ? `reviewed ${ago(a.reviewedAt)} ago` : 'unreviewed';
   const snooze = a.snoozedUntil ? `snoozed until ${localDT(a.snoozedUntil)}` : review;
+  const command = a.kind === 'command';
+  const body = command
+    ? `<pre class="ac-command">${esc(a.message || '')}</pre>`
+    : (a.message ? `<div class="ac-message">${reportPreview(a.message, a.messageFormat || 'plain', 4, `attention-${a.id}`)}</div>` : '');
+  const primary = command
+    ? `<button class="btn sm" data-attention-approve>approve</button>`
+    : `<button class="btn sm" data-attention-review>${a.reviewedAt ? 'unreview' : 'review'}</button>`;
   return `<article class="attention-card kind-${esc(kind)}" data-attention-id="${esc(a.id)}">
     <div class="ac-head"><span class="ac-kind">${ATTENTION_GLYPH[kind] || '▲'} ${esc(kind)}</span><button class="ac-open ac-title" data-attention-open="${esc(a.itemId || '')}" title="open without acknowledging">${esc(title)}</button></div>
     <div class="ac-meta">${esc(boardName(a.board))}${a.owner ? ` · @${esc(a.owner)}` : ''}${when ? ` · ${ago(when)} ago` : ''}</div>
-    ${a.message ? `<div class="ac-message">${reportPreview(a.message, a.messageFormat || 'plain', 4, `attention-${a.id}`)}</div>` : ''}
-    <div class="ac-foot">${a.runId ? `<button class="btn sm" data-attention-run="${esc(a.runId)}">open run</button>` : ''}<span class="dim">${esc(snooze)}</span><span class="sp"></span><button class="btn sm" data-attention-review>${a.reviewedAt ? 'unreview' : 'review'}</button><button class="btn sm" data-attention-snooze="15" title="snooze 15 minutes">15m</button><button class="btn sm" data-attention-snooze="60" title="snooze one hour">1h</button><button class="btn sm" data-attention-snooze="tomorrow" title="snooze until tomorrow at 09:00">tomorrow</button></div>
+    ${body}
+    <div class="ac-foot">${a.runId ? `<button class="btn sm" data-attention-run="${esc(a.runId)}">open run</button>` : ''}<span class="dim">${esc(snooze)}</span><span class="sp"></span>${primary}<button class="btn sm" data-attention-snooze="15" title="snooze 15 minutes">15m</button><button class="btn sm" data-attention-snooze="60" title="snooze one hour">1h</button><button class="btn sm" data-attention-snooze="tomorrow" title="snooze until tomorrow at 09:00">tomorrow</button></div>
   </article>`;
 }
 function attentionBoardHTML(list, now) {
@@ -1588,6 +1607,32 @@ function tomorrowNine() {
   d.setDate(d.getDate() + 1);
   d.setHours(9, 0, 0, 0);
   return d.getTime();
+}
+async function approveDrawerCommand(it) {
+  let record = (S.attention.items || []).find((a) => (a.itemId || a.id) === it.id && a.kind === 'command');
+  if (!record) {
+    await loadAttention();
+    record = (S.attention.items || []).find((a) => (a.itemId || a.id) === it.id && a.kind === 'command');
+  }
+  if (!record) return toast('this command is not waiting for approval', 5000);
+  try {
+    await api('POST', `/api/monitors/${encodeURIComponent(it.id)}/approve`, { revision: record.revision });
+    toast('approved ' + it.id);
+  } catch (e) {
+    toast(e.status === 409 ? 'this command changed; refresh Attention' : e.message, 5000);
+    if (e.status === 409) await loadAttention();
+  }
+}
+async function approveAttentionCommand(card) {
+  const a = S.attention.items.find((x) => x.id === card?.dataset.attentionId);
+  if (!a) return;
+  try {
+    await api('POST', `/api/monitors/${encodeURIComponent(a.itemId || a.id)}/approve`, { revision: a.revision });
+    await loadAttention();
+  } catch (e) {
+    toast(e.status === 409 ? 'this command changed; refresh Attention' : e.message, 5000);
+    if (e.status === 409) await loadAttention();
+  }
 }
 async function attentionAction(card, action, until) {
   const a = S.attention.items.find((x) => x.id === card?.dataset.attentionId);
@@ -1895,6 +1940,7 @@ $('#supervision').addEventListener('click', (e) => {
   const open = e.target.closest('[data-attention-open], [data-run-open], [data-change-open]');
   if (open) return openItemDeepLink(open.dataset.attentionOpen || open.dataset.runOpen || open.dataset.changeOpen);
   const card = e.target.closest('[data-attention-id]');
+  if (card && e.target.closest('[data-attention-approve]')) return approveAttentionCommand(card);
   if (card && e.target.closest('[data-attention-review]')) return attentionAction(card, S.attention.items.find((a) => a.id === card.dataset.attentionId)?.reviewedAt ? 'unreview' : 'review');
   if (card && e.target.closest('[data-attention-snooze]')) {
     const choice = e.target.closest('[data-attention-snooze]').dataset.attentionSnooze;
@@ -2127,7 +2173,8 @@ function onEvent(e) {
       removeEl(e.item.id);
       if (e.created && e.item.board !== S.board) toastBoardCreated(e.item);
     }
-    if (S.drawer === e.item.id && e.actor !== ME) renderDrawer();
+    const approvalChanged = !!prev && (prev.commandApproval?.status !== e.item.commandApproval?.status || prev.commandApproval?.fingerprint !== e.item.commandApproval?.fingerprint);
+    if (S.drawer === e.item.id && (e.actor !== ME || approvalChanged)) renderDrawer();
     else if (S.drawer === e.item.id && e.item.type === 'monitor') renderDrawerLive();
     if (S.drawer === e.item.id && e.item.type === 'monitor') refreshDetailLater(e.item.id);
     refreshAttentionLater();
@@ -2810,6 +2857,7 @@ function drawerSettingsHTML(it) {
     if (k === 'probe') srcFields = row('probe', `<input data-s="probe" value="${esc(src.probe ?? '')}" placeholder="name in probes/">`) + row('config', `<textarea data-s="config" style="min-height:60px" placeholder="{ JSON }">${esc(src.config ? JSON.stringify(src.config, null, 2) : '')}</textarea>`);
     if (k === 'heartbeat') srcFields = `<div class="row2">${row('period s', `<input data-s="period" value="${esc(src.period ?? '')}" placeholder="60">`)}${row('grace s', `<input data-s="grace" value="${esc(src.grace ?? '')}" placeholder="60">`)}</div><div class="hint">no ping within period + grace = error</div>${[['ok', ''], ['fail', '/fail']].map(([l, p]) => { const u = `http://localhost:${location.port || 80}/ping/${it.id}${p}`; return `<div class="copyrow"><span class="dim">${l}</span><code>${esc(u)}</code><button class="btn sm" data-act="copy" data-text="${esc(u)}">copy</button></div>`; }).join('')}`;
     if (auto) srcFields += `<div class="row2">${row('interval', `<input data-s="interval" value="${esc(src.interval ?? '')}" placeholder="30 s">`)}${row('timeout', `<input data-s="timeout" value="${esc(src.timeout ?? '')}" placeholder="30 s">`)}</div>`;
+    const pendingCommand = commandPending(it);
     const url = `${location.origin}/api/monitors/${encodeURIComponent(it.id)}/push`;
     const pushHelp = `<pre class="snip">curl -s ${url} -H 'content-type: application/json' -d '{"value": 42, "message": "…"}'</pre><pre class="snip">hud push ${esc(it.id)} 42 --message "…"</pre>`;
     return `${head}<div class="sec">
@@ -2830,9 +2878,10 @@ function drawerSettingsHTML(it) {
       <div class="sec"><h4>source</h4>
       ${row('kind', chips('kind', KINDS, k))}
       ${srcFields}
-      <div class="btns"><button class="btn" data-act="apply-source">apply source</button>${auto ? '<button class="btn" data-act="run">run now</button>' : ''}</div>
+      <div class="btns"><button class="btn" data-act="apply-source">apply source</button>${pendingCommand ? '<button class="btn" data-act="approve-command">approve</button>' : ''}${auto && !pendingCommand ? '<button class="btn" data-act="run">run now</button>' : ''}</div>
       ${k === 'push' || k === 'manual' ? `<div class="hint">push from anywhere:</div>${pushHelp}` : ''}
       ${k === 'probe' ? '<div class="hint">probes/&lt;name&gt;.ts exports default async (ctx) =&gt; ({value, state, message}) or watch(ctx) — see probes/README</div>' : ''}
+      ${pendingCommand ? '<div class="hint">awaiting approval — this command does not run until you approve it</div>' : ''}
       ${k === 'command' ? '<div class="hint">stdout JSON {value,state,message,progress} is used directly; otherwise last line = value; exit≠0 = error</div>' : ''}
       </div>
       <div class="sec"><h4>thresholds</h4>
@@ -3528,7 +3577,8 @@ $('#drawer').addEventListener('click', (e) => {
   if (act === 'cdel' || act === 'cedit' || act === 'csave' || act === 'ccancel') return commentAct(it, act, e.target.closest('.comment'));
   if (act === 'push') pushReading();
   if (act === 'apply-source') applySource();
-  if (act === 'run') api('POST', `/api/monitors/${encodeURIComponent(it.id)}/run`).then(() => toast('ran ' + it.id), () => {});
+  if (act === 'approve-command') return approveDrawerCommand(it);
+  if (act === 'run') api('POST', `/api/monitors/${encodeURIComponent(it.id)}/run`).then(() => toast('ran ' + it.id), (e) => toast(e.message, 5000));
   if (act === 'arrange') api('POST', '/api/arrange', { frame: it.id }).catch(() => {});
   if (act === 'organize') organize();
   if (act === 'fit-frame') fit([it]);

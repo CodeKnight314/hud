@@ -17,7 +17,7 @@ Windows and Linux; it bundles the sources with esbuild at build time only.
 ```
 src/types.ts     data model (Item, Board, Alert, MonitorResult, HudEvent). Start here.
 src/store.ts     all state + mutations: create/update/remove(→trash)/push/ping, groups & organize, alerts, stale checks,
-                 linked-ticket automation, persistence (data/state.json), backups, migrations (STATE_VERSION 10)
+                 linked-ticket automation, persistence (data/state.json), backups, migrations (STATE_VERSION 11)
 src/layout.ts    fixed 1600×900 board bounds and stable automatic card/group layout
 src/lock.ts      single-writer lock (`<data>/hud.lock`, exclusive create, pid liveness)
 src/engine.ts    runs automatic monitors: command (shell), http, probe (probes/*.ts, polled or watch()); heartbeat is
@@ -135,7 +135,7 @@ bundle/, dist/   build output (git-ignored)
   source and from the packaged app. Anything the *user* owns (data, probes) uses `config()`.
 - **The MCP server is a thin client.** Logic belongs in the store/server so the CLI, HTTP and MCP stay equivalent.
   New caller-visible behavior follows Change surfaces, in order: route → client → MCP → CLI → GUIDE.
-- **Persisted state is versioned** (`state.version`, currently 10: observation provenance, metric definitions, dashboards, custom programs, shared context and attachment metadata). If you change the meaning of stored
+- **Persisted state is versioned** (`state.version`, currently 11: observation provenance, metric definitions, dashboards, custom programs, shared context, attachment metadata, and command-monitor approval). If you change the meaning of stored
   data, add a migration in the `Store` constructor and bump `STATE_VERSION`. A state file newer than the code is refused,
   never rewritten. Users have live boards. Never write code that drops their data: deletes go to `state.trash`
   (`remove()` / `restore()` / `purge()`), and only purge is permanent.

@@ -44,7 +44,7 @@ const ITEM_FIELDS = {
   source: {
     type: 'object',
     description:
-      'monitor source: {kind:"manual"} | {kind:"push"} | {kind:"heartbeat", period?, grace?} | {kind:"command", command, cwd?, interval?, timeout?} (RUNS A SHELL COMMAND AS THE USER) | {kind:"http", url, method?, headers?, body?, expectStatus?, jsonPath?, interval?} | {kind:"probe", probe, config?, interval?}. Seconds.',
+      'monitor source: {kind:"manual"} | {kind:"push"} | {kind:"heartbeat", period?, grace?} | {kind:"command", command, cwd?, interval?, timeout?} (a non-user command does NOT run until the human approves it in Attention; changing command or cwd requires approval again; do not set actor to user) | {kind:"http", url, method?, headers?, body?, expectStatus?, jsonPath?, interval?} | {kind:"probe", probe, config?, interval?}. Seconds.',
   },
   display: {
     type: 'string',
@@ -249,7 +249,7 @@ const TOOLS = [
   {
     name: 'hud_create',
     description:
-      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe, or template disk|tls|http|cron-heartbeat), note, frame, util, or project. Position is automatic. WARNING: a monitor with source.kind "command" runs that shell command as the user, repeatedly. Built-in templates do not. Monitors may take a custom id (slug) for external pushes. The tls template also needs host or source.config.host.',
+      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe, or template disk|tls|http|cron-heartbeat), note, frame, util, or project. Position is automatic. A monitor with source.kind "command" does not run until the human approves that command and cwd in Attention. Changing command or cwd later requires approval again; do not set actor to "user" and do not approve it yourself. Built-in templates do not run a shell command. Monitors may take a custom id (slug) for external pushes. The tls template also needs host or source.config.host.',
     inputSchema: {
       type: 'object',
       required: ['type'],
@@ -264,7 +264,7 @@ const TOOLS = [
   },
   {
     name: 'hud_update',
-    description: 'Patch an existing item (fields as hud_create, except type/id). WARNING: setting source.kind "command" runs a shell command as the user.',
+    description: 'Patch an existing item (fields as hud_create, except type/id). Setting source.kind "command", or changing its command or cwd, does not run the shell until the human approves it in Attention. Do not set actor to user.',
     inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, ...ITEM_FIELDS } },
   },
   {
@@ -324,7 +324,7 @@ const TOOLS = [
   },
   {
     name: 'hud_attention',
-    description: 'Human-attention queue, separate from agent alert acknowledgement. action=list reads open items; review/unreview/snooze require the current revision from the list. Snooze requires until (epoch milliseconds). Reviewing does not acknowledge old agent alerts.',
+    description: 'Human-attention queue, separate from agent alert acknowledgement. action=list reads open items; review/unreview/snooze require the current revision from the list. Snooze requires until (epoch milliseconds). Reviewing does not acknowledge old agent alerts. kind "command" is a shell waiting for the human to approve it in Attention; review or snooze does not start it.',
     inputSchema: {
       type: 'object',
       required: ['action'],
@@ -441,8 +441,20 @@ const TOOLS = [
   },
   {
     name: 'hud_run',
-    description: 'Run an automatic monitor (command/http/probe) immediately and return its new reading.',
+    description: 'Run an automatic monitor (command/http/probe) immediately and return its new reading. Fails while a command monitor is awaiting approval.',
     inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+  },
+  {
+    name: 'hud_approve_command',
+    description: 'Approve a command monitor waiting in Attention. Only the human at the board (actor exactly "user") can approve. Agents must not set their actor to user or call this to start their own shell; the human approves it in Attention. revision comes from hud_attention {action:"list"}.',
+    inputSchema: {
+      type: 'object',
+      required: ['id', 'revision'],
+      properties: {
+        id: { type: 'string' },
+        revision: { type: 'string', description: 'current attention revision for this command' },
+      },
+    },
   },
   {
     name: 'hud_ask',
@@ -755,7 +767,7 @@ function attentionMarkdown(r: any): string {
   const items = Array.isArray(r?.items) ? r.items : [];
   if (!items.length) return `## Human attention\n\nNo open human-attention items.\n\n_checked ${localTime(Number(r?.now) || Date.now())}_`;
   const rows = items.map((a: any) => `| ${mdCell(a.kind)} | ${mdCell(a.itemId)} | ${mdCell(a.title)} | ${mdCell(a.owner)} | ${mdCell(a.priority)} | ${a.reviewedAt ? 'yes' : 'no'} | ${a.snoozedUntil ? mdCell(a.snoozedUntil) : '—'} | ${mdCell(a.runTitle ?? a.runId)} | ${mdCell(a.revision)} | ${mdCell(a.message)} |`);
-  return [`## Human attention`, ``, `Reviewing this queue does not acknowledge old agent alerts.`, ``, `| Kind | Item | Title | Owner | Priority | Reviewed | Snoozed until | Run | Revision | Message |`, `|---|---|---|---|---:|---|---:|---|---|---|`, ...rows, ``, `_updated ${localTime(Number(r?.now) || Date.now())}_`].join('\n');
+  return [`## Human attention`, ``, `Reviewing this queue does not acknowledge old agent alerts. A kind of command is a shell waiting for the human to approve it in Attention; review does not start it.`, ``, `| Kind | Item | Title | Owner | Priority | Reviewed | Snoozed until | Run | Revision | Message |`, `|---|---|---|---|---:|---|---:|---|---|---|`, ...rows, ``, `_updated ${localTime(Number(r?.now) || Date.now())}_`].join('\n');
 }
 
 function attentionRecordMarkdown(record: any): string {
@@ -1331,6 +1343,12 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_run':
       return briefReport(await hud.run(args.id));
+    case 'hud_approve_command': {
+      if (!args.id) throw new Error('missing required argument "id"');
+      if (!args.revision) throw new Error('revision is required; call hud_attention {action:"list"} first. Agents cannot approve their own command: the human approves it in Attention.');
+      const it = await hud.approveCommand(String(args.id), String(args.revision));
+      return `approved ${it.id}. The command may now run. Do not set actor to user to bypass this.`;
+    }
     case 'hud_ask': {
       if (!Array.isArray(args.options) || !args.options.length) throw new Error('options must be a non-empty array');
       if (args.options.some((o: any) => !o || typeof o.label !== 'string' || !o.label)) throw new Error('every option needs a label');
@@ -1461,7 +1479,7 @@ const INSTRUCTIONS =
   'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents and filter by project and owner, hud_project makes and updates projects, hud_tree reads and reparents the ticket tree, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
   'Prefer hud_monitor_templates when adding a disk, TLS, HTTP, or cron heartbeat monitor. Those templates use safe local defaults and do not run a shell command; the tls template connects only after host or source.config.host is set. ' +
-  'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +
+  'A monitor with source.kind "command" does not run until the human approves that command and cwd in Attention. Changing the command or cwd requires approval again. Do not set actor to "user" and do not approve it yourself. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 
 // ---------- presence ----------

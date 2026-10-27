@@ -20,14 +20,14 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   `hud_arrange`, `hud_run`, `hud_views`, `hud_watch`, `hud_alerts`, `hud_attention`, `hud_runs`, `hud_changes`,
   `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare`, `hud_lint`, `hud_graph`,
   `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_session`, `hud_claim`, `hud_queue`,
-  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_guide`. MCP also exposes the
+  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_approve_command`, `hud_guide`. MCP also exposes the
   `hud://guide` resource.
-  Times in tool output are in the machine's local time zone. `source.kind: "command"` runs a shell command on the
-  user's machine, so only set it for checks the user would run themselves.
+  Times in tool output are in the machine's local time zone. `source.kind: "command"` does not run until the human
+  approves that command and cwd in Attention. Do not set your actor to `user` and do not approve it yourself.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud project`, `hud tree`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
-  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud guide [decentralized|lead]`, … (`hud help`;
+  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud approve`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
   `node <repo>/bin/hud.js`. Set `HUD_ACTOR=<your-name>` (or `--as`) so changes are attributed to you.
 - **HTTP** (JSON, localhost only; send header `x-hud-actor: <name>`). Malformed input is a 400, an unknown id or board
@@ -48,6 +48,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `POST /api/items/:id/unlink {project?,parent?,blockedBy?,refs?}` · `POST /api/items/:id/comments {text,format?}` ·
     `PATCH /api/items/:id/comments/:cid {text,format?}` · `DELETE /api/items/:id/comments/:cid`
   - monitors: `POST /api/monitors/:id/push {value,state,message,messageFormat,details,progress,...}` · `POST /api/monitors/:id/run` ·
+    `POST /api/monitors/:id/approve {revision}` (actor `user` only; approves the command currently waiting in Attention) ·
     heartbeat **`/ping/:id`** (see Monitors)
   - decisions and runs: `POST /api/items/:id/ask {question?,questionFormat?,options}` ·
     `POST /api/items/:id/decide {optionId,note?,decisionVersion}` ·
@@ -151,9 +152,9 @@ A tree node is `{id, ident, title, status, project?, parent?, children}`. Roots 
 
 ## Browser navigation
 The app opens on the last board. A persistent **left rail** switches **Attention**, **Runs** and boards; the board rows
-show their item counts and double-click to rename, and `+` creates one. Attention groups current decisions, blocked
-work, warnings, errors and stale reporters by board and run; review keeps an issue active, it only records human
-review. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
+show their item counts and double-click to rename, and `+` creates one. Attention groups command approvals, current decisions, blocked
+work, warnings, errors and stale reporters by board and run. A command card shows the shell and an **approve** button;
+review keeps another issue active, it only records human review and does not start a command. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
 **queue** tab lists open, claimed and done work with owner, live session, blockers and a claim/release action.
 The board canvas keeps the same glance in a compact corner widget: the ready count, and each current claim's
 session name, ticket and remaining lease, soonest lease first. ● is a live holder with time left on the lease;
@@ -455,7 +456,13 @@ Built-in templates (`hud add monitor --template`, Settings → Templates, `GET /
   Pushing to an id that doesn't exist creates the monitor. Set `staleAfter` (s) to flag silence. Keep `message` a short
   headline and put a longer Markdown report in `details` (up to 20 KB); `messageFormat` is `plain` by default and may be
   `markdown`.
-- `command` — `{kind:"command", command, cwd?, interval?=30, timeout?=30}` runs in a shell. stdout that is a JSON
+- `command` — `{kind:"command", command, cwd?, interval?=30, timeout?=30}` runs in a shell. A command written by the
+  human in the browser (actor `user`) is approved by that edit. A command created or changed by anyone else, including
+  an agent, the CLI, or a custom program, does not run until the human approves it in Attention. The gate is the
+  command and cwd: changing either asks again; changing interval or timeout does not. Approval is
+  `POST /api/monitors/:id/approve {revision}` with actor `user` and the current Attention revision (`hud approve <id>
+  --revision v` does the same, and is refused for any other actor). Reviewing or snoozing the Attention card does not
+  start the command. stdout that is a JSON
   object like `{"value":3,"state":"warn","message":"…","messageFormat":"plain","details":"## report\n…","progress":50}` is used as-is; otherwise the last line is the
   value (number if numeric). Non-zero exit → `error`.
 - `http` — `{kind:"http", url, method?, headers?, body?, expectStatus?, contains?, jsonPath?, maxBytes?=5MB, interval?}`.
@@ -968,11 +975,12 @@ State is ordinary item state, so it persists and survives a reload; a running ti
 
 
 ## Attention, runs and incremental changes
-`hud_attention {action:"list"}` (or `hud attention`) is the human-attention queue for decisions, blocked work, warnings,
+`hud_attention {action:"list"}` (or `hud attention`) is the human-attention queue for command approvals, decisions, blocked work, warnings,
 errors and stale monitors. It is intentionally separate from `hud_alerts`: reviewing an attention item does not
-acknowledge old agent alerts. Use the returned `revision` when calling `hud_attention` with `action:"review"`,
+acknowledge old agent alerts, and reviewing a `command` item does not approve or start the shell. Use the returned `revision` when calling `hud_attention` with `action:"review"`,
 `"unreview"`, or `"snooze"`; snoozing requires `until` as an epoch-millisecond deadline. A changed or stale revision is
-rejected so one agent cannot overwrite a newer human-review state.
+rejected so one agent cannot overwrite a newer human-review state. The human approves a pending command in the Attention
+UI (or `POST /api/monitors/:id/approve` as actor `user`).
 
 `hud_runs` lists tickets tagged `run`, their linked monitors/tickets, and the explicit `summaryMonitor` progress/ETA
 source. Keep numeric `value` and `progress` in the monitor fields; use the short `message` for a headline and `details`

@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Store } from './store.ts';
+import { commandApproved, HudError, type Store } from './store.ts';
 import type { HudEvent, Item, MonitorResult, MonitorSource } from './types.ts';
 
 /**
@@ -71,6 +71,9 @@ export class Engine {
   }
 
   async runNow(id: string) {
+    const item = this.store.state.items[id];
+    if (item?.type === 'monitor' && item.source?.kind === 'command' && !commandApproved(item))
+      throw new HudError(409, 'command monitor is waiting for approval');
     const r = this.running.get(id);
     if (!r?.run) throw new Error(`monitor ${id} is not an automatic (command/http/probe) monitor`);
     await r.run();
@@ -78,7 +81,8 @@ export class Engine {
 
   private sync(item: Item) {
     const src = item.source ?? { kind: 'manual' };
-    const auto = src.kind === 'command' || src.kind === 'http' || src.kind === 'probe';
+    // An unapproved command is not automatic: stop anything already running and do not launch it.
+    const auto = (src.kind === 'command' || src.kind === 'http' || src.kind === 'probe') && (src.kind !== 'command' || commandApproved(item));
     const key = auto ? JSON.stringify(src) : '';
     const cur = this.running.get(item.id);
     if (cur?.key === key) return;

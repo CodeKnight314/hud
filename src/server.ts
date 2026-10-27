@@ -880,9 +880,16 @@ route('POST', '/api/monitors/:id/push', async (req, _s, [id], q) => {
 route('POST', '/api/monitors/:id/run', async (_r, _s, [id], q) => {
   const mid = rid(id, q);
   await engine.runNow(mid).catch((e) => {
-    throw new HudError(400, e.message);
+    if (e instanceof HudError) throw e;
+    throw new HudError(400, (e as Error).message);
   });
   return Store.lite(store.get(mid));
+});
+/** The browser actor `user` approves the command currently shown in Attention. */
+route('POST', '/api/monitors/:id/approve', async (req, _s, [id], q) => {
+  const b = await readObj(req);
+  if (typeof b.revision !== 'string' || !b.revision) throw new HudError(400, 'revision must be a string');
+  return Store.lite(store.approveCommand(rid(id, q), b.revision, actorOf(req, b)));
 });
 route('GET', '/api/alerts', (_r, _s, _m, q) =>
   store.alerts({ all: q.get('all') === '1', since: numParam(q, 'since'), notify: q.get('notify') || undefined }),
