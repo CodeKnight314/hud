@@ -703,8 +703,9 @@ export class Store extends EventEmitter {
     }
   }
 
-  /** persistence status for GET /api/health */
+  /** persistence status for GET /api/health. A recovery name whose snapshot was pruned is dropped. */
   health(): { saveError?: string; lastSave?: number; recoveredFrom?: string; items: number; version: number } {
+    if (this.recoveredFrom && !existsSync(join(this.backupDir, this.recoveredFrom))) this.recoveredFrom = undefined;
     return { saveError: this.saveError, lastSave: this.lastSave, recoveredFrom: this.recoveredFrom, items: Object.keys(this.state.items).length, version: this.state.version };
   }
 
@@ -780,11 +781,11 @@ export class Store extends EventEmitter {
 
   /**
    * Replace the live board with one snapshot. The current state is backed up first.
-   * recoveredFrom is the boot-time recovery and stays set, so the banner keeps reporting it.
+   * recoveredFrom stays set while that snapshot file is still on disk.
    */
   restoreBackup(name: string, actor: string): { name: string; items: number; boards: number; backup: string } {
     const file = this.backupPath(name);
-    if (!existsSync(file)) throw new HudError(404, `no backup ${name}`);
+    if (!existsSync(file)) throw new HudError(404, `backup ${name} is no longer on disk`);
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(file, 'utf8'));

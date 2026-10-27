@@ -214,10 +214,50 @@ async function run() {
   }, 'banner drops only the cleared save error');
   assert.deepEqual(healed.buttons, ['open data dir', 'restore']);
 
+  rmSync(join(dataDir, 'backups', recovered.recoveredFrom));
+  const clicked = await pageEval(`(() => {
+    const button = document.querySelector('[data-persistence="restore"]');
+    if (!button) return 'gone';
+    button.click();
+    return 'clicked';
+  })()`);
+  await waitFor(async () => {
+    const toast = await pageEval(`document.getElementById('toast').textContent`);
+    const state = await bannerState();
+    const info = await health();
+    const cleared = state.hidden && !info.recoveredFrom && !state.text.includes(recovered.recoveredFrom);
+    if (!cleared) return false;
+    return clicked === 'gone' || toast.includes('no longer on disk') ? true : false;
+  }, 'pruned recovery snapshot leaves the banner');
+  const missing = await fetch(`${base}/api/backups/${encodeURIComponent(recovered.recoveredFrom)}/restore`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-hud-actor': 'ui-check' },
+  });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error, `backup ${recovered.recoveredFrom} is no longer on disk`);
+
   const revealed = await pageEval(`fetch('/api/data/reveal', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hud-actor': 'ui-check' } }).then(async (response) => ({ status: response.status, body: await response.json() }))`);
   assert.equal(revealed.status === 200 || revealed.status === 503, true, `reveal status ${revealed.status}`);
   if (revealed.status === 200) assert.equal(revealed.body.dataDir, dataDir);
   else assert.match(revealed.body.error, /data directory/);
+
+  chmodSync(dataDir, 0o555);
+  const offlineNote = await fetch(`${base}/api/items`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-hud-actor': 'ui-check' },
+    body: JSON.stringify({ type: 'note', title: 'offline', text: 'memory' }),
+  });
+  assert.equal(offlineNote.ok, true, 'accepted a note before the server goes away');
+  await waitFor(async () => {
+    const state = await bannerState();
+    return !state.hidden && state.text.includes('not saving') ? state : false;
+  }, 'save-error banner before disconnect');
+  await stopServer();
+  await waitFor(async () => {
+    const state = await bannerState();
+    return state.hidden && !state.text.includes('not saving') ? state : false;
+  }, 'banner clears while health is unreachable');
+  chmodSync(dataDir, 0o755);
 
   const shot = await win.capturePage();
   const png = shot.toPNG();
@@ -229,7 +269,7 @@ async function run() {
   console.log(`Screenshot: /tmp/hud-persistence-banner.png`);
 }
 
-const deadline = setTimeout(() => { console.error('persistence UI check exceeded 60s'); app.exit(1); }, 60_000);
+const deadline = setTimeout(() => { console.error('persistence UI check exceeded 120s'); app.exit(1); }, 120_000);
 let exitCode = 0;
 void run().catch((error) => {
   exitCode = 1;

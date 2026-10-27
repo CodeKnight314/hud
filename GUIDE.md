@@ -86,7 +86,8 @@ inspector without acknowledging attention or alerts.
 
 While `GET /api/health` reports `saveError` or `recoveredFrom`, a banner sits under the top bar. It is not a toast and
 it has no close control: it stays until health stops reporting that field (`saveError` clears on the next successful
-save; `recoveredFrom` stays until hud restarts on a readable `state.json`). **open data dir** reveals the data
+save; `recoveredFrom` stays until hud restarts on a readable `state.json`, or until that snapshot is removed from
+`backups/`). If health cannot be reached, the banner comes down instead of keeping the last report. **open data dir** reveals the data
 directory (`POST /api/data/reveal`, `hud reveal`, `hud_reveal`). **restore** replaces the live board with the recovery
 snapshot, or with the newest backup when this process did not recover one (`POST /api/backups/:name/restore`,
 `hud backup restore <name>`, `hud_backup {action:"restore", name}`). Restore backs up the current state first.
@@ -922,8 +923,9 @@ before an import or board delete, and hourly; the newest 30 are kept. `hud backu
 `hud_backup`, `GET|POST /api/backups`. `hud export [file]` / `GET /api/export` dump the whole state; `hud import <file>
 [--merge]` / `POST /api/import {state, mode:"replace"|"merge"}` load one (replace takes a backup first). A corrupt
 `state.json` is moved aside as `state.json.corrupt-<ts>` and the newest valid backup is loaded; `GET /api/health` then
-reports `recoveredFrom`, and `saveError` if saving is failing (it is retried every 2 s). The desktop board repeats
-either field in a persistent banner (see Browser navigation). `hud backup restore <name>` / `POST /api/backups/:name/restore`
+reports `recoveredFrom`, and `saveError` if saving is failing (it is retried every 2 s). `recoveredFrom` is cleared
+once that snapshot is no longer in `backups/` (only the newest 30 are kept). The desktop board repeats
+either field in a persistent banner and hides it when health cannot be reached (see Browser navigation). `hud backup restore <name>` / `POST /api/backups/:name/restore`
 loads one snapshot in replace mode. `hud reveal` / `POST /api/data/reveal` opens the data directory. Only one server may use a data
 dir (`hud.lock`); a second one refuses to start.
 

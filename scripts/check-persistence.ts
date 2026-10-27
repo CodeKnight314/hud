@@ -1,6 +1,6 @@
 // Save failures, backup recovery and restoring a named snapshot stay inside the data dir.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, Store } from '../src/store.ts';
@@ -45,6 +45,9 @@ assert.match(replaced.backup, /^state-.*\.json$/);
 assert.equal(recovered.get(kept.id).title, 'kept');
 assert.throws(() => recovered.get(later.id), /no item/);
 assert.equal(recovered.health().recoveredFrom, newest, 'a restore does not clear the boot-time recovery flag');
+rmSync(join(recovered.backupDir, newest));
+assert.equal(recovered.health().recoveredFrom, undefined, 'a pruned recovery snapshot is no longer reported');
+assert.throws(() => recovered.restoreBackup(newest, actor), (error: unknown) => error instanceof HudError && error.status === 404 && error.message === `backup ${newest} is no longer on disk`);
 
 const calls: string[][] = [];
 assert.equal(revealCommand('darwin').command, 'open');

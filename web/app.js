@@ -1925,8 +1925,8 @@ function syncPersistenceBannerHeight() {
 function renderPersistenceBanner(health) {
   const el = $('#persistence-banner');
   if (!el || CAPTURE_READONLY) return;
-  if (!health) return;
-  const notice = persistenceNotice(health);
+  // Unreachable health is not a report. Drop the last saveError / recoveredFrom instead of leaving it up.
+  const notice = health ? persistenceNotice(health) : null;
   S.persistence = notice;
   if (!notice) {
     el.hidden = true;
@@ -1959,8 +1959,13 @@ async function persistenceAction(action) {
       return;
     }
     if (action !== 'restore') return;
-    const backups = S.persistence.recoveredFrom ? [] : await api('GET', '/api/backups');
-    const name = restoreTarget(S.persistence, backups);
+    const backups = await api('GET', '/api/backups');
+    const named = S.persistence.recoveredFrom;
+    if (named && !backups.some((backup) => backup?.name === named)) {
+      toast(`backup ${named} is no longer on disk`);
+      return;
+    }
+    const name = named || restoreTarget(S.persistence, backups);
     if (!name) return toast('no backup to restore');
     if (!confirm(`Restore ${name}? This replaces the live board. The current state is backed up first.`)) return;
     await api('POST', `/api/backups/${encodeURIComponent(name)}/restore`);
