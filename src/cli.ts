@@ -113,7 +113,7 @@ usage:
                                      record the choice using the current decision version (prevents stale answers)
   hud finish [ids...] [--board b] [--note "…"] [--no-organize] [--export]
                                      mark items done and tidy the board (how an agent ends a run);
-                                     --export also snapshots each finished run ticket
+                                     --export snapshots finished run tickets; with no ids, owned done and canceled runs are included
   hud run <id>                       run an automatic monitor now
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)

@@ -74,10 +74,39 @@ function assertZipName(name: string): void {
   }
 }
 
-/** Uncompressed ZIP (method 0). Entry names are relative and have no `..` segments. */
+/**
+ * Make entry names unique. `zipSegment` maps both `a/b` and `a_b` to `a_b`; the second file
+ * gets `-2`, `-3`, … before its extension. `reserved` (for example `context.md`) is never reused.
+ */
+export function uniqueZipNames(names: string[], reserved: string[] = []): string[] {
+  const used = new Set(reserved);
+  return names.map((name) => {
+    assertZipName(name);
+    const slash = name.lastIndexOf('/');
+    const dot = name.lastIndexOf('.');
+    const stem = dot > slash ? name.slice(0, dot) : name;
+    const ext = dot > slash ? name.slice(dot) : '';
+    let candidate = name;
+    for (let n = 1; n < 10000; n++) {
+      if (n > 1) candidate = `${stem}-${n}${ext}`;
+      if (used.has(candidate)) continue;
+      assertZipName(candidate);
+      used.add(candidate);
+      return candidate;
+    }
+    throw new Error(`duplicate zip entry "${name}"`);
+  });
+}
+
+/** Uncompressed ZIP (method 0). Entry names are relative and have no `..` segments. Duplicate names throw. */
 export function buildZip(files: RunZipFile[], when = new Date()): Buffer {
   if (files.length > 0xffff) throw new Error('zip has too many entries');
-  for (const file of files) assertZipName(file.name);
+  const seen = new Set<string>();
+  for (const file of files) {
+    assertZipName(file.name);
+    if (seen.has(file.name)) throw new Error(`duplicate zip entry "${file.name}"`);
+    seen.add(file.name);
+  }
   const { time, date } = dosStamp(when);
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];

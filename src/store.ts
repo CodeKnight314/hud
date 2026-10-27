@@ -7,7 +7,7 @@ import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
 import { hashBytes, readAttachmentBytes } from './attachments.ts';
-import { buildZip, parseContextExportName, renderRunMarkdown, zipSegment } from './context-export.ts';
+import { buildZip, parseContextExportName, renderRunMarkdown, uniqueZipNames, zipSegment } from './context-export.ts';
 
 export class HudError extends Error {
   status: number;
@@ -1356,8 +1356,10 @@ export class Store extends EventEmitter {
 
   /**
    * Snapshot a finished run's shared context and attachment bytes to `backups/context-<id>-<ts>.zip`.
+   * Entries are the whole retained `state.context` for that run, not one page of `contextRead`.
    * The zip holds `context.md` plus the files. The live log is left in place; state backups do not rotate these files.
-   * Missing bytes and hash mismatches are recorded on the result and in the markdown; the bytes that are still on disk are packed.
+   * A missing file is listed in `missing` and omitted. When the file on disk differs from the stored hash or size,
+   * the zip packs those bytes and the markdown records their sha256 and length.
    */
   exportRunContext(ref: string, actor: string): RunContextExport {
     const it = this.runTicket(ref);
@@ -1372,28 +1374,36 @@ export class Store extends EventEmitter {
     for (const record of Object.values(this.state.attachments)) if (record.scope === scope) wanted.set(record.id, record);
     const records = [...wanted.values()].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     const missing: string[] = [];
-    const packed: { id: string; name: string; sha256: string; bytes: number; scope?: string; path?: string; note?: string; data?: Buffer }[] = [];
+    const packed: { id: string; name: string; sha256: string; bytes: number; scope?: string; path?: string; note?: string; data?: Buffer; desired: string }[] = [];
     for (const record of records) {
-      const path = `attachments/${zipSegment(record.id)}/${zipSegment(record.name)}`;
+      const desired = `attachments/${zipSegment(record.id)}/${zipSegment(record.name)}`;
       let data: Buffer | undefined;
       let note: string | undefined;
+      let sha256 = record.sha256;
+      let bytes = record.bytes;
       try {
         data = readAttachmentBytes(record);
-        const hash = hashBytes(data);
-        if (hash !== record.sha256) {
-          note = `hash mismatch (stored ${record.sha256}, file ${hash})`;
-          missing.push(record.id);
-        }
+        sha256 = hashBytes(data);
+        bytes = data.length;
+        if (sha256 !== record.sha256 || bytes !== record.bytes) note = `stored ${record.sha256} (${record.bytes} bytes) differed; packed the file on disk`;
       } catch {
         note = 'file missing';
         missing.push(record.id);
         data = undefined;
       }
       packed.push({
-        id: record.id, name: record.name, sha256: record.sha256, bytes: record.bytes,
-        ...(record.scope ? { scope: record.scope } : {}), ...(data ? { path, data } : {}), ...(note ? { note } : {}),
+        id: record.id, name: record.name, sha256, bytes,
+        ...(record.scope ? { scope: record.scope } : {}), desired, ...(data ? { data } : {}), ...(note ? { note } : {}),
       });
     }
+    let paths: string[];
+    try {
+      paths = uniqueZipNames(packed.filter((file) => file.data).map((file) => file.desired), ['context.md']);
+    } catch (e) {
+      throw new HudError(500, `could not build context export: ${(e as Error).message}`);
+    }
+    let pathAt = 0;
+    for (const file of packed) if (file.data) file.path = paths[pathAt++]!;
     const markdown = renderRunMarkdown({
       ident: this.ident(it), id: it.id, title: it.title, board: it.board, status: it.status ?? 'todo', actor,
       exportedAt: new Date().toISOString(),
@@ -1405,7 +1415,7 @@ export class Store extends EventEmitter {
         ...(entry.attachments?.length ? { attachments: entry.attachments } : {}),
         ...(entry.corrects ? { corrects: entry.corrects } : {}),
       })),
-      files: packed.map(({ data: _data, ...meta }) => meta),
+      files: packed.map(({ data: _data, desired: _desired, ...meta }) => meta),
     });
     let body: Buffer;
     try {
@@ -2457,6 +2467,9 @@ export class Store extends EventEmitter {
    * An agent signals it is finished. With ids: those items are marked complete. Without: only what this
    * actor created or is assigned — open tickets and push/manual monitors — never tickets awaiting a human
    * decision, canceled tickets or other actors' work. Polled monitors report again on their next run.
+   * `export` writes a snapshot for each run this call finishes. Named ids also snapshot a run that is
+   * already done or canceled. With no ids, every done or canceled run this actor owns is snapshotted
+   * again, so a retry still exports after `done` was saved. A canceled run is not marked done to export it.
    */
   finish(input: { board?: string; ids?: string[]; note?: string; organize?: boolean; export?: boolean }, actor: string): { board: string; done: string[]; exports?: RunContextExport[] } {
     if (input.export !== undefined && typeof input.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
@@ -2493,13 +2506,18 @@ export class Store extends EventEmitter {
     }
     const want = new Set<string>();
     if (input.export) {
-      for (const id of done) {
-        const item = this.state.items[id];
-        if (item?.type === 'ticket' && item.tags?.some((t) => t.toLowerCase() === 'run')) want.add(id);
-      }
-      for (const raw of ids) {
-        const item = this.state.items[this.resolveId(String(raw), board)];
-        if (item?.board === board && item.type === 'ticket' && item.tags?.some((t) => t.toLowerCase() === 'run') && this.isFinished(item)) want.add(item.id);
+      const isRun = (item: Item | undefined): item is Item =>
+        !!item && item.board === board && item.type === 'ticket' && !!item.tags?.some((t) => t.toLowerCase() === 'run');
+      for (const id of done) if (isRun(this.state.items[id])) want.add(id);
+      if (ids.length) {
+        for (const raw of ids) {
+          const item = this.state.items[this.resolveId(String(raw), board)];
+          if (isRun(item) && this.isFinished(item)) want.add(item.id);
+        }
+      } else {
+        for (const item of Object.values(this.state.items)) {
+          if (isRun(item) && mine(item) && this.isFinished(item)) want.add(item.id);
+        }
       }
     }
     if (input.organize !== false) this.organize(board, actor, true);

@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, STATE_VERSION, Store } from '../src/store.ts';
-import { attachmentPath, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
-import { listZipEntries } from '../src/context-export.ts';
+import { attachmentPath, hashBytes, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
+import { buildZip, listZipEntries, zipEntry, zipSegment } from '../src/context-export.ts';
 import { unifiedDiff } from '../src/diff.ts';
 import type { Item } from '../src/types.ts';
 import { contextHandoff, loadContextPages } from '../web/context-timeline.js';
@@ -422,9 +422,35 @@ function runContextExport() {
   const changed = Buffer.from('changed bytes\n');
   writeAttachmentBytes('main', staleId, 'stale.txt', changed);
   const stale = store.exportRunContext(run.id, 'claude');
-  assert(stale.missing.includes(staleId), 'a hash mismatch is reported');
-  const staleFile = listZipEntries(readFileSync(join(store.backupDir, stale.name))).find((e) => e.name === `attachments/${staleId}/stale.txt`);
+  assert(!stale.missing.includes(staleId), 'a readable file is packed even when its stored hash is stale');
+  const changedHash = hashBytes(changed);
+  const staleZip = listZipEntries(readFileSync(join(store.backupDir, stale.name)));
+  const staleFile = staleZip.find((e) => e.name === `attachments/${staleId}/stale.txt`);
   assert.equal(staleFile?.data.toString(), changed.toString(), 'the bytes on disk are what the zip keeps');
+  const staleMd = staleZip.find((e) => e.name === 'context.md')?.data.toString('utf8') ?? '';
+  assert(staleMd.includes(`| ${staleId} | stale.txt | ${changed.length} | ${changedHash} |`), 'markdown sha256 and size match the packed bytes');
+  assert(staleMd.includes(staleWritten.sha256), 'the note still names the stored hash');
+
+  assert.equal(zipSegment('a/b'), zipSegment('a_b'));
+  assert.throws(() => buildZip([
+    { name: 'attachments/a_b/same.txt', data: Buffer.from('one') },
+    { name: 'attachments/a_b/same.txt', data: Buffer.from('two') },
+  ]), /duplicate zip entry/);
+  const collideA = 'a/b';
+  const collideB = 'a_b';
+  const payloadA = Buffer.from('payload-a\n');
+  const payloadB = Buffer.from('payload-b\n');
+  const writtenA = writeAttachmentBytes('main', collideA, 'same.txt', payloadA);
+  const writtenB = writeAttachmentBytes('main', collideB, 'same.txt', payloadB);
+  store.attachmentAdd({ id: collideA, board: 'main', name: 'same.txt', kind: 'text', scope: `run:${run.id}`, bytes: writtenA.bytes, sha256: writtenA.sha256 }, 'claude');
+  store.attachmentAdd({ id: collideB, board: 'main', name: 'same.txt', kind: 'text', scope: `run:${run.id}`, bytes: writtenB.bytes, sha256: writtenB.sha256 }, 'claude');
+  const collided = store.exportRunContext(run.id, 'claude');
+  const collidedEntries = listZipEntries(readFileSync(join(store.backupDir, collided.name)));
+  assert.equal(new Set(collidedEntries.map((e) => e.name)).size, collidedEntries.length, 'zip entry names are unique');
+  assert(collidedEntries.some((e) => e.data.equals(payloadA)), 'first colliding attachment is packed');
+  assert(collidedEntries.some((e) => e.data.equals(payloadB)), 'second colliding attachment is packed');
+  const collidePaths = collidedEntries.filter((e) => e.data.equals(payloadA) || e.data.equals(payloadB)).map((e) => e.name);
+  assert.equal(new Set(collidePaths).size, 2, 'sanitized id collisions get distinct paths');
 
   const canceled = ticket(store, 'canceled run', { tags: ['run'], status: 'canceled' });
   const canceledExport = store.exportRunContext(canceled.id, 'claude');
@@ -439,11 +465,44 @@ function runContextExport() {
   expectError(() => store.readRunExport(run.id, '../state.json'), 400, undefined, 'export path escape');
   expectError(() => store.readRunExport(run.id, exp.name.replace(run.id, other.id)), 404, undefined, 'other run export');
 
+  const retry = ticket(store, 'retry export', { tags: ['run'], status: 'doing' });
+  const finishedFirst = store.finish({ ids: [retry.id], organize: false }, ACTOR);
+  assert.deepEqual(finishedFirst.done, [retry.id]);
+  assert.equal(finishedFirst.exports, undefined);
+  assert.equal(store.listRunExports(retry.id).length, 0, 'finish without export writes no snapshot');
+  const foreign = store.create({ type: 'ticket', title: 'foreign run', tags: ['run'], status: 'done' }, 'other-agent');
+  const canceledStatus = store.get(canceled.id).status;
+  const retried = store.finish({ export: true, organize: false }, ACTOR);
+  assert.equal(retried.done.includes(retry.id), false, 'a bare retry does not finish the run again');
+  assert.equal(retried.exports?.filter((e) => e.runId === retry.id).length, 1, 'a bare retry snapshots an already-done owned run');
+  assert.equal(store.get(canceled.id).status, canceledStatus);
+  assert(retried.exports?.some((e) => e.runId === canceled.id), 'a bare retry snapshots an already-canceled owned run');
+  assert(!retried.exports?.some((e) => e.runId === foreign.id), 'another actor\'s finished run is left alone');
+  assert.equal(store.listRunExports(foreign.id).length, 0);
+
   store.flush();
   const raw = readFileSync(join(dir, 'state.json'), 'utf8');
   assert(!raw.includes(notes.toString()), 'attachment bytes stay out of state');
   assert(!raw.includes(changed.toString()), 'exported bytes stay out of state');
 
+  finish(store);
+}
+
+function runContextExportComplete() {
+  const { store } = fresh('coord-export-complete');
+  const run = ticket(store, 'long run', { tags: ['run'], status: 'done' });
+  const n = 1001;
+  for (let i = 0; i < n; i++) store.contextPublish({ scope: `run:${run.id}`, kind: 'FACT', text: `entry-${i}-marker` }, ACTOR);
+  const page = store.contextRead({ scope: `run:${run.id}`, limit: 1000 });
+  assert.equal(page.entries.length, 1000, 'a context read page stops at its limit');
+  assert.equal(page.complete, false, 'one page is not the whole run');
+  assert(!page.entries.some((e) => e.text === `entry-${n - 1}-marker`), 'the newest entry is past the page');
+  const exp = store.exportRunContext(run.id, ACTOR);
+  assert.equal(exp.entries, n, 'export counts every retained entry');
+  const md = zipEntry(readFileSync(join(store.backupDir, exp.name)), 'context.md').toString('utf8');
+  assert(md.includes('entry-0-marker'), 'export keeps the oldest retained entry');
+  assert(md.includes(`entry-${n - 1}-marker`), 'export keeps the newest entry');
+  assert.equal(md.match(/^### /gm)?.length, n, 'export renders every retained entry');
   finish(store);
 }
 
@@ -457,4 +516,5 @@ attachments();
 exportImport();
 await contextPagesKeepNewest();
 runContextExport();
+runContextExportComplete();
 console.log('PASS coordination store checks');

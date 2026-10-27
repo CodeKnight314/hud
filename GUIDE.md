@@ -270,8 +270,10 @@ The queue says *what* to do; the shared context records *what was learned*. It i
   why a finished run should be snapshotted: `hud context export <run>` (`hud_context {action:"export", scope:"run:<id>"}`,
   `POST /api/runs/:id/export`) writes `backups/context-<id>-<YYYYMMDD-HHMMSS>.zip`. The zip contains `context.md`
   (the run's context entries) and the attachment files for that scope, including files a context entry references.
-  The run ticket has to be `done` or `canceled`. An unfinished run is 409 `unfinished`. Missing bytes and hash
-  mismatches are named in the result and in the markdown; bytes that are still on disk are packed. The live log is
+  The run ticket has to be `done` or `canceled`. An unfinished run is 409 `unfinished`. The snapshot includes
+  every retained context entry for that run, not one page of a delta read. A missing file is named in `missing`
+  and in the markdown, and its bytes are left out. If the file on disk does not match the stored sha256 or size,
+  the zip packs those bytes and the markdown's sha256 and size are the packed file. The live log is
   not deleted. `hud context exports [run]` lists the files. `GET /api/runs/:id/exports/:name?format=markdown` returns
   the report. These zips are not part of the 30 state-backup rotation.
 - **What not to publish.** No routine restatements of the ticket description, no whole file dumps (use attachments),
@@ -870,9 +872,11 @@ When you're done, call `hud_finish {board?, ids?, note?, export?}` (`hud finish 
 the board (re-runs organize) so the canvas ends up clean. Pass `organize: false` to leave the layout alone. With no `ids` it only completes items you created or are assigned, and
 only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work.
 Finishing releases your claim on those tickets. If you coordinated with peers, publish a final `SUMMARY` entry before
-finishing so the next session can start from what you learned. `export: true` (`--export`) also snapshots every run
-ticket that this call finishes — and any run ticket in `ids` that is already finished — to
-`backups/context-<id>-<ts>.zip`. The response includes `exports`. The same snapshot is `hud context export <run>`
+finishing so the next session can start from what you learned. `export: true` (`--export`) snapshots run tickets to
+`backups/context-<id>-<ts>.zip`. With `ids`, that is every run this call finishes and any named run that is already
+`done` or `canceled`. With no `ids`, it snapshots every `done` or `canceled` run you created or are assigned, including
+ones already finished, so a retry still writes a zip after `done` was saved. A canceled run is snapshotted without
+being marked `done`. The response includes `exports`. The same snapshot is `hud context export <run>`
 after the run is finished.
 
 ## Trash, backups and undo

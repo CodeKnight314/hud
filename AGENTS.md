@@ -105,8 +105,9 @@ bundle/, dist/   build output (git-ignored)
   are fetched through `/api/context`. Cursors are runtime-only. Attachment bytes live under
   `<dataDir>/attachments`, never in `state.json`; `apply` runs in the CLI/MCP process, not the server.
   Finishing a run can snapshot that scope (`exportRunContext`, `finish({export:true})`) to
-  `<data>/backups/context-<id>-<ts>.zip` (`context.md` plus attachment bytes). The zip is not state and is not
-  rotated with the 30 `state-*.json` backups.
+  `<data>/backups/context-<id>-<ts>.zip` (`context.md` plus attachment bytes). The snapshot is the full retained
+  context for the run, not a page of `contextRead`. `finish` without ids also re-exports owned runs that are
+  already `done` or `canceled`. The zip is not state and is not rotated with the 30 `state-*.json` backups.
 - **Generated views are trusted code, not a sandbox.** `src/views.ts` static checks are advisory; the Electron render
   gate is the real check, and the module runs in the board page. `generate` may write its own output. Caller-supplied
   source (`hud_view` write / `hud view set`) is staged: the tool result shows a review diff, and the file lands only

@@ -438,7 +438,7 @@ const TOOLS = [
   {
     name: 'hud_finish',
     description:
-      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Pass export:true to snapshot each finished run ticket\'s context and attachments to backups/context-<id>-<ts>.zip. Polled monitors will report again on their next run.',
+      'Signal that you are finished: mark the board\'s items (or the named ids) complete — tickets → done, monitors → done — and tidy the board. This is how an agent ends a run. Pass export:true to snapshot finished run tickets\' context and attachments to backups/context-<id>-<ts>.zip. With no ids, that includes runs you own that are already done or canceled, so a retry still writes a snapshot. Polled monitors will report again on their next run.',
     inputSchema: {
       type: 'object',
       properties: {
