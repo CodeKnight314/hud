@@ -35,7 +35,7 @@ ok(readme.includes('Developer ID') && readme.includes('notarized'), 'README says
 ok(readme.includes('Authenticode'), 'README says signed Windows installers are Authenticode-signed');
 const signedReadme = readme.split(/Unsigned/)[0];
 ok(!/right-click/.test(signedReadme), 'signed-release instructions do not use the right-click workaround');
-ok(/Unsigned[\s\S]{0,400}right-click/.test(readme), 'the right-click workaround stays attached to unsigned builds');
+ok(/Unsigned[\s\S]{0,400}Open Anyway/.test(readme), 'the unsigned first-launch bypass stays attached to unsigned builds');
 ok(guide.includes('Developer ID') && guide.includes('Authenticode'), 'GUIDE distinguishes signed macOS and Windows releases');
 ok(readme.includes('QUICKSTART.md'), 'README links the human quickstart');
 ok(quickLines <= 120, `QUICKSTART is ${quickLines} lines; keep the human quickstart under 120`);

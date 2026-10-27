@@ -16,8 +16,8 @@ People start with the [human quickstart](QUICKSTART.md); agents use [GUIDE.md](G
 Download the installer for your platform from the [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
 or Linux (x64 AppImage or `.deb`). A signed release opens normally: macOS is Developer ID–signed and notarized, and Windows
 is Authenticode-signed. Unsigned builds — a release produced without signing secrets, or a package built on your own
-machine — still need a first-launch bypass: on macOS, right-click the app and choose **Open**; Windows may show a
-SmartScreen prompt. Choose Settings → Connections → **Install command** to add the agent command. If you move an
+machine — need a first-launch bypass: on macOS choose **Open Anyway** in **System Settings → Privacy & Security**; Windows
+may show a SmartScreen prompt. Choose Settings → Connections → **Install command** to add the agent command. If you move an
 AppImage, run that action again so the command follows the file.
 
 From a source checkout:
