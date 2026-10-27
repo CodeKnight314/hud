@@ -10,6 +10,7 @@ import { basename } from 'node:path';
 import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
+import { formatMonitorTemplateList } from './monitor-templates.ts';
 import { line } from './summary.ts';
 import type { Item, QueueResult } from './types.ts';
 import { formatAgentViewReview, VIEW_REVIEW_MAX_CHARS } from './views.ts';
@@ -216,13 +217,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'hud_monitor_templates',
+    description:
+      'List built-in monitor templates (disk, tls, http, cron-heartbeat) with safe defaults and docs links. Defaults do not run a shell command. disk reads the local filesystem, http GETs 127.0.0.1, cron-heartbeat only listens for /ping/<id>, and tls connects only after source.config.host (or host) is set. Create one with hud_create {type:"monitor", template:"disk"}.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'hud_create',
     description:
-      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe), note, frame, util, or project. Position is automatic. WARNING: a monitor with source.kind "command" runs that shell command as the user, repeatedly. Monitors may take a custom id (slug) for external pushes.',
+      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe, or template disk|tls|http|cron-heartbeat), note, frame, util, or project. Position is automatic. WARNING: a monitor with source.kind "command" runs that shell command as the user, repeatedly. Built-in templates do not. Monitors may take a custom id (slug) for external pushes. The tls template also needs host or source.config.host.',
     inputSchema: {
       type: 'object',
       required: ['type'],
-      properties: { type: { type: 'string', enum: ['ticket', 'monitor', 'note', 'frame', 'util', 'project'] }, id: { type: 'string' }, ...ITEM_FIELDS },
+      properties: {
+        type: { type: 'string', enum: ['ticket', 'monitor', 'note', 'frame', 'util', 'project'] },
+        id: { type: 'string' },
+        template: { type: 'string', description: 'built-in monitor template: disk, tls, http, or cron-heartbeat (hud_monitor_templates)' },
+        host: { type: 'string', description: 'tls template: certificate hostname. Sets source.config.host. The template does not connect until this is set.' },
+        ...ITEM_FIELDS,
+      },
     },
   },
   {
@@ -587,7 +600,7 @@ const TOOLS = [
   },
 ];
 
-const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint', 'hud_queue']);
+const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_monitor_templates', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint', 'hud_queue']);
 const DESTRUCTIVE = new Set(['hud_delete', 'hud_finish', 'hud_trash', 'hud_board', 'hud_clear_canvas']);
 const OPEN_WORLD = new Set(['hud_create', 'hud_update', 'hud_run']); // can start shell-command / http monitors
 const listed = TOOLS.map((t) => ({
@@ -1194,6 +1207,10 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
         ? `renderer modules in ${dir}:\n${views.map((v) => `  ${v.name.replace(/\.js$/, '')}  (${new Date(v.mtime).toLocaleString()}, ${v.bytes}b)`).join('\n')}\nUse display: "view:<name>" and see hud_guide's Renderers section.`
         : `no renderer modules in ${dir} — drop an ES module there exporting render(ctx) and reference it as display: "view:<name>". See hud_guide.`;
     }
+    case 'hud_monitor_templates': {
+      const templates = await hud.monitorTemplates();
+      return templates.length ? formatMonitorTemplateList(templates) : 'no built-in monitor templates';
+    }
     case 'hud_run':
       return briefReport(await hud.run(args.id));
     case 'hud_ask': {
@@ -1325,6 +1342,7 @@ const INSTRUCTIONS =
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
   'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes projects, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
+  'Prefer hud_monitor_templates when adding a disk, TLS, HTTP, or cron heartbeat monitor. Those templates use safe local defaults and do not run a shell command; the tls template connects only after host or source.config.host is set. ' +
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 

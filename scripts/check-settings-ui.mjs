@@ -324,6 +324,28 @@ async function run() {
   await waitText(primaryWindow, '#action-status', 'Opened the installer download in your browser.');
   assert.deepEqual(externalUrls, [releaseUrl, downloadUrl], 'release and download open only through the injected external handler');
 
+  await click(primaryWindow, '#tab-templates');
+  await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('panel-templates')?.hidden === false`), 'Templates panel');
+  assert.deepEqual(await pageEval(primaryWindow, `Array.from(document.querySelectorAll('[data-template]'), card => card.dataset.template)`), ['disk', 'tls', 'http', 'cron-heartbeat']);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="disk"] .template-defaults')?.textContent || ''`), /source\.config\.path: \/\n/);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="disk"]')?.textContent || ''`), /source\.kind: probe/);
+  assert.doesNotMatch(await pageEval(primaryWindow, `document.querySelector('#template-list')?.textContent || ''`), /source\.kind: command/);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="tls"] .template-required')?.textContent || ''`), /source\.config\.host/);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="http"] .template-defaults')?.textContent || ''`), /http:\/\/127\.0\.0\.1\//);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="cron-heartbeat"] .template-defaults')?.textContent || ''`), /source\.kind: heartbeat/);
+  assert.match(await pageEval(primaryWindow, `document.querySelector('[data-template="cron-heartbeat"] .template-defaults')?.textContent || ''`), /source\.period: 86400/);
+  assert.equal(await pageEval(primaryWindow, `document.querySelector('[data-template="disk"] .template-docs')?.textContent`), 'GUIDE.md#disk-template');
+  assert.equal(await pageEval(primaryWindow, `document.querySelector('[data-template="tls"] .template-docs')?.textContent`), 'GUIDE.md#tls-template');
+  assert.equal(await pageEval(primaryWindow, `document.querySelector('[data-template="http"] .template-docs')?.textContent`), 'GUIDE.md#http-template');
+  assert.equal(await pageEval(primaryWindow, `document.querySelector('[data-template="cron-heartbeat"] .template-docs')?.textContent`), 'GUIDE.md#cron-heartbeat-template');
+  await pageEval(primaryWindow, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  const templateShot = await saveScreenshot(primaryWindow, 'settings-templates.png');
+  await click(primaryWindow, '[data-template="disk"] .template-docs');
+  await waitText(primaryWindow, '#action-status', 'Opened GUIDE.md#disk-template.');
+  assert.match(String(externalUrls.at(-1) || ''), /\/GUIDE\.md#disk-template$/);
+
+  await click(primaryWindow, '#tab-updates');
+  await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('panel-updates')?.hidden === false`), 'Updates panel after templates');
   await pageEval(primaryWindow, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
   const updatesShot = await saveScreenshot(primaryWindow, 'settings-updates.png');
   await click(primaryWindow, '#quit-for-update');
@@ -351,8 +373,8 @@ async function run() {
   assert.deepEqual(consoleFailures, [], `renderer console errors: ${consoleFailures.join(' | ')}`);
   assert.deepEqual(loadFailures, [], `renderer load failures: ${loadFailures.join(' | ')}`);
   assert.equal(readFileSync(cliEntry, 'utf8'), '# inert fixture; the shim is verified, never executed\n');
-  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, IPC identity and no board bridge.`);
-  console.log(`Artifacts: ${connectionShot}, ${updatesShot}`);
+  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, IPC identity and no board bridge.`);
+  console.log(`Artifacts: ${connectionShot}, ${templateShot}, ${updatesShot}`);
 }
 
 let exitCode = 0;

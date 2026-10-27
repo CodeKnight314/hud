@@ -334,6 +334,8 @@ for the duration, so keep `timeoutSeconds` at 20 rather than the maximum. Defaul
 
 
 ## Monitors
+Built-in templates (`hud add monitor --template`, Settings → Templates, `GET /api/monitor-templates`) are the Disk template, TLS template, HTTP template, and Cron heartbeat template below. Their defaults do not run a shell command, and an override cannot change a template's source kind into one.
+
 `source.kind` decides how a monitor is updated:
 - `manual` — edited by hand or via `hud_update` / push.
 - `push` — an external process reports: `POST /api/monitors/<id>/push`, `hud push <id> …`, `hud_push`, or the TS client.
@@ -375,6 +377,20 @@ for the duration, so keep `timeoutSeconds` at 20 rather than the maximum. Defaul
   `tcp {host,port}` (value = connect ms), `tls {host,port?=443,warnDays?=14,errorDays?=3}` (value = days to expiry),
   `dns {name,type?='A'}` (value = lookup ms), `disk {path?='/'}` (value = % used), `file-age {path}` (value = seconds
   since mtime), plus the examples `git`, `process` and `tail` (POSIX only). See `probes/README.md`.
+
+### Disk template
+`hud add monitor --template disk` watches the percent of the local filesystem in use (`probes/disk.ts`, path `/`). It is a read-only probe: no shell command. Defaults: interval 60s, warn above 80%, error above 95%. Override the path with `--source.config.path /var`.
+
+### TLS template
+`hud add monitor --template tls --host example.com` reports days until that host's certificate expires (`probes/tls.ts`). The template has no default host, so nothing is contacted until you set `--host` or `--source.config.host`. Defaults: port 443, warn under 14 days, error under 3 days, interval 1 hour.
+
+### HTTP template
+`hud add monitor --template http` sends a GET to `http://127.0.0.1/` and reports latency in milliseconds. The default URL is loopback-only and has no request body. Point it at a local service with `--source.url http://127.0.0.1:8080/health` (`127.0.0.1`, `localhost`, or `::1`, http or https). Overrides cannot switch this template to a shell command, change the method, send a body, or point the URL off loopback. Warn above 1000 ms, error above 5000 ms.
+
+### Cron heartbeat template
+`hud add monitor --template cron-heartbeat` expects a daily ping (`source.kind` `heartbeat`, period 86400, grace 3600). hud does not run the job. A missing ping for 25 hours marks the monitor error. A cron line pings it:
+
+    curl -fsS "http://127.0.0.1:{{PORT}}/ping/<id>"
 
 **Limits and validation.** `interval` is clamped to 1 s – 86400 s, `timeout` to 1 s – 3600 s, `staleAfter` ≥ 1,
 `expectStatus` 100-599; thresholds and `max` must be finite numbers. A monitor with `staleAfter` that has never reported

@@ -1,7 +1,8 @@
 import { BrowserWindow, clipboard, ipcMain, shell } from 'electron';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SOURCE_ROOT } from '../src/assets.ts';
+import { SOURCE_ROOT, confineFileUrl, hasAsset } from '../src/assets.ts';
+import { listMonitorTemplates } from '../src/monitor-templates.ts';
 import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
@@ -22,7 +23,24 @@ export function desktopSettings(options: {
   const file = join(SOURCE_ROOT, 'web', 'settings.html');
   const settingsUrl = pathToFileURL(file).href;
   const updates = options.updateChecker ?? new UpdateChecker({ version: options.version });
-  const openExternal = options.openExternal ?? shell.openExternal;
+  // file: opens are the local guide, and only files inside the app tree. https stays a normal external open.
+  // Confinement runs before an injected handler so a test double cannot skip it.
+  const openExternal = async (url: string) => {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new Error('URL is not allowed'); }
+    if (parsed.protocol === 'file:') {
+      const path = confineFileUrl(url, SOURCE_ROOT);
+      const confined = pathToFileURL(path);
+      confined.hash = parsed.hash;
+      if (options.openExternal) return options.openExternal(confined.href);
+      const error = await shell.openPath(path);
+      if (error) throw new Error(error);
+      return;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('URL is not allowed');
+    if (options.openExternal) return options.openExternal(url);
+    return shell.openExternal(url);
+  };
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
   const state = async (refresh = false) => {
     if (refresh || !cachedConnections) cachedConnections = await (await connections()).list();
@@ -34,6 +52,7 @@ export function desktopSettings(options: {
     command: cliInfo(),
     connections: cachedConnections,
     updates: updates.state(options.checkOnLaunch()),
+    templates: listMonitorTemplates(),
     };
   };
 
@@ -59,6 +78,16 @@ export function desktopSettings(options: {
       return state();
     }
     if (action === 'open-release') { await openExternal(updates.state(options.checkOnLaunch()).releaseUrl); return; }
+    if (action === 'open-template-docs') {
+      if (typeof value !== 'string' || !/^[a-z0-9-]+$/.test(value)) throw new Error('Unknown monitor template');
+      const template = listMonitorTemplates().find((item) => item.id === value);
+      if (!template || !/^GUIDE\.md#[a-z0-9-]+$/.test(template.docs)) throw new Error('Unknown monitor template');
+      if (!hasAsset('GUIDE.md')) throw new Error('GUIDE.md is not available in this build');
+      const url = new URL(pathToFileURL(join(SOURCE_ROOT, 'GUIDE.md')).href);
+      url.hash = template.docs.slice(template.docs.indexOf('#'));
+      await openExternal(url.href);
+      return;
+    }
     if (action === 'download-update') {
       const update = updates.state(options.checkOnLaunch());
       if (update.status !== 'available' || !update.downloadUrl) throw new Error('Check for a newer release with a matching installer first.');

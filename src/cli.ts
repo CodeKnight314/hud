@@ -8,6 +8,7 @@ import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
+import { formatMonitorTemplateList, listMonitorTemplates } from './monitor-templates.ts';
 import { line } from './summary.ts';
 import { formatViewReview } from './views.ts';
 
@@ -61,6 +62,9 @@ usage:
   hud add <type> [title] [--k v...]  create ticket|monitor|note|frame|util
                                      (util: --kind timer|stopwatch|clock|counter|calculator|sheet|markdown|dice)
                                      (monitor: --display pie --plot.series gpu --plot.yMin 0)
+  hud add monitor --template         list built-in monitor templates (disk, tls, http, cron-heartbeat)
+  hud add monitor --template <id> [--host name]
+                                     create one from a template (safe defaults; docs links in the list)
   hud set <id> --k v [...]           patch fields
   hud push <id> [value] [--label "2/4 busy"] [--state s] [--message m] [--messageFormat plain|markdown] [--details md] [--progress p]
            [--unit u] [--max n] [--warnBelow n] [--staleAfter s] [--group g] [--title t]
@@ -149,6 +153,8 @@ set HUD_ACTOR (or --as name) to label who made a change.
 
 examples:
   hud add ticket "Fix flaky login test" --status doing --priority high --group CI --body "seen 3x on CI"
+  hud add monitor --template disk
+  hud add monitor --template tls --host example.com
   hud add monitor "disk /" --id disk --source.kind command --source.command "df -P / | awk 'NR==2{print \\$5+0}'" --unit % --warnAbove 80
   hud push deploy --progress 40 --message "migrating db"`;
 
@@ -217,7 +223,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   link: { u: 'hud link <id> [project=EGO] [parent=EGO-1] [blockedBy=EGO-2,EGO-3] [refs=EGO-4] [branch=name]', min: 1, f: ['project', 'parent', 'blockedBy', 'refs', 'branch', 'json'] },
   unlink: { u: 'hud unlink <id> [parent blockedBy refs project ...]', min: 1, f: ['json'] },
   show: { u: 'hud show <id>', min: 1, max: 1, f: ['json'] },
-  add: { u: 'hud add <type> [title] [--k v ...]   (types: ticket monitor note frame util project)', min: 1, f: '*' },
+  add: { u: 'hud add <type> [title] [--k v ...] | hud add monitor --template [disk|tls|http|cron-heartbeat]', min: 1, f: '*' },
   set: { u: 'hud set <id> [status] --k v [...]', min: 1, f: '*' },
   push: { u: 'hud push <id> [value] [--label l] [--state s] [--message m] [--progress p] [--unit u] [--max n] [--warnBelow n] [--staleAfter s] [--group g] [--title t]', min: 1, max: 2, f: '*' },
   watch: { u: 'hud watch <name> [ids...] [--board b] [--off]', min: 1, f: ['board', 'off', 'json'] },
@@ -447,6 +453,11 @@ async function main() {
     }
     case 'add': {
       const [type, ...title] = rest;
+      // The catalog is static. Listing it must not autostart a server or touch the live board.
+      if (type === 'monitor' && (flags.template === true || flags.template === '')) {
+        const templates = listMonitorTemplates();
+        return emit(templates, formatMonitorTemplateList(templates));
+      }
       const it = await hud.create({ type: type as any, title: flags.title ?? title.join(' '), ...flags });
       return emit(it, `created ${brief(it)}`);
     }

@@ -20,6 +20,8 @@ src/layout.ts    fixed 1600×900 board bounds and stable automatic card/group la
 src/lock.ts      single-writer lock (`<data>/hud.lock`, exclusive create, pid liveness)
 src/engine.ts    runs automatic monitors: command (shell), http, probe (probes/*.ts, polled or watch()); heartbeat is
                  passive (store checks it)
+src/monitor-templates.ts built-in monitor templates (disk, tls, http, cron-heartbeat): safe defaults and docs links for
+                 Settings and `hud add monitor --template`
 src/monitoring.ts        metric validation, observation readouts, comparison evaluation and lint
 src/attachments.ts       attachment bytes under <data>/attachments: confinement, hashing, atomic writes
 src/diff.ts              bounded unified diff used by attachment expand

@@ -17,6 +17,7 @@
       <nav id="settings-tabs" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
         <button id="tab-connections" class="settings-tab selected" type="button" role="tab" aria-selected="true" aria-controls="panel-connections" tabindex="0" data-tab="connections">⌘ <span>Connections</span></button>
         <button id="tab-updates" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-updates" tabindex="-1" data-tab="updates">↻ <span>Updates</span></button>
+        <button id="tab-templates" class="settings-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-templates" tabindex="-1" data-tab="templates">□ <span>Templates</span></button>
       </nav>
       <div class="sidebar-foot"><span id="platform-name">Loading…</span><span id="app-version" class="dim"></span></div>
     </aside>
@@ -24,7 +25,7 @@
     <main class="settings-main">
       <header class="settings-topbar"><span id="settings-context">Connections</span><span id="load-status" role="status" aria-live="polite">Loading settings…</span></header>
       <div class="settings-content">
-        <p id="bridge-fallback" class="notice" role="status" hidden>Open Settings from the desktop app to manage connections and updates.</p>
+        <p id="bridge-fallback" class="notice" role="status" hidden>Open Settings from the desktop app to manage connections, updates, and monitor templates.</p>
         <p id="load-error" class="notice error-text" role="alert" hidden></p>
         <p id="action-status" class="action-status" role="status" aria-live="polite" aria-atomic="true" hidden></p>
 
@@ -67,6 +68,18 @@
           </div>
           <label class="preference" for="check-on-launch"><span><strong>Check when HUD opens</strong><small>Look for releases when the desktop app starts.</small></span><input id="check-on-launch" type="checkbox" disabled></label>
           <p class="footnote">Download the installer, quit HUD using this button, then replace the app and reopen it. Your saved boards stay in the data folder.</p>
+        </section>
+
+        <section id="panel-templates" role="tabpanel" aria-labelledby="tab-templates" tabindex="0" hidden>
+          <header class="page-head">
+            <div>
+              <h1>Monitor templates</h1>
+              <p>Built-in disk, TLS, HTTP, and cron heartbeat monitors. Defaults stay local and do not run a shell command.</p>
+            </div>
+          </header>
+          <div id="template-list" class="template-list" role="list" aria-label="Built-in monitor templates"></div>
+          <p id="templates-empty" class="empty-state" hidden>No monitor templates were returned.</p>
+          <p class="footnote">Create one from a terminal with hud add monitor --template. The TLS template connects only after you set a host.</p>
         </section>
       </div>
     </main>
