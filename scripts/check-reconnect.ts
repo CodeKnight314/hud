@@ -146,7 +146,7 @@ assert.equal(placeholderSession.clientVersion, undefined);
 store.noteClientVersion('missing session', '0.1.0');
 store.sessionEnd('claude-9', 'claude');
 store.noteClientVersion('claude-9', '0.2.0');
-assert.equal(store.sessions().items[0].clientVersion, '0.1.3');
+assert.equal(store.sessions().items.find((item) => item.id === 'claude-9')?.clientVersion, '0.1.3');
 store.stopBackups();
 store.flush();
 
