@@ -109,6 +109,8 @@ assert.deepEqual(dead, [], `served guide has relative links: ${dead.join(', ')}`
 assert.ok(guide.includes('](#hud-visual-contract)'));
 assert.ok(guide.includes('# HUD visual contract'));
 assert.ok(guide.includes('https://github.com/CodeKnight314/hud/blob/0.2.0/views/README.md'));
+assert.ok(guide.includes('https://github.com/CodeKnight314/hud/blob/0.2.0/PRODUCT.md'));
+assert.ok(!guide.includes('](PRODUCT.md)'));
 assert.ok(!guide.includes('](STYLE.md)') && !guide.includes('](views/README.md)'));
 for (const [name, text] of [['decentralized', decentralized], ['lead', lead], ['playbooks', index]] as const) {
   const links = unresolved(text);
