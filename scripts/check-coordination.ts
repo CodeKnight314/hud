@@ -59,7 +59,7 @@ function migration() {
   }));
   const store = new Store(file);
   assert.equal(store.state.version, STATE_VERSION);
-  assert.equal(STATE_VERSION, 10);
+  assert.equal(STATE_VERSION, 11);
   assert.deepEqual(store.state.context, []);
   assert.deepEqual(Object.keys(store.state.attachments), []);
   assert.equal(store.get('t1').title, 'old');

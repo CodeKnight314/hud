@@ -39,7 +39,7 @@ function byId<T extends { id: string }>(items: T[], id: string): T {
 }
 
 async function migrationAndStalePersistence() {
-  assert.equal(STATE_VERSION, 10);
+  assert.equal(STATE_VERSION, 11);
   const dir = mkdtempSync(join(tmpdir(), 'hud-monitoring-v8-'));
   roots.push(dir);
   const file = join(dir, 'state.json');
