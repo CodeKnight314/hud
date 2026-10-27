@@ -126,8 +126,6 @@ const branches = pushBranchEntries(workflow);
 ok(Array.isArray(branches), 'on.push.branches is a list');
 ok(branches?.length === 1 && branches[0] === "'release/**'", `native-build branches are only release/** (found ${(branches || []).join(', ')})`);
 ok(!branches?.some((entry) => entry.includes('main') || entry.includes('0.2.0')), 'the branches list does not release on main or 0.2.0');
-const mentioned = workflow.replace(/^on:\n {2}push:\n {4}branches:\n(?: {6}- .+\n)*/m, 'on:\n  push:\n    branches:\n');
-ok(mentioned.includes('0.2.0'), 'a 0.2.0 mention outside the branches list is allowed');
 ok(workflow.includes("tags:\n      - 'v*'"), 'version tags start native builds');
 ok(workflow.includes('workflow_dispatch:'), 'manual dispatch can build artifacts');
 const draftAt = workflow.indexOf('\n  draft-release:');
