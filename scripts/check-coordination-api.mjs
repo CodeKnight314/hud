@@ -165,10 +165,13 @@ try {
   assert.doesNotMatch(tree, new RegExp(`Gamma ${nonce}`));
   const claims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
   assert.equal(typeof claims.now, 'number', 'claims list shares the { items, now } shape');
+  const claimIds = new Set(claims.items.map((c) => c.ticket));
+  assert.ok(claimIds.has(t1.id) && claimIds.has(beta.id), 'omit session: every lease on the board');
   assert.ok(claims.items.some((c) => c.ticket === beta.id && c.actor === 'api-coordination-check'), 'claims list names the claimer');
   const sessionClaims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}&session=${encodeURIComponent(`owner-${nonce}`)}`);
   assert.ok(sessionClaims.items.some((c) => c.ticket === beta.id), 'session filter keeps that holder');
   assert.ok(sessionClaims.items.every((c) => c.session === `owner-${nonce}`), 'session filter drops other holders');
+  assert.equal(sessionClaims.items.some((c) => c.ticket === t1.id), false, 'session filter does not include the other holder');
   const queued = await ok(`/api/queue?board=${encodeURIComponent(boardId)}&project=HUD&owner=alice&includeDone=1`);
   assert.deepEqual(queued.items.map((t) => t.id), [gamma.id], 'queue filters by project and owner');
   const cliTree = await cli(['tickets', boardId, '--project', 'ENG', '--owner', 'alice']);

@@ -186,9 +186,10 @@ function ownershipBoard() {
   assert.deepEqual(store.ownership(beta), { assignee: null, claimer: 'claude', claimSession: 'agent-a', owner: 'claude' });
   const leases = store.claimsList({ board: 'main' });
   assert.equal(typeof leases.now, 'number');
-  assert.deepEqual(leases.items.map((c) => c.ticket).sort(), [beta.id, ghost.id].sort());
+  assert.deepEqual(leases.items.map((c) => c.ticket).sort(), [beta.id, ghost.id].sort(), 'omit session: every lease on the board');
   for (let i = 1; i < leases.items.length; i++) assert.ok(leases.items[i - 1].expiresAt <= leases.items[i].expiresAt, 'claims sort by expiry');
   assert.deepEqual(store.claimsList({ board: 'main', session: 'agent-a' }).items.map((c) => c.ticket), [beta.id]);
+  assert.deepEqual(store.claimsList({ board: 'main', session: 'blank-agent' }).items.map((c) => c.ticket), [ghost.id]);
   assert.deepEqual(store.claimsList({ session: 'nobody' }).items, []);
 
   const ids = (q: Record<string, unknown>) => store.search({ type: 'ticket', board: 'main', ...q }).map((t) => t.id).sort();

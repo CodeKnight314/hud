@@ -34,7 +34,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   a 404; ids may be a `KEY-12` ident.
   - read: `GET /api/summary[?board=]` text overview · `GET /api/readout[?board=]` metrics and evidence ·
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
-    `GET /api/tickets[?format=text]` · `GET /api/tree[?board=&project=]` · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
+    `GET /api/tickets[?format=text]` · `GET /api/claims[?session=&board=]` live leases (omit `session` for every lease on the board) · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
     `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee

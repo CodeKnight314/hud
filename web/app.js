@@ -68,6 +68,7 @@ const S = {
   changes: { since: 0, now: 0, complete: false, events: [] },
   claimCache: new Map(),
   claims: new Map(), // ticket id → live claim, for list/tree/board ownership
+  claimsNow: 0, // claimsList `now`; a late snapshot must not wipe a newer one
   claimsReady: false,
   contextCache: new Map(),
   contextKind: 'all',
@@ -3905,13 +3906,24 @@ async function runCmd(line) {
   throw new Error(`unknown command: ${c}  (? for help)`);
 }
 
-/** live leases for the open board, so list, tree and board can show the claimer without a per-ticket fetch */
-function loadClaims() {
-  if (CAPTURE_READONLY || !S.board) return;
-  const board = S.board;
-  optionalGET(`/api/claims?board=${encodeURIComponent(board)}`).then((data) => {
+/**
+ * Live leases for ownership marks. Same shape as claimsList({ session?, board? }) → { items, now }.
+ * Omit session so every lease on the board stays visible. A session filter must not replace that map.
+ */
+function loadClaims(filter = {}) {
+  if (CAPTURE_READONLY) return;
+  const board = filter.board || S.board;
+  if (!board) return;
+  const session = filter.session ? String(filter.session) : '';
+  const q = new URLSearchParams({ board });
+  if (session) q.set('session', session);
+  optionalGET(`/api/claims?${q}`).then((data) => {
     if (!data || S.board !== board) return;
-    S.claims = new Map((data.items || []).map((c) => [c.ticket, c]));
+    const at = Number(data.now);
+    if (session) return;
+    if (Number.isFinite(at) && at < S.claimsNow) return;
+    if (Number.isFinite(at)) S.claimsNow = at;
+    S.claims = new Map((Array.isArray(data.items) ? data.items : []).map((c) => [c.ticket, c]));
     S.claimsReady = true;
     if (S.mode === 'list') scheduleList();
   });

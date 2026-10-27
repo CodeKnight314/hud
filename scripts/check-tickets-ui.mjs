@@ -85,6 +85,10 @@ async function runUI(seedData) {
       const text = document.querySelector('#list')?.textContent || '';
       return text.includes(${JSON.stringify(ship)}) && text.includes('→alice') && text.includes('⊕—') && text.includes(${JSON.stringify(claimed)}) && text.includes('⊕ui-tickets-check') && !text.includes('⊕…');
     })()`, 'list ownership from loadClaims');
+    await waitForDOM(win, `(() => performance.getEntriesByType('resource').some((e) => {
+      const name = e.name || '';
+      return name.includes('/api/claims') && name.includes('board=') && !name.includes('session=');
+    }))()`, 'claims request omits session so every lease is loaded');
 
     await click(win, '[data-shape="tree"]');
     await waitForDOM(win, `document.querySelector('.lwrap.shape-tree') && !document.querySelector('.tstat')`, 'tree drops status groups');
