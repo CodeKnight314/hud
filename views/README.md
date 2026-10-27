@@ -18,7 +18,7 @@ HTML string (or a DOM node). `ctx`:
 | `helpers` | shared primitives so your chart looks like the built-ins: `esc, fmt, clamp, shade, seriesOf, categoriesOf, pointsOf, gridOf, rangeOf, svg` |
 | `hit(px, py, value, label)` | register a point for the hover readout |
 
-Use `helpers.svg(item, cls, W, H, body, hits)` to get the standard monochrome SVG wrapper.
+Use `helpers.svg(item, cls, W, H, body, hits)` to get the standard neutral SVG wrapper.
 
 This contract is for trusted renderer modules installed in `views/`. For a data-bound program stored with a board,
 use the isolated `hud_graph` or `hud_canvas` flow documented in [GUIDE.md](../GUIDE.md); those programs have their own
@@ -54,8 +54,8 @@ A view received from another agent should be inspected with `hud attach`/`hud vi
 
 ## Rules
 
-- **Monochrome charts.** Use fill/stroke opacity for emphasis. Cards reserve red for blocked/decision/error states and
-  green for done/ok; renderer content should not add semantic colors.
+- **Neutral charts.** Use fill/stroke opacity for emphasis. Cards reserve red for blocked/decision/error states and
+  green for done/ok; renderer content should not add semantic colors. `--accent` is chrome, not a series color.
 - **Never throw.** A module that throws shows its error inside its own card, but you should still guard.
 - **Size to `w`/`h`.** Cards resize; do not hard-code a canvas size.
 - **No network, no imports from `src/`.** Modules run in the page.

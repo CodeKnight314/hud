@@ -547,8 +547,8 @@ When the built-in kinds can't express what you need, name a module in `views/`:
 `hud_views` lists what the server can see. A module is an ES module exporting `render(ctx)` (or a default
 function) that returns an HTML/SVG string. `ctx` is `{item, w, h, helpers, hit}` — `helpers` carries the same
 primitives the built-ins use (`esc, fmt, clamp, shade, seriesOf, categoriesOf, pointsOf, gridOf, rangeOf, svg`),
-and `hit(px, py, value, label)` registers a point for the hover readout. Keep it monochrome (opacity, not colour)
-and size to `w`/`h`. See `views/README.md` and `views/bullet.js`. A module that throws shows its error in its own
+and `hit(px, py, value, label)` registers a point for the hover readout. Keep series neutral (opacity, not extra hues)
+and size to `w`/`h`. See `views/README.md`, `views/bullet.js` and [STYLE.md](STYLE.md). A module that throws shows its error in its own
 card and never takes the canvas down.
 
 ### Readouts, snapshots and dashboards
@@ -698,11 +698,11 @@ hud_canvas({
     capabilities: [],
     code: `function draw() {
       const root = document.createElement('main');
-      root.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:16px;background:#000;color:#e8e8e8;font:12px monospace';
+      root.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;padding:16px;background:#0e1218;color:#e6ebf2;font:13px/1.45 ui-sans-serif,system-ui,sans-serif';
       for (const id of ['gpu-memory-used', 'worker-count']) {
         const m = hud.data.byId[id];
         const card = document.createElement('section');
-        card.style.cssText = 'border:1px solid #444;padding:12px;min-width:0';
+        card.style.cssText = 'border:1px solid rgba(232,238,248,.16);border-radius:10px;background:#1e2530;padding:12px;min-width:0';
         card.textContent = m ? m.title + ': ' + (m.label ?? m.value ?? '—') + ' ' + m.unit + ' · ' + m.state + (m.stale ? ' stale' : '') + ' · ' + m.evidence + ' · ' + m.source + ' · ' + m.ageSeconds + 's old' : id + ': unavailable';
         root.append(card);
       }
@@ -928,7 +928,7 @@ error.
 
 ### Connections
 
-Settings → **Connections** shows monochrome status glyphs for Claude Code, Codex and OpenCode. **Registered** means
+Settings → **Connections** shows status glyphs for Claude Code, Codex and OpenCode. **Registered** means
 the `hud` MCP entry is saved; it does not mean a client session is currently connected. Connecting or repairing from
 the packaged app installs or refreshes its managed stable `hud` command shim, then registers that command in the
 client's user-level configuration. Repair also fixes a stale registration that still points to a source checkout.

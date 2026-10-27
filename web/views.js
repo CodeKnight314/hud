@@ -1,4 +1,4 @@
-// hud — chart renderers. Plain ES module, monochrome, inline SVG, no dependencies.
+// hud — chart renderers. Plain ES module, neutral series on the dark surface, inline SVG, no dependencies.
 //
 // Two ways an agent gets a chart on the canvas:
 //   1. `display: 'line' | 'pie' | 'scatter3d' | …` plus a `plot` object of options. Fixed renderers, covered here.
@@ -169,7 +169,7 @@ function svg(it, cls, W, H, body, hits) {
   return `<svg class="v ${cls}" viewBox="0 0 ${W} ${H}" width="100%" height="100%" preserveAspectRatio="none" data-h="${h}">${body}</svg>`;
 }
 
-/** monochrome ramp for categorical fills — no hue, only brightness */
+/** neutral ramp for categorical fills — no hue, only brightness */
 const shade = (i, n) => 0.14 + 0.72 * (1 - (n <= 1 ? 0 : i / (n - 1)));
 
 // ---------------------------------------------------------------- 1D: line / area / bars
@@ -424,7 +424,7 @@ function pieCore(it, w, h, plot, donut) {
       const mid = a + sweep / 2;
       hits.push({ px: cx + r * 0.65 * Math.cos(mid), py: cy + r * 0.65 * Math.sin(mid), value: c.value, label: c.name, pct: (c.value / total) * 100 });
       a = a1;
-      return `<path d="${d}" fill="rgba(255,255,255,${shade(i, vals.length).toFixed(2)})" stroke="#000" stroke-width="1"/>`;
+      return `<path d="${d}" fill="rgba(255,255,255,${shade(i, vals.length).toFixed(2)})" stroke="#1e2530" stroke-width="1"/>`;
     })
     .join('');
   // legend down the right (donut) or under the pie
@@ -522,7 +522,7 @@ export function surface3dSVG(it, w, h, plot = {}) {
     }
   }
   quads.sort((a, b) => b.depth - a.depth);
-  const body = quads.map((q) => `<path d="${q.d}" fill="rgba(255,255,255,${(0.05 + 0.6 * ((q.v - zlo) / (zhi - zlo || 1))).toFixed(2)})" stroke="#000" stroke-width="0.4"/>`).join('');
+  const body = quads.map((q) => `<path d="${q.d}" fill="rgba(255,255,255,${(0.05 + 0.6 * ((q.v - zlo) / (zhi - zlo || 1))).toFixed(2)})" stroke="#1e2530" stroke-width="0.4"/>`).join('');
   const hits = quads.slice(0, 40).map((q) => ({ px: W / 2, py: H / 2, value: q.v, label: 'cell' }));
   return svg(it, 'surface3d', W, H, `${body}<text x="4" y="${H - 4}">${g.width}×${g.height} · ${fmt(zlo)}…${fmt(zhi)}</text>`, hits);
 }
@@ -732,8 +732,8 @@ export function tableHTML(it, grid = false) {
   if (!columns.length || !rows.length) return EMPTY;
   const numeric = columns.flatMap((column) => rows.map((row) => numberOf(row?.[column.key]))).filter((n) => n !== null);
   const nlo = numeric.length ? minOf(numeric) : 0, nhi = numeric.length ? maxOf(numeric) : 0;
-  const thStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap;color:#fff;background:#111;font-weight:400';
-  const tdStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap';
+  const thStyle = 'border:1px solid rgba(232,238,248,.16);padding:4px 6px;white-space:nowrap;color:#f6f8fb;background:#283140;font-weight:500';
+  const tdStyle = 'border:1px solid rgba(232,238,248,.1);padding:4px 6px;white-space:nowrap';
   const header = columns.map((column, index) => `<th scope="col" style="${thStyle}"><button type="button" data-monitor-sort="${index}" style="font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer" title="sort by ${esc(column.label)}">${esc(column.label)}${column.unit ? ` <span class="u">${esc(column.unit)}</span>` : ''} ↕</button></th>`).join('');
   const body = rows.map((row, rowIndex) => {
     const cells = columns.map((column) => {
@@ -772,8 +772,8 @@ export function pipelineHTML(it) {
   const view = it?.pipelineView;
   const stages = Array.isArray(view?.stages) ? view.stages : (Array.isArray(it?.pipeline?.stages) ? it.pipeline.stages : []);
   if (!stages.length) return `<div class="chart-empty faint">${esc(view?.message || 'no pipeline stages')}</div>`;
-  const thStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap;color:#fff;background:#111;font-weight:400';
-  const tdStyle = 'border:1px solid #5a5a5a;padding:2px 4px;white-space:nowrap';
+  const thStyle = 'border:1px solid rgba(232,238,248,.16);padding:4px 6px;white-space:nowrap;color:#f6f8fb;background:#283140;font-weight:500';
+  const tdStyle = 'border:1px solid rgba(232,238,248,.1);padding:4px 6px;white-space:nowrap';
   const headers = PIPELINE_FIELDS.map(([, label]) => `<th scope="col" style="${thStyle}">${esc(label)}</th>`).join('');
   const rows = stages.map((stage) => {
     const metrics = PIPELINE_FIELDS.map(([key]) => {
@@ -791,7 +791,7 @@ export function pipelineHTML(it) {
   const flow = stages.map((stage, index) => {
     const rate = stage.throughput, queue = stage.queued, age = stage.oldestAge;
     const detail = [rate?.source, rate?.ageSeconds != null ? `${fmt(rate.ageSeconds)}s old` : '', rate?.stale ? 'STALE' : ''].filter(Boolean).join(' · ');
-    return `<div style="min-width:120px;border:1px dashed #777;padding:6px;${stage.candidate ? 'background:#eee;color:#080808;' : ''}"><div>${stage.candidate ? '▲ ' : ''}${esc(stage.label || stage.key)}${index < stages.length - 1 ? ' →' : ''}</div><div>${esc(cellText(rate?.value))} ${esc(rate?.unit || '')}</div><div style="height:6px;background:#333;margin:5px 0"><div style="height:100%;width:${Math.max(0, queues[index]) / maximum * 100}%;background:#aaa"></div></div><div>queued ${esc(cellText(queue?.value))} · oldest ${esc(cellText(age?.value))}${esc(age?.unit || '')}</div><small>${esc(detail)}</small></div>`;
+    return `<div style="min-width:120px;border:1px solid ${stage.candidate ? '#8eb0ff' : 'rgba(232,238,248,.16)'};border-radius:8px;padding:8px;background:${stage.candidate ? 'rgba(142,176,255,.16)' : '#1e2530'};color:#e6ebf2"><div>${stage.candidate ? '▲ ' : ''}${esc(stage.label || stage.key)}${index < stages.length - 1 ? ' →' : ''}</div><div>${esc(cellText(rate?.value))} ${esc(rate?.unit || '')}</div><div style="height:6px;background:#283140;border-radius:999px;margin:5px 0;overflow:hidden"><div style="height:100%;width:${Math.max(0, queues[index]) / maximum * 100}%;background:#c5ceda"></div></div><div>queued ${esc(cellText(queue?.value))} · oldest ${esc(cellText(age?.value))}${esc(age?.unit || '')}</div><small>${esc(detail)}</small></div>`;
   }).join('');
   return `<div class="monitor-data" style="overflow:auto;max-height:100%;min-height:0;min-width:0;width:100%;flex:1"><div class="pipeline-flow" style="display:grid;grid-template-columns:repeat(${stages.length},minmax(120px,1fr));gap:10px;margin-bottom:8px">${flow}</div>${view?.message ? `<div class="faint">${esc(view.message)}</div>` : ''}<table role="table" style="border-collapse:collapse;width:100%;text-align:left"><thead><tr><th scope="col" style="${thStyle}">stage</th>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }

@@ -80,7 +80,7 @@ holds overview, activity, coordination and settings in one scroll.
 ## Learn more
 
 - [GUIDE.md](GUIDE.md) — the agent and operator guide: tools, schemas, renderers, coordination, install and updates.
-- [STYLE.md](STYLE.md) — the monochrome visual contract.
+- [STYLE.md](STYLE.md) — the dark desktop visual contract.
 - [AGENTS.md](AGENTS.md) — architecture and contributor conventions.
 - [views/README.md](views/README.md) — writing or generating chart renderer modules.
 

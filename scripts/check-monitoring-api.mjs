@@ -418,7 +418,7 @@ async function integration() {
   const initialized = await mcp.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'monitoring-api-check', version: '1' }, capabilities: {} });
   assert.equal(initialized.result?.serverInfo?.name, 'hud');
   assert.match(initialized.result?.instructions ?? '', /hud_readout/);
-  assert.match(initialized.result?.instructions ?? '', /monochrome/);
+  assert.match(initialized.result?.instructions ?? '', /dark desktop/);
   const tools = await mcp.request('tools/list');
   const names = new Set(tools.result?.tools?.map((tool) => tool.name));
   for (const name of ['hud_readout', 'hud_snapshot', 'hud_dashboard', 'hud_annotate', 'hud_compare', 'hud_lint', 'hud_graph', 'hud_canvas', 'hud_clear_canvas']) assert(names.has(name), `MCP tools/list missing ${name}`);

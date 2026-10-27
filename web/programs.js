@@ -11,7 +11,7 @@ export function mountSession(element, session) {
   frame.setAttribute('sandbox', 'allow-scripts');
   frame.setAttribute('referrerpolicy', 'no-referrer');
   frame.setAttribute('title', session.description || 'custom HUD program');
-  frame.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#080808';
+  frame.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0e1218';
   const errors = [];
   let finished = false, resolveReady, connected = false, loads = 0, timer = null, disposed = false;
   const channel = new MessageChannel();
