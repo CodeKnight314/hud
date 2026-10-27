@@ -594,8 +594,11 @@ route('POST', '/api/sessions', async (req) => {
   if (typeof id !== 'string' || !id.trim()) throw new HudError(400, 'id (or name) is required');
   return store.sessionStart({ id, name: typeof b.name === 'string' ? b.name : undefined, actor: typeof b.actor === 'string' ? b.actor : undefined, kind: b.kind, pid: Number.isFinite(b.pid) ? b.pid : undefined, run: typeof b.run === 'string' ? b.run : undefined, clientVersion: typeof b.clientVersion === 'string' ? b.clientVersion : undefined }, actorOf(req, b));
 });
-route('GET', '/api/reconnect', () => loadReconnectChecklist(dataDir, VERSION, clientsFromSessions(store.sessions().items)));
-route('POST', '/api/reconnect/ack', () => takeReconnectChecklist(dataDir, VERSION, clientsFromSessions(store.sessions().items)));
+function reconnectLiveClients() {
+  return clientsFromSessions(store.sessions().items.filter((item) => item.live));
+}
+route('GET', '/api/reconnect', () => loadReconnectChecklist(dataDir, VERSION, reconnectLiveClients()));
+route('POST', '/api/reconnect/ack', () => takeReconnectChecklist(dataDir, VERSION, reconnectLiveClients()));
 route('POST', '/api/sessions/:id/heartbeat', (_req, _res, [id]) => store.sessionHeartbeat(dec(id)));
 route('DELETE', '/api/sessions/:id', (req, _res, [id], q) => store.sessionEnd(dec(id), actorOf(req, undefined, q)));
 

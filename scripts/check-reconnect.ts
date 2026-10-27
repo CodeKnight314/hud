@@ -7,6 +7,7 @@ import {
   RECONNECT_DIALOG,
   acknowledgeReconnect,
   armReconnectNotice,
+  clientsFromSessions,
   loadReconnectChecklist,
   reconnectChecklist,
   stableVersion,
@@ -148,6 +149,25 @@ store.noteClientVersion('claude-9', '0.2.0');
 assert.equal(store.sessions().items[0].clientVersion, '0.1.3');
 store.stopBackups();
 store.flush();
+
+const keepDir = dir();
+const keepStore = new Store(join(keepDir, 'state.json'));
+keepStore.sessionStart({ id: 'claude-keep', name: 'claude-keep', kind: 'agent', actor: 'claude', clientVersion: '0.1.2' }, 'claude');
+const armedKeep = armReconnectNotice(keepDir, {
+  reason: 'quit-for-update', fromVersion: '0.1.2',
+  clients: clientsFromSessions(keepStore.sessions().items),
+});
+assert.deepEqual(armedKeep.clients.map((item) => item.id), ['claude-keep']);
+keepStore.sessionEnd('claude-keep', 'claude');
+const keptRows = keepStore.sessions().items;
+assert.equal(keptRows.some((item) => item.id === 'claude-keep' && item.live === false), true, 'an ended session stays listed through SESSION_KEEP_MS');
+const duringKeep = loadReconnectChecklist(keepDir, '0.1.3', clientsFromSessions(keptRows));
+assert.equal(duringKeep.steps[0]?.id, 'claude-keep', 'an ended row still inside SESSION_KEEP_MS does not erase its quit-snapshot step');
+const shownKeep = takeReconnectChecklist(keepDir, '0.1.3', clientsFromSessions(keptRows));
+assert.equal(shownKeep.pending, false);
+assert.equal(shownKeep.steps[0]?.id, 'claude-keep', 'ack uses the same live-only sessions and still returns the quit-snapshot step');
+keepStore.stopBackups();
+keepStore.flush();
 
 for (const path of roots) rmSync(path, { recursive: true, force: true });
 console.log('PASS reconnect checklist, version skew, one-shot notice and session client versions');

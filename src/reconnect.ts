@@ -224,8 +224,9 @@ export function takeReconnectChecklist(dataDir: string, serverVersion: string, l
   return { ...shown, pending: false };
 }
 
+/** Ended rows stay in `sessions()` for the keep window. They are not a new observation and must not reach the checklist. */
 export function clientsFromSessions(items: { id: string; name: string; actor: string; kind: string; clientVersion?: string; live: boolean }[]): ReconnectClient[] {
-  return items.map((item) => {
+  return items.filter((item) => item.live).map((item) => {
     const version = stableVersion(item.clientVersion);
     return {
       id: item.id,
@@ -233,7 +234,7 @@ export function clientsFromSessions(items: { id: string; name: string; actor: st
       actor: item.actor,
       kind: item.kind,
       ...(version ? { version } : {}),
-      live: item.live,
+      live: true,
     };
   });
 }
