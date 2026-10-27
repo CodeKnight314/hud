@@ -27,6 +27,7 @@ const suites = [
   'scripts/check-guide.ts',
   'scripts/check-release.mjs',
   'scripts/check-signing.mjs',
+  'scripts/check-guide-slices.ts',
   'scripts/check-connections.ts',
   'scripts/check-cliinstall.ts',
   'scripts/check-updates.ts',

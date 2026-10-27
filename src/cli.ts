@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { isElectron } from './assets.ts';
 import { guideText, quickstartText } from './docs.ts';
-import { coordinationDoc, GuideError } from './guide.ts';
+import { coordinationDoc, GuideError, renderGuide } from './guide.ts';
 import { guiLaunchEnv } from './electron-runtime.ts';
 import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
@@ -143,7 +143,8 @@ usage:
   hud arrange [--board b] [--frame f]
   hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]
                                      clear keeps the board/settings; rm deletes the board
-  hud guide [decentralized|lead]    full guide, or one coordination playbook (claim → FACT → wait → finish)
+  hud guide [decentralized|lead] [--section a] [--json]
+                                     full guide, one TOC section, or one playbook
   hud quickstart                     human quickstart (install, Settings, Attention, Tickets)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
   hud view list | show <name> | generate <name> --spec '<json>' [--write] [--display monitor]
@@ -175,7 +176,7 @@ examples:
 class UsageError extends Error {}
 
 const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export']);
-const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display', 'proposal', 'sha']);
+const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'sha', 'section', 'playbook']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'owner', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
@@ -279,7 +280,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   organize: { u: 'hud organize [board] [--auto on|off]', max: 1, f: ['board', 'auto', 'json'] },
   arrange: { u: 'hud arrange [ids...] [--board b] [--frame f] [--width n]', f: ['board', 'frame', 'width', 'json'] },
   board: { u: 'hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]', f: ['json'] },
-  guide: { u: 'hud guide [decentralized|lead|playbooks]', max: 1, f: [] },
+  guide: { u: 'hud guide [decentralized|lead|playbooks] [--section anchor] [--playbook name] [--json]', max: 1, f: ['section', 'playbook'] },
   quickstart: { u: 'hud quickstart', max: 0, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
   view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | approve <name> --proposal id --sha sha256 | validate <name> | rm <name>', max: 2, f: '*' },
@@ -1015,14 +1016,20 @@ async function main() {
       }
       throw new UsageError(`unknown board command "${sub}"`);
     }
-    case 'guide':
-      try {
-        const which = rest[0];
-        return raw(which ? coordinationDoc(which, config().port) : guideText(config().port));
-      } catch (e) {
-        if (e instanceof GuideError && e.status === 400) throw new UsageError(e.message);
-        throw e;
+    case 'guide': {
+      const section = typeof flags.section === 'string' ? flags.section : undefined;
+      const flagged = typeof flags.playbook === 'string' ? flags.playbook : undefined;
+      if (rest[0] && flagged && rest[0] !== flagged) throw new UsageError('pass one playbook');
+      const out = renderGuide(config().port, { section, playbook: flagged ?? rest[0], format: json ? 'json' : undefined });
+      if (out.status !== 200) {
+        const body = out.body as { error?: string; sections?: string[] };
+        const list = body.sections?.length ? `; sections: ${body.sections.join(', ')}` : '';
+        const message = `${body.error ?? 'bad guide request'}${list}`;
+        if (out.status === 400) throw new UsageError(message);
+        throw new Error(message);
       }
+      return raw(typeof out.body === 'string' ? out.body : JSON.stringify(out.body, null, 2));
+    }
     case 'quickstart':
       return raw(quickstartText(config().port));
     case 'views': {

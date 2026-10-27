@@ -201,6 +201,25 @@ ok(guide.includes('leave every published stable release unchanged'), 'GUIDE does
 ok(!/v0\.1\.0/.test(agents), 'AGENTS.md must not treat v0.1.0 as the standing release');
 ok(agents.includes('published stable releases unchanged'), 'AGENTS.md leaves published releases unchanged');
 
+/** The unscoped path stays the default. A doc that only shows `?section=` teaches that the filter is required. */
+function advertisesBareGuide(text, name) {
+  ok(/GET \/api\/guide(?!\?)/.test(text), `${name} advertises bare GET /api/guide (section is optional)`);
+  ok(/\bhud guide(?!\s+--section\b)/.test(text), `${name} advertises bare hud guide (section is optional)`);
+}
+advertisesBareGuide(readme, 'README.md');
+advertisesBareGuide(guide, 'GUIDE.md');
+advertisesBareGuide(agents, 'AGENTS.md');
+
+const toc = guideToc(guide).map((entry) => entry.anchor);
+const h2 = new Set(parseGuide(guide).filter((s) => s.level === 2).map((s) => s.anchor));
+ok(toc.length > 0, 'GUIDE table of contents is empty');
+for (const anchor of toc) ok(h2.has(anchor), `GUIDE TOC #${anchor} is not an h2 from parseGuide`);
+const catalog = renderGuide(7317, undefined, 'json');
+const listed = catalog.status === 200 && catalog.body && typeof catalog.body === 'object' && 'sections' in catalog.body
+  ? catalog.body.sections.map((s) => s.anchor)
+  : [];
+ok(listed.join('|') === toc.join('|'), `served guide sections are not the TOC\n  TOC: ${toc.join(' | ')}\n  API: ${listed.join(' | ')}`);
+
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);

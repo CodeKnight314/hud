@@ -11,7 +11,7 @@ import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
 import { asset, assetKeys, isPackaged } from './assets.ts';
 import { quickstartText } from './docs.ts';
-import { coordinationDoc, GuideError } from './guide.ts';
+import { coordinationDoc, GuideError, renderGuide } from './guide.ts';
 import { ROOT, config } from './config.ts';
 import { publicState, registerMonitoring } from './monitoring-server.ts';
 import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, textOf, writeAttachmentBytes } from './attachments.ts';
@@ -420,12 +420,8 @@ route('POST', '/api/shutdown', () => {
   return { ok: true, stopping: process.pid };
 });
 route('GET', '/api/guide', (_req, res, _m, q) => {
-  try {
-    send(res, 200, coordinationDoc(q.get('playbook'), PORT), 'text/markdown; charset=utf-8');
-  } catch (e) {
-    if (e instanceof GuideError) throw new HudError(e.status, e.message);
-    throw e;
-  }
+  const out = renderGuide(PORT, { section: q.get('section'), playbook: q.get('playbook'), format: q.get('format') });
+  send(res, out.status, out.body, out.type);
 });
 route('GET', '/api/monitor-templates', () => listMonitorTemplates());
 route('GET', '/api/quickstart', (_req, res) => send(res, 200, quickstartText(PORT), 'text/markdown; charset=utf-8'));

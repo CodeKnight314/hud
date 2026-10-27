@@ -54,8 +54,10 @@ hud mcp print generic  # a snippet for any other MCP client
 The packaged app installs its own `hud` command first (`hud cli install`, or **Install command** in Settings). A source
 checkout uses `node bin/hud.js` instead. On Linux, the AppImage and the `.deb` both register that command for MCP.
 
-Agents get the full surface, documented in the guide (`hud guide`, `hud://guide`, `GET /api/guide`). A session keeps its
-old MCP process after an upgrade — reconnect it (`/mcp`, `hud status`, or `hud mcp reconnect` for the checklist).
+Agents get the full surface, documented in the guide (`hud guide`, `hud://guide`, `GET /api/guide`).
+`hud guide --section <anchor>` and `GET /api/guide?section=<anchor>` return one table-of-contents slice; the bare
+commands still return the whole guide. A session keeps its old MCP process after an upgrade — reconnect it (`/mcp`,
+`hud status`, or `hud mcp reconnect` for the checklist).
 
 ## Coordination quickstart
 
