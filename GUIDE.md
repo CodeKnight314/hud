@@ -1095,8 +1095,10 @@ macOS arm64/x64 DMGs, a Windows x64 installer and Linux x64 AppImage/deb. This t
 (`package.json`, `appdir/package.json`, and both version fields in `package-lock.json`); Settings shows that same version.
 A signed macOS release is Developer ID–signed and notarized, and a signed Windows installer is Authenticode-signed;
 open those normally. An unsigned build (a release made without the signing secrets, or a package you build yourself)
-still needs a first-launch bypass: right-click the app and choose Open on macOS, and expect a SmartScreen prompt on
-Windows. Each OS builds its own artifact, and macOS signing only works on macOS. The secret names are in AGENTS.md.
+still needs a first-launch bypass. On macOS 15 and later Gatekeeper says it cannot verify the app: open
+**System Settings → Privacy & Security**, choose **Open Anyway** for hud, or run
+`xattr -dr com.apple.quarantine /Applications/hud.app` once the app is in `/Applications`. Older macOS accepts
+right-click → **Open**. Windows may show a SmartScreen prompt: choose **More info → Run anyway**. Each OS builds its own artifact, and macOS signing only works on macOS. The secret names are in AGENTS.md.
 `dist/` output is produced by `electron-builder` from `electron-builder.yml`; `npm run bundle` alone just rebuilds
 `bundle/hud.mjs` (the CLI + server) with esbuild.
 
