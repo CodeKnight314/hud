@@ -11,8 +11,7 @@ to loopback only, and keeps your data in a per-user directory. The contract is [
 
 ## Install
 
-Download the installer for your platform from the
-[latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
+Download the installer for your platform from the [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
 or Linux (x64 AppImage or `.deb`). A signed release opens normally: macOS is Developer ID–signed and notarized, and Windows
 is Authenticode-signed. Unsigned builds — a release produced without signing secrets, or a package built on your own
 machine — still need a first-launch bypass: on macOS, right-click the app and choose **Open**; Windows may show a
@@ -95,5 +94,4 @@ holds overview, activity, coordination and settings in one scroll.
 ## Security
 
 hud binds to `127.0.0.1`/`::1`, rejects foreign `Host`/`Origin` headers, and sends a strict CSP. Command monitors and `apply` run with your permissions, so review anything an agent asks hud to execute. Your board, backups and the
-single-server lock live in the per-user data directory (`~/Library/Application Support/hud` on macOS,
-`%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere).
+single-server lock live in the per-user data directory (`~/Library/Application Support/hud` on macOS, `%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere).
