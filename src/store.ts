@@ -1049,7 +1049,11 @@ export class Store extends EventEmitter {
 
   /** The browser actor `user` allows the command currently shown in Attention. Agents cannot approve their own shell. */
   approveCommand(id: string, revision: string, actor: string): Item {
-    if (actor !== 'user') throw new HudError(403, 'only the human at the board can approve a command monitor');
+    if (actor !== 'user') throw new HudError(403, 'only the browser at the board can approve a command monitor');
+    // The actor name is only trusted together with the board session it belongs to: an agent that
+    // reaches this far must not be able to stand in for a person who is not there.
+    const human = this.sessions().items.find((s) => s.kind === 'human' && s.live);
+    if (!human) throw new HudError(403, 'no live human session at the board; open or reload the board and approve again');
     const item = this.get(id);
     if (item.type !== 'monitor' || item.source?.kind !== 'command') throw new HudError(400, 'only a command monitor can be approved');
     this.normalizeCommandApproval(item);

@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, STATE_VERSION, Store } from '../src/store.ts';
+import { actorAllowed, boardCookie, cookieOf, isBoardRequest } from '../src/actor.ts';
 import { Engine } from '../src/engine.ts';
 import type { Activity, Item } from '../src/types.ts';
 
@@ -576,6 +577,10 @@ async function commandApprovalGate() {
     expectHudError(() => store.reviewAttention(forged.id, { action: 'review', revision: snoozedRevision }, USER), 400, 'review is not approval');
     expectHudError(() => store.approveCommand(forged.id, snoozedRevision, ACTOR), 403, 'agent approval');
     expectHudError(() => store.approveCommand(forged.id, snoozedRevision, HUMAN), 403, 'non-user approval');
+    // Naming yourself `user` is not enough: the browser also has to be present at the board.
+    expectHudError(() => store.approveCommand(forged.id, snoozedRevision, USER), 403, 'no live human session');
+    const board = store.sessionStart({ id: 'user', kind: 'human' }, USER);
+    assert.equal(board.live, true, 'the board page registers a live human session');
     expectHudError(() => store.approveCommand(forged.id, 'stale-revision', USER), 409, 'stale approval revision');
     await engine.runNow(forged.id).then(() => { throw new Error('runNow should reject a pending command'); }, (error: Error) => {
       assert.match(error.message, /approval/);
@@ -637,7 +642,20 @@ async function commandApprovalGate() {
   }
 }
 
+function boardIdentity() {
+  assert.equal(isBoardRequest(undefined, 'token'), false, 'no cookie is not the board');
+  assert.equal(isBoardRequest('other=1; hud_board=wrong', 'token'), false, 'a wrong token is not the board');
+  assert.equal(isBoardRequest('hud_board=token', 'other'), false, 'the token is per server process');
+  assert.equal(isBoardRequest('other=1; hud_board=token; more=2', 'token'), true, 'the board cookie wins among others');
+  assert.equal(cookieOf('a=1; b = 2 ', 'b'), '2', 'cookie values are trimmed');
+  assert.equal(actorAllowed('user', false), false, 'an agent cannot name itself user');
+  assert.equal(actorAllowed('user', true), true, 'the board page may act as the human');
+  assert.equal(actorAllowed('claude', false), true, 'any other caller keeps its own name');
+  assert.match(boardCookie('t0k'), /^hud_board=t0k; Path=\/; HttpOnly; SameSite=Strict$/, 'the board cookie is HttpOnly and strict');
+}
+
 async function main() {
+  boardIdentity();
   await migrationAndAttention();
   await commandApprovalGate();
   await attentionLifecycle();
@@ -646,7 +664,7 @@ async function main() {
   runsAndLinks();
   changesSinceChecks();
   stressReadModels();
-  console.log('PASS: supervision migration, attention lifecycle/revisions, reports/comments/fan-out validation, runs/links, incremental changes, and 20-run/100-monitor/200-ticket read-model stress.');
+  console.log('PASS: supervision migration, board identity, attention lifecycle/revisions, reports/comments/fan-out validation, runs/links, incremental changes, and 20-run/100-monitor/200-ticket read-model stress.');
   console.log(`Scratch directories: ${roots.join(', ')}`);
 }
 
