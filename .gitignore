@@ -7,3 +7,6 @@ appdir/main.mjs
 .DS_Store
 *.log
 *.tmp
+*.p8
+*.p12
+*.pfx

@@ -15,9 +15,13 @@ directories:
 
 asar: false
 
-# No Developer ID in this project. electron-builder skips signing then, leaving Electron's
-# linker-only signature, which macOS treats as damaged once downloaded. Sign ad-hoc instead.
+# Unsigned macOS builds are ad-hoc signed in scripts/adhoc-sign.mjs so a download is not
+# reported as damaged. With CSC_LINK or CSC_NAME, electron-builder signs a Developer ID,
+# applies the hardened-runtime entitlements, and notarizes the app. scripts/notarize-dmg.mjs
+# then notarizes the DMG. Windows Authenticode uses WIN_CSC_LINK. Secrets are listed in
+# AGENTS.md; this repo does not contain certificates.
 afterPack: scripts/adhoc-sign.mjs
+afterAllArtifactBuild: scripts/notarize-dmg.mjs
 
 extraResources:
   # electron-builder's app-dir copy drops the manifest; place it ourselves into the app dir
@@ -53,15 +57,24 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
   target:
     - target: dmg
       arch: [arm64, x64]
-  # no Developer ID: scripts/adhoc-sign.mjs signs the app ad-hoc after packing (electron-builder alone only
-  # leaves Electron's linker signature). Hardened runtime and entitlements need a real identity + notarization,
-  # so they are deliberately not set.
+
+dmg:
+  # Signed when a Developer ID identity exists; otherwise electron-builder leaves the DMG unsigned.
+  sign: true
 
 win:
   icon: build/icon.png
+  signtoolOptions:
+    signingHashAlgorithms: [sha256]
+    rfc3161TimeStampServer: http://timestamp.digicert.com
   target:
     - target: nsis
       arch: [x64, arm64]

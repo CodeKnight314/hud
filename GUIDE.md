@@ -960,10 +960,12 @@ and the CLI + MCP server built into the same binary.
     npm run dist:linux # AppImage + deb
 
 Prebuilt downloads for the latest stable release are on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest):
-macOS arm64/x64 DMGs, Windows x64 installer and Linux x64 AppImage/deb. This tree's app version is 0.2.0
+macOS arm64/x64 DMGs, a Windows x64 installer and Linux x64 AppImage/deb. This tree's app version is 0.2.0
 (`package.json`, `appdir/package.json`, and both version fields in `package-lock.json`); Settings shows that same version.
-Release builds are unsigned and not notarized;
-macOS may show a first-launch warning. Each OS builds its own artifact, and macOS signing only works on macOS.
+A signed macOS release is Developer ID–signed and notarized, and a signed Windows installer is Authenticode-signed;
+open those normally. An unsigned build (a release made without the signing secrets, or a package you build yourself)
+still needs a first-launch bypass: right-click the app and choose Open on macOS, and expect a SmartScreen prompt on
+Windows. Each OS builds its own artifact, and macOS signing only works on macOS. The secret names are in AGENTS.md.
 `dist/` output is produced by `electron-builder` from `electron-builder.yml`; `npm run bundle` alone just rebuilds
 `bundle/hud.mjs` (the CLI + server) with esbuild.
 
@@ -1011,19 +1013,22 @@ The optional **Check when HUD opens** preference enables launch-time checks. The
 Version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual installer download.
 
 The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
-OS runners and upload seven-day workflow artifacts. A stable `vX.Y.Z` tag push runs the same four native build jobs
-after checking the tag against `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
-After every build and packaged-runtime check passes, CI gathers exactly five named installers (two macOS DMGs, the
-Windows installer, Linux AppImage and Linux `.deb`), validates them, writes `SHA256SUMS`, and creates a GitHub draft
-release. It does not publish the draft. The update checker ignores drafts and prereleases, so a release appears to
-users only after someone reviews and manually publishes it.
+OS runners and upload seven-day workflow artifacts. When the signing secrets in AGENTS.md are configured, the macOS
+DMGs are Developer ID–signed and notarized and the Windows installer is Authenticode-signed. When those secrets are
+absent, the same jobs publish unsigned installers and the macOS app is ad-hoc signed so it is not reported as damaged.
+A stable `vX.Y.Z` tag push runs the same four native build jobs after checking the tag against `package.json`,
+`appdir/package.json` and both version fields in `package-lock.json`. After every build, signature check and
+packaged-runtime check passes, CI gathers exactly five named installers (two macOS DMGs, the Windows installer, Linux
+AppImage and Linux `.deb`), validates them, writes `SHA256SUMS`, and creates a GitHub draft release. It does not
+publish the draft. The update checker ignores drafts and prereleases, so a release appears to users only after someone
+reviews and manually publishes it.
 
 For v0.2.0, leave every published stable release unchanged. The four version fields already agree at 0.2.0.
 Merging does not create a tag or a GitHub release.
 
 1. A person pushes the stable tag `v0.2.0`. CI verifies that tag against the four version fields, then runs the four
    native build jobs.
-2. After every build and packaged-runtime check passes, CI gathers the five installers, validates them, writes
+2. After every build, signature check and packaged-runtime check passes, CI gathers the five installers, validates them, writes
    `SHA256SUMS`, and creates a draft. It does not publish the draft.
 3. Review the draft's five installers, `SHA256SUMS` and generated notes, then publish it manually. Only then can Settings
    find 0.2.0 as the latest stable release.
