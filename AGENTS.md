@@ -58,6 +58,7 @@ scripts/dev.mjs    dev launcher: Electron against the repo, scratch port + scrat
 scripts/icons.mjs  generates build/icon.svg + icon.png, tray PNGs, web favicons from one geometry
 scripts/adhoc-sign.mjs  electron-builder afterPack hook: ad-hoc signs unsigned macOS builds so downloads launch
 scripts/check.mjs               JavaScript syntax checks and all pure regression suites (`npm test`)
+scripts/check-release.mjs       v0.2.0 version agreement, installer checksums, and the manual draft-release workflow
 scripts/check-packaged.mjs      packaged runtime smoke test using a temporary data dir and loopback port
 scripts/check-layout.ts          fixed 1600×900 layout, UUID, persistence and migration checks
 scripts/check-monitoring.ts      metric provenance/freshness, native views and dashboard transaction checks
@@ -277,9 +278,11 @@ artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. O
 exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
 release. A person must review and publish that draft; Settings ignores drafts and prereleases.
 
-For a future release, leave published stable releases unchanged, bump `package.json` and `appdir/package.json`, update `package-lock.json`,
-push the matching `vX.Y.Z` tag, review the generated draft and publish it manually. Branch pushes and manual workflow
-dispatch build temporary artifacts but do not create a release.
+The package version is 0.2.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+Settings reads that version. Leave published stable releases unchanged. A person publishes 0.2.0 by pushing
+the tag `v0.2.0`, reviewing the draft CI creates (five installers plus `SHA256SUMS`), and publishing that draft by hand.
+Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual
+workflow dispatch build temporary artifacts but do not create a release.
 
 ## Running & deploying
 The runtime the user actually uses is the **packaged desktop app** (`dist/mac-arm64/hud.app` on macOS). It owns the
