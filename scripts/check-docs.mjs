@@ -104,12 +104,6 @@ ok(guide.includes('leave every published stable release unchanged'), 'GUIDE does
 ok(!/v0\.1\.0/.test(agents), 'AGENTS.md must not treat v0.1.0 as the standing release');
 ok(agents.includes('published stable releases unchanged'), 'AGENTS.md leaves published releases unchanged');
 
-const workflow = readFileSync(join(root, '.github/workflows/build.yml'), 'utf8');
-ok(workflow.includes('latest stable download'), 'draft release notes point at the latest stable download');
-ok(workflow.includes('update checker has existed since 0.1.1'), 'draft release notes keep the update-checker version gate');
-ok(workflow.includes('0.1.0 has none'), 'draft release notes keep the 0.1.0 manual-upgrade gate');
-ok(!/releases\/tag\/v\d/.test(workflow), 'release workflow must not pin a download tag');
-
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);

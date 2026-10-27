@@ -144,4 +144,4 @@ jobs:
       - name: Validate installers and write checksums
         run: node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"
       - name: Create GitHub draft release
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "Unsigned installers. See the README for the latest stable download and install steps. The update checker has existed since 0.1.1; version 0.1.0 has none, so that upgrade is a manual installer download." --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "Unsigned installers. See the README and GUIDE for install and upgrade instructions." --generate-notes
