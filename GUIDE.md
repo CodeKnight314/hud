@@ -243,12 +243,15 @@ own:
 The queue says *what* to do; the shared context records *what was learned*. It is an append-only log scoped to a
 **run**, a **project** or a **board**, and agents read only what changed since their last read.
 
-    hud_context {action: "publish", scope: "run:EGO-1", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
-    hud_context {action: "read", scope: "run:EGO-1", since?, kind?, limit?, mark?}
+    hud_context {action: "publish", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
+    hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", since?, kind?, limit?, mark?}
     hud_context {action: "scopes", board?}
 
-- **Scopes:** `run:<ticket id>` requires a ticket tagged `run`; `project:<project id>`; `board:<board id>`. The board is
-  derived from the scope, so entries never drift across boards.
+- **Scopes:** `run:<uuid>` is `run:` plus the ticket's `id` from `hud_get` (a uuid; the example above is the shape), and
+  that ticket must be tagged `run`. `project:<id>` is the project item's id. `board:<board id>` is the board id
+  (`board:main`). Claim, link, wait and finish take a `KEY-n` ident such as `EGO-1`; the scope takes the uuid. The board is
+  derived from the scope, so entries never drift across boards. A lead FACT on `run:<uuid>` is not included in a
+  `board:main` read — list scopes, or `hud_get` the run ticket, and read `run:<uuid>`.
 - **Kinds:** `FACT` is a finding supported by observations; `FAIL` is an approach or hypothesis that was contradicted,
   with the conditions under which it failed; `SUMMARY` is the state of a finished or handed-off piece of work;
   `STATUS` is a short progress note. Facts and failures are what let a peer skip a dead end.
@@ -270,7 +273,7 @@ primary writers. Context entries never appear in `/api/state` or item SSE payloa
 ### Attachments
 Publish a file by reference so peers can inspect it without pasting it into the context log.
 
-    hud_attach {action: "add", path: "/abs/notes.md", scope: "run:EGO-1", baseId?, baseSha256?}
+    hud_attach {action: "add", path: "/abs/notes.md", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", baseId?, baseSha256?}
     hud_attach {action: "list", board?, scope?}
     hud_attach {action: "get" | "content" | "expand" | "delete", id}
     hud_attach {action: "apply", id, target: "/abs/notes.md", expectedSha256?, mode?: "overwrite" | "create"}
@@ -286,8 +289,8 @@ Publish a file by reference so peers can inspect it without pasting it into the 
 - **References are protected.** An attachment referenced by a context entry cannot be deleted without `force: true`.
 
 ### Waiting for peers
-    hud_wait {scope?: "run:EGO-1", ticket?: "EGO-3", sessions?: ["agent-b"], kinds?, since?, timeoutSeconds?, includeSelf?}
-    hud wait --scope run:EGO-1 --timeout 20
+    hud_wait {scope?: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", ticket?: "EGO-3", sessions?: ["agent-b"], kinds?, since?, timeoutSeconds?, includeSelf?}
+    hud wait --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80 --timeout 20
 
 `hud_wait` blocks (up to 25 s) and returns on the first matching event instead of sleeping and polling. Give it at
 least one selector — a scope, a ticket or peer session names — so unrelated activity never wakes it.

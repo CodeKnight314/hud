@@ -12,7 +12,12 @@ Follow one playbook. Fetch it on its own, then do what it says:
 Decentralized: every agent pulls ready work. There is no planner.
 Lead: one agent creates the run, the links and the assignees. Everyone else runs the worker loop in that playbook.
 
-Use decentralized when the board has no ticket tagged `run` and no FACT that names a lead. Use lead when you are splitting the work, or when a FACT already names a `run:` scope.
+A lead FACT is stored on `run:<uuid>`, so a read of `board:main` does not show it. Look first:
+
+    hud_tickets {tag: "run"}
+    hud_context {action: "scopes"}
+
+Then `hud_get` the run ticket and read `run:` plus its `id` (a uuid, for example `run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80`). A FACT there, or any ticket tagged `run`, means follow `hud guide lead`. Follow `hud guide decentralized` only when that lookup is empty. Both playbooks start with the same lookup.
 
 Each playbook is claim, publish a FACT, wait, finish. The same page covers an expired lease, a blocked ticket, and an assignee conflict.
 
@@ -24,7 +29,29 @@ Every agent pulls from the same queue. Run the four steps in order. Recovery for
 
 Your actor is `HUD_ACTOR`, or the MCP client name (`claude`, `codex`, `cursor`, and so on). MCP registers your session on connect and heartbeats every 20 seconds, which renews a lease. On the CLI, renew with `hud session heartbeat` or by claiming the same ticket again. One session holds one unfinished claim.
 
-Publish every entry on one shared scope: `board:<board id>` from the queue header. On the default board that is `board:main`. When a peer's FACT names a scope, keep using that scope. A scope takes the item `id` from `hud_get` (`run:<id>`, `project:<id>`, `board:<board id>`). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
+A lead FACT lives on `run:<uuid>` (the run ticket's `id` from `hud_get`). Reading `board:main` does not return it. Do step 0 before you claim. When step 0 finds no run, publish on `board:<board id>` from the queue header (`board:main` on the default board). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
+
+### 0. Read a lead FACT
+
+```
+hud_tickets {tag: "run"}
+hud_context {action: "scopes"}
+hud_get {id: "EGO-1"}
+hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
+```
+
+```
+hud tickets --tag run
+hud context scopes
+hud show EGO-1
+hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
+```
+
+`scopes` prints every scope that already has entries, including `run:<uuid>`. `hud_tickets {tag: "run"}` finds the run ticket before the first publish. `hud_get` / `hud show` returns its `id`. Read `run:` plus that uuid. The uuid in the example is the shape of `id`.
+
+A FACT on that scope means a lead is running this board. Stop this playbook and follow `hud guide lead` from the worker loop, on that same scope. An empty read of a ticket tagged `run` means the same: join the lead playbook and publish on `run:<uuid>`.
+
+When there is no ticket tagged `run` and `scopes` lists no `run:` scope, continue at step 1 and use `board:main`.
 
 ### 1. Claim
 
@@ -183,7 +210,7 @@ hud show EGO-1
 hud claim EGO-1 --start
 ```
 
-`hud_get` / `hud show` prints `id`. The scope for every later entry is `run:<id>`. On a fresh project the tickets are EGO-1, then EGO-2, then EGO-3. Use the ident each create call prints when the project already has tickets.
+`hud_get` / `hud show` prints `id`, a uuid such as `3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80`. The scope for every later entry is `run:<uuid>`. On a fresh project the idents are EGO-1, then EGO-2, then EGO-3. Use the ident each create call prints when the project already has tickets.
 
 Add the children. `parent` groups them under the run. `blockedBy` is the dependency. `assignee` is the worker's actor, the same string hud records on their mutations.
 
@@ -206,27 +233,27 @@ Leave a ticket with no fixed owner unassigned so any worker can pull it. The lea
 The FACT is the plan. Include the scope string, who owns what, and which tickets wait.
 
 ```
-hud_context {action: "read", scope: "run:<id>"}
-hud_context {action: "publish", scope: "run:<id>", kind: "FACT", text: "Lead is <actor>. Scope is run:<id>. EGO-2 parses trailing commas and is free to pull. EGO-3 is blocked by EGO-2 and assigned to claude.", refs: ["EGO-1", "EGO-2", "EGO-3"]}
+hud_context {action: "read", scope: "run:<uuid>"}
+hud_context {action: "publish", scope: "run:<uuid>", kind: "FACT", text: "Lead is <actor>. Scope is run:<uuid>. EGO-2 parses trailing commas and is free to pull. EGO-3 is blocked by EGO-2 and assigned to claude.", refs: ["EGO-1", "EGO-2", "EGO-3"]}
 ```
 
 ```
-hud context read --scope run:<id>
-hud context publish --scope run:<id> --kind FACT --text "Lead is <actor>. Scope is run:<id>. EGO-2 is free to pull. EGO-3 is blocked by EGO-2 and assigned to claude." --refs EGO-1,EGO-2,EGO-3
+hud context read --scope run:<uuid>
+hud context publish --scope run:<uuid> --kind FACT --text "Lead is <actor>. Scope is run:<uuid>. EGO-2 is free to pull. EGO-3 is blocked by EGO-2 and assigned to claude." --refs EGO-1,EGO-2,EGO-3
 ```
 
-Replace `<id>` with the run ticket's `id` and `<actor>` with your actor. Workers copy that scope.
+Replace `<uuid>` with the run ticket's `id` from `hud_get` and `<actor>` with your actor. Workers copy that scope.
 
 #### 3. Wait
 
 Wait on the run scope for worker entries. `since` is the `cursor` from the read.
 
 ```
-hud_wait {scope: "run:<id>", since: 14, timeoutSeconds: 20}
+hud_wait {scope: "run:<uuid>", since: 14, timeoutSeconds: 20}
 ```
 
 ```
-hud wait --scope run:<id> --since 14 --timeout 20
+hud wait --scope run:<uuid> --since 14 --timeout 20
 ```
 
 On `no matching event within 20s`, read again and wait with the new cursor. A worker's SUMMARY on their ticket means that child is done. A blocked row clears when its blocker finishes.
@@ -236,18 +263,36 @@ On `no matching event within 20s`, read again and wait with the new cursor. A wo
 When the children are done, publish the run outcome and finish the run ticket. Finish releases the lead's claim.
 
 ```
-hud_context {action: "publish", scope: "run:<id>", kind: "SUMMARY", text: "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed", refs: ["EGO-1"]}
+hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed", refs: ["EGO-1"]}
 hud_finish {ids: ["EGO-1"], note: "run complete", organize: false}
 ```
 
 ```
-hud context publish --scope run:<id> --kind SUMMARY --text "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed" --refs EGO-1
+hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed" --refs EGO-1
 hud finish EGO-1 --note "run complete" --no-organize
 ```
 
 ### Worker loop
 
-A FACT that names a lead and a `run:` scope means you are a worker. Copy that scope. Run these four steps. The failure modes below are part of this loop.
+The failure modes below are part of this loop. Start by reading the lead FACT. It is not on `board:main`.
+
+#### 0. Read the lead FACT
+
+```
+hud_tickets {tag: "run"}
+hud_context {action: "scopes"}
+hud_get {id: "EGO-1"}
+hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
+```
+
+```
+hud tickets --tag run
+hud context scopes
+hud show EGO-1
+hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
+```
+
+`EGO-1` is the ident from `hud_tickets` or the queue. The scope is `run:` plus the `id` uuid from `hud_get` / `hud show`. `scopes` prints that scope once the lead has published. Copy the scope string from the lead FACT when the text names one. Every later read and publish in this loop uses that scope.
 
 #### 1. Claim
 
@@ -266,13 +311,13 @@ Take a ready row whose Owner is blank or your actor. Leave rows owned by someone
 #### 2. Publish a FACT
 
 ```
-hud_context {action: "read", scope: "run:<id>"}
-hud_context {action: "publish", scope: "run:<id>", kind: "FACT", text: "EGO-2: trailing commas parse on tests/parse.json; quoted commas not rechecked", refs: ["EGO-2"]}
+hud_context {action: "read", scope: "run:<uuid>"}
+hud_context {action: "publish", scope: "run:<uuid>", kind: "FACT", text: "EGO-2: trailing commas parse on tests/parse.json; quoted commas not rechecked", refs: ["EGO-2"]}
 ```
 
 ```
-hud context read --scope run:<id>
-hud context publish --scope run:<id> --kind FACT --text "EGO-2: trailing commas parse on tests/parse.json; quoted commas not rechecked" --refs EGO-2
+hud context read --scope run:<uuid>
+hud context publish --scope run:<uuid> --kind FACT --text "EGO-2: trailing commas parse on tests/parse.json; quoted commas not rechecked" --refs EGO-2
 ```
 
 A contradicted approach is `kind: "FAIL"` with the conditions. Hold the read's `cursor`.
@@ -282,11 +327,11 @@ A contradicted approach is `kind: "FAIL"` with the conditions. Hold the read's `
 Wait when you need a peer's entry or a blocker to finish. When the ticket is otherwise ready to close, go to finish.
 
 ```
-hud_wait {scope: "run:<id>", since: 14, timeoutSeconds: 20}
+hud_wait {scope: "run:<uuid>", since: 14, timeoutSeconds: 20}
 ```
 
 ```
-hud wait --scope run:<id> --since 14 --timeout 20
+hud wait --scope run:<uuid> --since 14 --timeout 20
 ```
 
 `no matching event within 20s`: read again, then wait with the new cursor. To watch the blocker itself, `hud_wait {ticket: "EGO-2", timeoutSeconds: 20}`.
@@ -294,12 +339,12 @@ hud wait --scope run:<id> --since 14 --timeout 20
 #### 4. Finish
 
 ```
-hud_context {action: "publish", scope: "run:<id>", kind: "SUMMARY", text: "EGO-2 done: trailing commas kept; quoted commas still open", refs: ["EGO-2"]}
+hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-2 done: trailing commas kept; quoted commas still open", refs: ["EGO-2"]}
 hud_finish {ids: ["EGO-2"], note: "done", organize: false}
 ```
 
 ```
-hud context publish --scope run:<id> --kind SUMMARY --text "EGO-2 done: trailing commas kept; quoted commas still open" --refs EGO-2
+hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-2 done: trailing commas kept; quoted commas still open" --refs EGO-2
 hud finish EGO-2 --note "done" --no-organize
 ```
 

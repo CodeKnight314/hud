@@ -502,7 +502,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['publish', 'read', 'scopes'], description: 'default: read' },
-        scope: { type: 'string', description: 'run:<ticket>, project:<project> or board:<board>' },
+        scope: { type: 'string', description: 'run:<uuid> (ticket id from hud_get, tagged run), project:<id> or board:<board id>' },
         kind: { type: 'string', enum: ['FACT', 'FAIL', 'SUMMARY', 'STATUS'], description: 'publish: entry type; read: comma-separated filter' },
         text: { type: 'string', description: 'publish: the finding or correction (≤4 KB)' },
         data: { type: 'object', description: 'publish: optional structured payload (≤8 KB)' },
@@ -526,7 +526,7 @@ const TOOLS = [
         action: { type: 'string', enum: ['add', 'list', 'get', 'content', 'expand', 'apply', 'delete'] },
         id: { type: 'string', description: 'attachment id (get/content/expand/apply/delete)' },
         board: { type: 'string', description: 'add/list: board (default main)' },
-        scope: { type: 'string', description: 'add/list: run:<ticket>, project:<project> or board:<board>' },
+        scope: { type: 'string', description: 'add/list: run:<uuid> (ticket id from hud_get, tagged run), project:<id> or board:<board id>' },
         name: { type: 'string', description: 'add: file name (default: basename of path)' },
         kind: { type: 'string', enum: ['file', 'text', 'diff'] },
         mime: { type: 'string' },
@@ -549,7 +549,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        scope: { type: 'string', description: 'run:<ticket>, project:<project> or board:<board>' },
+        scope: { type: 'string', description: 'run:<uuid> (ticket id from hud_get, tagged run), project:<id> or board:<board id>' },
         ticket: { type: 'string', description: 'wake on this ticket\'s claim changes, refs or item updates' },
         sessions: { type: 'array', items: { type: 'string' }, description: 'wake when one of these sessions ends' },
         kinds: { type: 'array', items: { type: 'string' }, description: 'context | claim | session | item (default: context, claim, session)' },
