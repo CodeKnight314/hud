@@ -7,7 +7,7 @@ import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
 import type { ClientId } from '../src/mcpinstall.ts';
-import { armReconnectNotice, loadReconnectChecklist, takeReconnectChecklist } from '../src/reconnect.ts';
+import { armReconnectNotice, loadReconnectChecklist } from '../src/reconnect.ts';
 import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
@@ -17,6 +17,7 @@ export function desktopSettings(options: {
   quitForUpdate?: () => Promise<void>;
   connectedClients?: () => Promise<ReconnectClient[]>;
   reconnectSource?: () => Promise<ReconnectChecklist | null>;
+  ackReconnect?: () => Promise<unknown>;
   connectionService?: ConnectionService; updateChecker?: UpdateChecker;
   openExternal?: (url: string) => Promise<unknown>; copyText?: (text: string) => void; visible?: boolean;
 }) {
@@ -120,8 +121,8 @@ export function desktopSettings(options: {
       return;
     }
     if (action === 'reconnect-ack') {
-      const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
-      takeReconnectChecklist(options.dataDir, options.version, clients);
+      if (!options.ackReconnect) throw new Error('Reconnect acknowledgement needs the running HUD server.');
+      await options.ackReconnect();
       return state();
     }
     if (!['install-command', 'connect', 'disconnect'].includes(action)) throw new Error('Unknown Settings action');

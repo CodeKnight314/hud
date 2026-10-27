@@ -133,7 +133,7 @@ async function makeSettingsBundle() {
     `export { ConnectionService } from ${JSON.stringify(connectionsPath)};`,
     `export { UpdateChecker, installerName } from ${JSON.stringify(updatesPath)};`,
     `export { cliInfo, refreshInstalledCli } from ${JSON.stringify(join(repo, 'src', 'cliinstall.ts'))};`,
-    `export { armReconnectNotice } from ${JSON.stringify(join(repo, 'src', 'reconnect.ts'))};`,
+    `export { armReconnectNotice, acknowledgeReconnect } from ${JSON.stringify(join(repo, 'src', 'reconnect.ts'))};`,
   ].join('\n'));
   await build({
     entryPoints: [entry], bundle: true, platform: 'node', format: 'esm', target: 'node23',
@@ -179,7 +179,7 @@ async function run() {
     contents.on('did-fail-load', (_loadEvent, code, description, url) => loadFailures.push(`${code} ${description} ${url}`));
   });
 
-  const { desktopSettings, ConnectionService, UpdateChecker, installerName, cliInfo, refreshInstalledCli, armReconnectNotice } = await makeSettingsBundle();
+  const { desktopSettings, ConnectionService, UpdateChecker, installerName, cliInfo, refreshInstalledCli, armReconnectNotice, acknowledgeReconnect } = await makeSettingsBundle();
   const clientEnv = { PATH: fakeClients };
   const claudeConfig = join(clientHome, '.claude.json');
   const originalClaudeBytes = writeJson(claudeConfig, {
@@ -202,6 +202,7 @@ async function run() {
   const externalUrls = [];
   const copied = [];
   let quits = 0;
+  let reconnectAcks = 0;
   const matchingName = installerName('0.1.2', 'darwin', 'arm64');
   assert.equal(matchingName, 'hud-0.1.2-mac-arm64.dmg', 'fixed supported fixture installer name');
   const releaseUrl = `https://github.com/CodeKnight314/hud/releases/tag/v0.1.2`;
@@ -223,6 +224,11 @@ async function run() {
     openExternal: async (url) => { externalUrls.push(url); },
     copyText: (text) => { copied.push(text); },
     quitForUpdate: async () => { quits++; },
+    connectedClients: async () => [
+      { id: 'claude-live', name: 'claude-live', actor: 'claude', kind: 'agent', version: '0.1.0', live: true },
+      { id: 'claude-ended', name: 'claude-ended', actor: 'claude', kind: 'agent', version: '0.1.0', live: false },
+    ],
+    ackReconnect: async () => { reconnectAcks++; acknowledgeReconnect(dataDir); },
     visible: false,
   });
 
@@ -325,6 +331,7 @@ async function run() {
   await waitText(primaryWindow, '#action-status', 'Reconnect checklist dismissed.');
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('reconnect-card')?.hidden === true`), 'dismissed reconnect checklist');
   assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'dismiss clears the one-shot reminder');
+  assert.equal(reconnectAcks, 1, 'Settings dismisses through the server ack path');
   await click(primaryWindow, '#check-updates');
   await waitText(primaryWindow, '#update-status-text', 'Update available');
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('download-update')?.disabled === false`), 'matching installer readiness');
@@ -367,7 +374,7 @@ async function run() {
   const quitNotice = JSON.parse(readFileSync(join(dataDir, 'reconnect.json'), 'utf8'));
   assert.equal(quitNotice.reason, 'quit-for-update');
   assert.equal(quitNotice.fromVersion, '0.1.1');
-  assert.deepEqual(quitNotice.clients, []);
+  assert.deepEqual(quitNotice.clients.map((item) => item.id), ['claude-live'], 'quit snapshot omits sessions that were already ended');
 
   // A second page with the same URL and preload cannot use the main Settings window's IPC identity.
   const settingsUrl = pathToFileURL(join(repo, 'web', 'settings.html')).href;

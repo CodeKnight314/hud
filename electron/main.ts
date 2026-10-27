@@ -8,7 +8,7 @@ import { isElectronNodeMode, primeLoginEnv } from '../src/electron-runtime.ts';
 import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
 import { refreshInstalledCli } from '../src/cliinstall.ts';
-import { clientsFromSessions } from '../src/reconnect.ts';
+import { RECONNECT_DIALOG, clientsFromSessions } from '../src/reconnect.ts';
 import { prepareBackendUpdate, stopBackendForUpdate } from '../src/updates.ts';
 import { desktopSettings } from './settings.ts';
 
@@ -85,9 +85,10 @@ const settings = desktopSettings({
     app.quit();
   },
   connectedClients: async () => {
-    try { return clientsFromSessions((await new Hud({ actor: 'user', autostart: false }).sessions()).items); }
+    try { return clientsFromSessions((await new Hud({ actor: 'user', autostart: false }).sessions()).items.filter((item) => item.live)); }
     catch { return []; }
   },
+  ackReconnect: async () => new Hud({ actor: 'user', autostart: false }).reconnectAck(),
   reconnectSource: async () => {
     try {
       const client = new Hud({ actor: 'user', autostart: false });
@@ -256,14 +257,14 @@ async function offerClientReconnect(): Promise<void> {
     if (!offer.pending) return;
     const { response } = await dialog.showMessageBox({
       type: 'info',
-      buttons: ['Dismiss', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
+      buttons: [...RECONNECT_DIALOG.buttons],
+      defaultId: RECONNECT_DIALOG.defaultId,
+      cancelId: RECONNECT_DIALOG.cancelId,
       title: 'Reconnect MCP clients',
       message: `hud v${offer.serverVersion} is running. MCP clients keep their previous process until you reconnect them.`,
       detail: offer.text,
     });
-    if (response === 0) await hud.reconnectAck();
+    if (response === RECONNECT_DIALOG.dismissResponse) await hud.reconnectAck();
   } catch (error) {
     console.error(`[hud] reconnect checklist: ${(error as Error).message}`);
   }

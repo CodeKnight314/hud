@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/store.ts';
 import {
+  RECONNECT_DIALOG,
   acknowledgeReconnect,
   armReconnectNotice,
   loadReconnectChecklist,
@@ -26,7 +27,7 @@ const client = (patch: Partial<ReconnectClient> = {}): ReconnectClient => ({
 
 assert.equal(stableVersion('0.2.0'), '0.2.0');
 assert.equal(stableVersion(' 0.1.3 '), '0.1.3');
-for (const value of ['0.1', 'v0.1.0', '0.1.2-beta', '01.2.3', 'newer', '', null, 1]) assert.equal(stableVersion(value), null);
+for (const value of ['0.0.0', '0.1', 'v0.1.0', '0.1.2-beta', '01.2.3', 'newer', '', null, 1]) assert.equal(stableVersion(value), null);
 
 const matched = reconnectChecklist('0.1.3', [client({ version: '0.1.3' })], null);
 assert.equal(matched.pending, false);
@@ -73,9 +74,19 @@ assert.equal(generic.skewed, false);
 assert.deepEqual(generic.steps.map((step) => step.actor), ['claude', 'codex', 'opencode']);
 assert.match(generic.steps[0].instruction, /\/mcp/);
 
-const resumed = reconnectChecklist('0.1.3', [client({ id: 'claude-4', name: 'claude-4', actor: 'claude-4', kind: 'unknown', version: undefined })], notice);
-assert.equal(resumed.steps.some((step) => step.id === 'claude-4'), true, 'a versionless session resumed after the update is listed');
-assert.match(resumed.steps.find((step) => step.id === 'claude-4')!.instruction, /\/mcp/);
+const resumed = reconnectChecklist('0.1.3', [
+  client({ id: 'claude-4', name: 'claude-4', actor: 'claude-4', kind: 'unknown', version: undefined }),
+  client({ id: 'zero', name: 'zero', actor: 'claude', version: '0.0.0' }),
+], notice);
+assert.equal(resumed.steps.some((step) => step.id === 'claude-4' || step.id === 'zero'), false, 'a missing or 0.0.0 client version is not skew');
+const placeholder = reconnectChecklist('0.1.3', [client({ id: 'zero', name: 'zero', actor: 'claude', version: '0.0.0' })], null);
+assert.equal(placeholder.skewed, false);
+assert.equal(placeholder.steps.length, 0);
+const ended = reconnectChecklist('0.1.3', [], { reason: 'quit-for-update', fromVersion: '0.1.0', at: 2, clients: [client({ id: 'ended', name: 'ended', actor: 'claude', version: '0.1.0', live: false })] });
+assert.equal(ended.steps.some((step) => step.id === 'ended'), false, 'an ended quit snapshot is not resurrected');
+assert.equal(RECONNECT_DIALOG.buttons[RECONNECT_DIALOG.defaultId], 'Later');
+assert.equal(RECONNECT_DIALOG.buttons[RECONNECT_DIALOG.cancelId], 'Later');
+assert.equal(RECONNECT_DIALOG.buttons[RECONNECT_DIALOG.dismissResponse], 'Dismiss');
 
 const data = dir();
 assert.equal(loadReconnectChecklist(data, '0.1.3').pending, false);
@@ -88,15 +99,19 @@ assert.equal(armed.pending, true);
 assert.equal(armed.reason, 'update');
 assert.equal(armed.steps.length, 3);
 
-armReconnectNotice(data, { reason: 'quit-for-update', fromVersion: '0.1.3', clients: [client({ version: '0.1.3' })] });
+const armedClients = armReconnectNotice(data, {
+  reason: 'quit-for-update', fromVersion: '0.1.3',
+  clients: [client({ id: 'live-one', name: 'live-one', version: '0.1.3' }), client({ id: 'ended-one', name: 'ended-one', version: '0.1.0', live: false })],
+});
+assert.deepEqual(armedClients.clients.map((item) => item.id), ['live-one'], 'quit snapshots keep only sessions that were live');
 syncServerVersion(data, '0.1.4');
 const kept = loadReconnectChecklist(data, '0.1.4');
 assert.equal(kept.reason, 'quit-for-update');
-assert.equal(kept.steps[0].id, 'claude-9', 'a quit snapshot is kept when the server version changes');
+assert.equal(kept.steps[0].id, 'live-one', 'a quit snapshot is kept when the server version changes');
 
 const shown = takeReconnectChecklist(data, '0.1.4');
 assert.equal(shown.pending, false);
-assert.equal(shown.steps[0].id, 'claude-9', 'dismissing still returns the checklist that was shown');
+assert.equal(shown.steps[0].id, 'live-one', 'dismissing still returns the checklist that was shown');
 assert.equal(loadReconnectChecklist(data, '0.1.4').pending, false);
 assert.equal(existsSync(join(data, 'reconnect.json')), false);
 takeReconnectChecklist(data, '0.1.4');
@@ -123,7 +138,10 @@ assert.equal(started.clientVersion, '0.1.2');
 store.noteClientVersion('claude-9', '0.1.3');
 assert.equal(store.sessions().items[0].clientVersion, '0.1.3');
 store.noteClientVersion('claude-9', 'beta');
+store.noteClientVersion('claude-9', '0.0.0');
 assert.equal(store.sessions().items[0].clientVersion, '0.1.3');
+const placeholderSession = store.sessionStart({ id: 'placeholder', kind: 'agent', clientVersion: '0.0.0' }, 'claude');
+assert.equal(placeholderSession.clientVersion, undefined);
 store.noteClientVersion('missing session', '0.1.0');
 store.sessionEnd('claude-9', 'claude');
 store.noteClientVersion('claude-9', '0.2.0');

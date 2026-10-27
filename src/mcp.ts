@@ -11,6 +11,7 @@ import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
 import { formatMonitorTemplateList } from './monitor-templates.ts';
+import { stableVersion } from './reconnect.ts';
 import { line } from './summary.ts';
 import type { Item, QueueResult } from './types.ts';
 import { formatAgentViewReview, VIEW_REVIEW_MAX_CHARS } from './views.ts';
@@ -1466,7 +1467,8 @@ let presenceRegistered = false;
 async function registerPresence() {
   if (presenceRegistered) return;
   presenceRegistered = true;
-  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid, clientVersion: VERSION }); } catch {}
+  const clientVersion = stableVersion(VERSION);
+  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid, ...(clientVersion ? { clientVersion } : {}) }); } catch {}
   heartbeatTimer = setInterval(() => { baseHud.sessionHeartbeat(sessionName()).catch(() => {}); }, 20_000);
   heartbeatTimer.unref();
 }

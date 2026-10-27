@@ -1108,8 +1108,9 @@ Settings → **Updates** shows the installed version and can check GitHub for th
 matching installer for the app's OS and architecture when that asset exists; **Download update** opens it in the browser,
 and **View release** opens the release page. HUD never installs an update automatically: download the installer, quit
 HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board, records the
-MCP clients connected at quit, and stops the background server even when Keep server running after quit is enabled.
-The next hud build compares its version with those clients (and with any client that reports `x-hud-client-version`).
+MCP clients that were live at quit, and stops the background server even when Keep server running after quit is enabled.
+The next hud build compares its version with those clients and with any later `x-hud-client-version`. A missing version
+or `0.0.0` is not a different build.
 When the server is newer, the app shows a one-shot reconnect checklist and `hud status` prints it. Dismiss it in
 Settings → Updates, or run `hud mcp reconnect` (add `--dry-run` to print it without clearing the reminder). In Claude
 Code the step is `/mcp`, then reconnect hud. Restart Codex and OpenCode so they respawn the MCP process. A client

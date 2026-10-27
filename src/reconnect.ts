@@ -42,9 +42,12 @@ const VERSION_FILE = 'server-version';
 export function stableVersion(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const version = value.trim();
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)) return null;
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || version === '0.0.0') return null;
   return version.split('.').every((part) => Number.isSafeInteger(Number(part))) ? version : null;
 }
+
+/** Enter and Escape keep the reminder. Only the explicit Dismiss button acks it. */
+export const RECONNECT_DIALOG = { buttons: ['Later', 'Dismiss'] as const, defaultId: 0, cancelId: 0, dismissResponse: 1 };
 
 export function reconnectInstruction(actor: string, name: string, serverVersion: string): string {
   const label = `${actor} ${name}`.toLowerCase();
@@ -71,13 +74,18 @@ function normalizeClient(raw: unknown): ReconnectClient | null {
   };
 }
 
-/** A reported version that is not this server, or a versionless agent resumed after an update. */
-function verdict(client: ReconnectClient, server: string, pending: boolean): 'skew' | 'current' | 'ignore' {
-  if (!client.live || client.kind === 'cli' || client.kind === 'human' || !server) return 'ignore';
-  if (client.version && client.version === server) return 'current';
-  if (client.version && client.version !== server) return 'skew';
-  if (pending && (client.kind === 'agent' || client.kind === 'unknown')) return 'skew';
-  return 'ignore';
+/** A reported build that is not this server. Missing and 0.0.0 are not versions, so they are not skew. */
+function verdict(client: ReconnectClient, server: string): 'skew' | 'current' | 'ignore' {
+  if (!client.live || client.kind === 'cli' || client.kind === 'human' || !stableVersion(server)) return 'ignore';
+  const version = stableVersion(client.version);
+  if (!version) return 'ignore';
+  return version === server ? 'current' : 'skew';
+}
+
+/** A quit snapshot is only the sessions that were live then. Ended rows stay ended. */
+function armedClient(client: ReconnectClient): ReconnectClient | null {
+  if (client.live === false) return null;
+  return { ...client, live: true };
 }
 
 const GENERIC: ReconnectClient[] = [
@@ -114,11 +122,14 @@ export function reconnectChecklist(serverVersion: string, live: ReconnectClient[
   const snapshot = notice?.clients ?? [];
   const byId = new Map<string, ReconnectClient>();
   if (pending) {
-    for (const client of snapshot) if (verdict({ ...client, live: true }, server, true) === 'skew') byId.set(client.id, client);
+    for (const client of snapshot) {
+      const armed = armedClient(client);
+      if (armed && verdict(armed, server) === 'skew') byId.set(client.id, armed);
+    }
   }
   let sawCurrent = false;
   for (const client of live) {
-    const state = verdict(client, server, pending);
+    const state = verdict(client, server);
     if (state === 'current') {
       sawCurrent = true;
       byId.delete(client.id);
@@ -127,7 +138,10 @@ export function reconnectChecklist(serverVersion: string, live: ReconnectClient[
   }
   let steps = [...byId.values()].map((client) => stepFor(client, server));
   const skewed = steps.some((step) => step.fromVersion !== server);
-  const generic = pending && steps.length === 0 && !sawCurrent && snapshot.every((client) => verdict({ ...client, live: true }, server, true) !== 'skew');
+  const generic = pending && steps.length === 0 && !sawCurrent && snapshot.every((client) => {
+    const armed = armedClient(client);
+    return !armed || verdict(armed, server) !== 'skew';
+  });
   if (generic) steps = GENERIC.map((client) => stepFor(client, server));
   steps.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   return {
@@ -166,7 +180,7 @@ export function armReconnectNotice(dataDir: string, input: { reason: ReconnectNo
     reason: input.reason,
     fromVersion: input.fromVersion,
     at: input.at ?? Date.now(),
-    clients: (input.clients ?? []).map(normalizeClient).filter((client): client is ReconnectClient => !!client).slice(0, 50),
+    clients: (input.clients ?? []).map(normalizeClient).filter((client): client is ReconnectClient => !!client && client.live).slice(0, 50),
   };
   writeJson(noticePath(dataDir), notice);
   return notice;
@@ -211,12 +225,15 @@ export function takeReconnectChecklist(dataDir: string, serverVersion: string, l
 }
 
 export function clientsFromSessions(items: { id: string; name: string; actor: string; kind: string; clientVersion?: string; live: boolean }[]): ReconnectClient[] {
-  return items.map((item) => ({
-    id: item.id,
-    name: item.name,
-    actor: item.actor,
-    kind: item.kind,
-    ...(item.clientVersion ? { version: item.clientVersion } : {}),
-    live: item.live,
-  }));
+  return items.map((item) => {
+    const version = stableVersion(item.clientVersion);
+    return {
+      id: item.id,
+      name: item.name,
+      actor: item.actor,
+      kind: item.kind,
+      ...(version ? { version } : {}),
+      live: item.live,
+    };
+  });
 }

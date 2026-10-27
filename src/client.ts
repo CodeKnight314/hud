@@ -215,7 +215,12 @@ const qs = (q: Record<string, unknown>) => {
   return s ? '?' + s : '';
 };
 const enc = encodeURIComponent;
-const CLIENT_VERSION = stableVersion(JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version);
+function clientBuild(): string | null {
+  const raw = asset('package.json', 'utf8');
+  if (!raw) return null;
+  try { return stableVersion(JSON.parse(raw).version); } catch { return null; }
+}
+const CLIENT_VERSION = clientBuild();
 
 function isConnError(e: unknown): boolean {
   const err = e as { name?: string; cause?: { code?: string } };
@@ -583,7 +588,8 @@ export class Hud {
     return this.request('GET', '/api/sessions');
   }
   sessionStart(name: string, opts: { actor?: string; kind?: SessionKind; run?: string; pid?: number; clientVersion?: string } = {}): Promise<SessionView> {
-    return this.request('POST', '/api/sessions', { id: name, name, ...opts, clientVersion: opts.clientVersion ?? CLIENT_VERSION ?? undefined });
+    const clientVersion = stableVersion(opts.clientVersion ?? CLIENT_VERSION);
+    return this.request('POST', '/api/sessions', { id: name, name, ...opts, clientVersion: clientVersion ?? undefined });
   }
   /** Post-update MCP reconnect checklist. Pending until this server build is acknowledged. */
   reconnect(): Promise<ReconnectChecklist> {
