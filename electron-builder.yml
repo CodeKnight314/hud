@@ -39,6 +39,8 @@ extraResources:
     to: hud/GUIDE.md
   - from: PLAYBOOKS.md
     to: hud/PLAYBOOKS.md
+  - from: PRODUCT.md
+    to: hud/PRODUCT.md
   - from: STYLE.md
     to: hud/STYLE.md
   - from: package.json
