@@ -126,7 +126,9 @@ export function ticketsView(store: Store, board = 'main', q?: SearchQuery): stri
       const br = t.branch ? ` ⎇ ${clean(t.branch)}` : '';
       const roll = depth === 0 ? store.rollup(t.id) : { total: 0, done: 0 };
       const kids = roll.total ? ` [${roll.done}/${roll.total} sub]` : '';
-      out.push(`  ${'  '.repeat(depth)}${STATUS_GLYPH[t.status ?? 'todo'] ?? '[ ]'} ${store.ident(t)} ${clean(t.title)}${flag}${kids}${br}`);
+      const own = store.ownership(t);
+      const who = ` →${own.assignee ? clean(own.assignee) : '—'} ⊕${own.claimer ? clean(own.claimer) : '—'}`;
+      out.push(`  ${'  '.repeat(depth)}${STATUS_GLYPH[t.status ?? 'todo'] ?? '[ ]'} ${store.ident(t)} ${clean(t.title)}${who}${flag}${kids}${br}`);
       for (const c of store.childrenOf(t.id)) if (inGroup.has(c.id)) sub(c, depth + 1);
     };
     if (g.project) out.push(`${clean(g.project.key)}  ${clean(g.project.title)}${g.project.target ? ` → ${clean(g.project.target)}` : ''}`);

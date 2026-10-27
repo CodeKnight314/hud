@@ -38,7 +38,8 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
     `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
-    project tag q overdue=1 parent limit`. An unknown board is a 404.
+    owner project tag q overdue=1 parent limit`. `owner` is the claimer while a lease is held, otherwise the
+    assignee; `owner=none` (or `-`) matches tickets with neither. An unknown board is a 404.
   - write: `POST /api/items` (one or an array) · `PATCH /api/items/:id` · `PATCH /api/items` (array of `{id,...}`) ·
     `DELETE /api/items/:id` (to the trash) · `POST /api/projects {name,key?,board?,description?,lead?,target?}` ·
     `PATCH /api/projects/:id {name?,key?,description?,lead?,target?,status?}` ·
@@ -273,8 +274,8 @@ Tickets are the work tracker, and they do not need the canvas at all. A **projec
     hud_tree    {action: "get", board?, project?}                 # nested {id, ident, title, status, children}
     hud_tree    {action: "move", id: "EGO-3", parent?: "EGO-1", project?: "EGO"}
     hud_tree    {action: "detach", id: "EGO-3"}                   # clear parent; project membership stays
-    hud_tickets {board?, status?, assignee?, project?, tag?, priority?, overdue?, limit?}   # list, or format:"json"
-    hud_search  {text?, board?, type?, status?, assignee?, project?, tag?, priority?, overdue?, limit?}
+    hud_tickets {board?, status?, assignee?, owner?, project?, tag?, priority?, overdue?, limit?}   # list, or format:"json"
+    hud_search  {text?, board?, type?, status?, assignee?, owner?, project?, tag?, priority?, overdue?, limit?}
     hud_create  {type: "ticket", title: "…", project: "EGO"}
     hud_link    {id: "EGO-3", project?, parent?, blockedBy?, refs?, branch?}
     hud_update  {id: "EGO-3", status: "doing"}
@@ -305,16 +306,20 @@ the board's loose sequence); deleting a ticket removes it from other tickets' `p
 **Notifications.** A ticket with a non-empty `notify` list raises an alert (to those sessions) when someone *not* in that
 list comments on it, changes its status or changes its assignee. The alert's `to` is `comment`, `status` or `assigned`.
 
-The human reads the same structure in the **Tickets view** (or press `l` on a board): one row per
-ticket with its ident, status glyph, blockers and branch, sub-tickets nested, and `＋` beside any status to add a
-ticket inline. `hud ls tickets` prints the same thing on the command line.
+The human reads the same structure in the **Tickets view** (or press `l` on a board). Project chips switch
+the view to one project (or all of them); the project filter does the same. **list** groups by status, **tree**
+nests sub-tickets under their parents, and **board** is a column per status. Every task shows its assignee
+(`→name`) and its live claimer (`⊕name`); a dash means that side is unset. `＋` beside a status adds a ticket
+inline. `hud ls tickets` prints the same ownership on each line. Filter that list with `project` and `owner`:
+`owner` is the claimer while a lease is held, otherwise the assignee, and `owner=none` (or `-`) matches tickets
+with neither.
 
 ## Coordination
 Several agents can work one board without a coordinator. hud tracks **who is live** and **what each agent has taken**;
 the agents decide the work.
 
     hud_session {action: "start" | "heartbeat" | "end" | "list", name?, kind?, run?}
-    hud_queue   {board?, status?, project?, assignee?, includeDone?, limit?}
+    hud_queue   {board?, status?, project?, assignee?, owner?, includeDone?, limit?}
     hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?, reason?, board?, all?}
 
 - **Presence is automatic.** An MCP client registers a session on `initialize` and renews it every 20 s; the framework

@@ -48,8 +48,8 @@ usage:
   hud status                         server health: pid, port, data dir, mode, save error, recovered backup (never autostarts)
   hud reveal                         open the data directory in the file manager
   hud ls [board]                     text overview (all boards, or one)
-  hud ls tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n]
-                                     Linear-style ticket list, grouped by project and status (filtered)
+  hud ls tickets [board] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n]
+                                     Linear-style ticket list, grouped by project and status (filtered). Each row shows assignee and claimer.
   hud find <text...> [--board b] [--type t] [filters as above]   search items by text
   hud project [list]                 projects on a board (KEY, name, ticket count)
   hud project new <name> [--key EGO] [--lead @who] [--target 2026-01-31] [--body "…"]
@@ -78,7 +78,7 @@ usage:
   hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n]
                                      list or review human-attention items (separate from agent alert ack)
   hud runs                           list run summaries and linked monitors/tickets
-  hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n]
+  hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--owner o] [--all] [--limit n]
                                      work queue: open, claimed and done tickets with owner and session state
   hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1]
                                      register presence for coordination (default: list)
@@ -171,7 +171,7 @@ class UsageError extends Error {}
 
 const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export']);
 const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display', 'proposal', 'sha']);
-const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'overdue', 'limit', 'parent'];
+const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'owner', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
   if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
@@ -225,9 +225,9 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   status: { u: 'hud status [--json]', max: 0, f: ['json'] },
   reveal: { u: 'hud reveal', max: 0, f: ['json'] },
   open: { u: 'hud open', max: 0, f: [] },
-  ls: { u: 'hud ls [board] | hud ls tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 2, f: ['board', 'json', ...FILTERS] },
-  tickets: { u: 'hud tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 1, f: ['board', 'json', ...FILTERS] },
-  find: { u: 'hud find <text...> [--board b] [--type t] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', min: 1, f: ['json', ...FILTERS] },
+  ls: { u: 'hud ls [board] | hud ls tickets [board] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 2, f: ['board', 'json', ...FILTERS] },
+  tickets: { u: 'hud tickets [board] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 1, f: ['board', 'json', ...FILTERS] },
+  find: { u: 'hud find <text...> [--board b] [--type t] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', min: 1, f: ['json', ...FILTERS] },
   project: { u: 'hud project [list] | hud project new <name> [--key EGO] [--lead @who] [--target date] [--body text] | hud project set <id> --key NEW [--title t] [--lead @who] [--target date] [--body text]', f: '*' },
   tree: { u: 'hud tree [board] [--project KEY] | hud tree move <id> [--parent EGO-1] [--project KEY] | hud tree detach <id>', max: 2, f: ['board', 'project', 'parent', 'json'] },
   link: { u: 'hud link <id> [project=EGO] [parent=EGO-1] [blockedBy=EGO-2,EGO-3] [refs=EGO-4] [branch=name]', min: 1, f: ['project', 'parent', 'blockedBy', 'refs', 'branch', 'json'] },
@@ -240,7 +240,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   alerts: { u: 'hud alerts [--ack] [--all] [--json]', max: 0, f: ['ack', 'all', 'json'] },
   attention: { u: 'hud attention [review|unreview|snooze <id>] [--revision v] [--until ms|--minutes n] [--json]', max: 2, f: ['revision', 'until', 'minutes', 'json'] },
   runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
-  queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'all', 'limit', 'board', 'json'] },
+  queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--owner o] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'owner', 'all', 'limit', 'board', 'json'] },
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
   claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] [--all] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'all', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
@@ -552,7 +552,7 @@ async function main() {
       return emit(r, lines.length ? lines.join('\n') : 'no runs');
     }
     case 'queue': {
-      const r = await hud.queue({ board: rest[0] ?? flags.board, status: flags.status, project: flags.project, assignee: flags.assignee, includeDone: !!flags.all, limit: flags.limit === undefined ? undefined : Number(flags.limit) });
+      const r = await hud.queue({ board: rest[0] ?? flags.board, status: flags.status, project: flags.project, assignee: flags.assignee, owner: flags.owner, includeDone: !!flags.all, limit: flags.limit === undefined ? undefined : Number(flags.limit) });
       const { counts } = r;
       const lines = r.items.map((t) => {
         const marks = [t.ready ? 'ready' : '', t.blocked ? 'blocked' : '', t.claim ? 'claimed' : ''].filter(Boolean).join(',');

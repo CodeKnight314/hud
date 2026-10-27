@@ -605,6 +605,7 @@ body.list.drawer-wide.drawer-open #list { right: min(900px, 100vw); }
 @media (max-width: 700px) { body.list.drawer-open #list { right: 0; } }
 
 .lwrap { max-width: 1100px; margin: 0 auto; padding: 18px 20px 72px; font: 13px/1.5 var(--font); }
+.lwrap.shape-board { max-width: none; }
 
 .lhead { display: flex; align-items: center; gap: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; padding: 4px 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .lhead .dim { margin-left: auto; }
@@ -619,7 +620,7 @@ body.list.drawer-wide.drawer-open #list { right: min(900px, 100vw); }
 .tstat .sg { color: var(--faint); }
 .tstat .btn, .tproj .btn { margin-left: 6px; }
 
-.trow { display: grid; grid-template-columns: 22px 100px 14px minmax(120px, 1fr) auto 220px;
+.trow { display: grid; grid-template-columns: 22px 100px 14px minmax(120px, 1fr) 156px auto 220px;
         align-items: baseline; gap: 8px; padding: 3px 8px 3px calc(8px + var(--d, 0) * 16px);
         border-left: 2px solid transparent; border-radius: var(--radius-sm); cursor: default; white-space: nowrap; }
 .trow:hover { background: var(--raised); }
@@ -638,9 +639,11 @@ body.list.drawer-wide.drawer-open #list { right: min(900px, 100vw); }
 .trow .ttt { white-space: normal; overflow-wrap: anywhere; }
 .trow { padding-top: 7px; padding-bottom: 7px; cursor: pointer; }
 .trow .tbits { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
-body.drawer-open .trow { grid-template-columns: 22px 100px 14px minmax(140px, 1fr) minmax(0, 180px); }
+body.drawer-open .trow { grid-template-columns: 22px 100px 14px minmax(120px, 1fr) 148px minmax(0, 140px); }
 body.drawer-open .trow .tbr { display: none; }
-@media (max-width: 1200px) { .trow { grid-template-columns: 22px 100px 14px minmax(140px, 1fr) minmax(0, 180px); } .trow .tbr { display: none; } }
+@media (max-width: 1200px) { .trow { grid-template-columns: 22px 100px 14px minmax(120px, 1fr) 148px minmax(0, 140px); } .trow .tbr { display: none; } }
+.town { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.own-c { margin-left: 8px; }
 .trow .tbits { color: var(--dim); font-size: 11px; }
 .trow .tbits .dep { color: var(--red); }
 .trow .tbr { color: var(--faint); font-size: 10px; overflow: hidden; text-overflow: ellipsis; text-align: right; }
@@ -674,6 +677,16 @@ body.drawer-wide #trash { right: calc(min(900px, 100vw) + 10px); }
 #trash .trw { display: flex; gap: 8px; align-items: baseline; padding: 3px 8px; }
 #trash .trw .tt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #trash .trw .dim { white-space: nowrap; }
+.kboard { display: flex; gap: 8px; overflow-x: auto; align-items: flex-start; padding: 8px 0 18px; }
+.kcol { flex: 1 0 180px; max-width: 280px; border: 1px solid var(--line); border-radius: var(--radius); min-height: 48px; background: var(--panel); }
+.kh { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--line); color: var(--dim); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.kcard { display: block; width: 100%; text-align: left; background: transparent; color: inherit; font: 12px/1.4 var(--font); border: 0; border-bottom: 1px solid var(--line); border-left: 2px solid transparent; padding: 6px; cursor: pointer; }
+.kcard:hover { background: var(--raised); }
+.kcard.s-blocked, .kcard.needs-decision { border-left-color: var(--red); }
+.kcard.s-done { border-left-color: var(--green); }
+.kcard .kid, .kcard .kpar, .kcard .own { color: var(--dim); }
+.kcard .kttl { color: var(--fg); overflow-wrap: anywhere; }
+.pchips, .shapes { display: inline-flex; gap: 4px; align-items: center; }
 .lfbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 16px; position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
 .lfbar input, .lfbar select { font: inherit; background: var(--inset); color: var(--hi); border: 1px solid var(--line2); padding: 4px 8px; width: auto; }
 .lfbar select { max-width: 160px; }

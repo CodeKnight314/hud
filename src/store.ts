@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord, TicketForest, TicketNode } from './types.ts';
+import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord, TicketForest, TicketNode, Ownership } from './types.ts';
 import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
@@ -1246,7 +1246,15 @@ export class Store extends EventEmitter {
     return { board: b, ...(projectId ? { project: projectId } : {}), nodes };
   }
 
-  queue(board = 'main', filter: { status?: string | string[]; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): QueueResult {
+  /** durable assignee, live claimer, and the owner agents filter on */
+  ownership(it: Item): Ownership {
+    const claim = it.type === 'ticket' ? this.claims.get(it.id) : undefined;
+    const assignee = it.assignee?.trim() ? it.assignee : null;
+    const claimer = claim?.actor?.trim() ? claim.actor : null;
+    return { assignee, claimer, claimSession: claim?.session ?? null, owner: claimer ?? assignee };
+  }
+
+  queue(board = 'main', filter: { status?: string | string[]; project?: string; assignee?: string; owner?: string; includeDone?: boolean; limit?: number } = {}): QueueResult {
     const b = this.requireBoard(board).id;
     const at = now();
     const statuses = filter.status === undefined ? null
@@ -1271,12 +1279,19 @@ export class Store extends EventEmitter {
       const blocked = it.status === 'blocked' || !!it.autoBlocked || blockedBy.length > 0;
       const c = this.claims.get(it.id);
       const claim = c ? this.claimView(c) : null;
+      const owner = claim?.actor ?? it.assignee ?? null;
+      if (filter.owner) {
+        const want = String(filter.owner).trim().toLowerCase();
+        const none = want === '-' || want === 'none' || want === '—';
+        const own = (owner ?? '').toLowerCase();
+        if (none ? own !== '' : own !== want) continue;
+      }
       const session = claim ? this.liveSessions.get(claim.session) : undefined;
       const bucket: QueueRow['bucket'] = claim ? 'claimed' : done ? 'done' : 'open';
       const row: QueueRow = {
         id: it.id, ident: this.ident(it), title: it.title, board: it.board, status: normStatus(it.status ?? 'todo'),
         ...(it.priority ? { priority: it.priority } : {}), ...(it.project ? { project: it.project } : {}), ...(it.assignee ? { assignee: it.assignee } : {}),
-        blocked, blockedBy, claim, owner: claim?.actor ?? it.assignee ?? null,
+        blocked, blockedBy, claim, owner,
         session: session ? { id: session.id, name: session.name, live: this.sessionLive(session, at), lastSeenAt: session.lastSeenAt, kind: session.kind } : null,
         bucket, ready: !done && !claim && !blocked, updatedAt: it.updatedAt,
       };
@@ -1773,6 +1788,8 @@ export class Store extends EventEmitter {
     const prioRaw = want(q.priority);
     const prio = prioRaw === undefined ? undefined : prioRaw.toLowerCase() === 'none' ? null : normPriority(prioRaw);
     const assignee = want(q.assignee)?.toLowerCase();
+    const ownerRaw = want(q.owner)?.toLowerCase();
+    const ownerNone = ownerRaw === '-' || ownerRaw === 'none' || ownerRaw === '—';
     const tag = want(q.tag)?.toLowerCase();
     const textQ = want(q.text)?.toLowerCase();
     const projRef = want(q.project);
@@ -1787,6 +1804,11 @@ export class Store extends EventEmitter {
       if (statuses.length && !statuses.some((s) => it.status === s || it.state === s)) return false;
       if (prio !== undefined && (prio === null ? !!it.priority : it.priority !== prio)) return false;
       if (assignee && (it.assignee ?? '').toLowerCase() !== assignee) return false;
+      if (ownerRaw !== undefined) {
+        if (it.type !== 'ticket') return false;
+        const own = (this.ownership(it).owner ?? '').toLowerCase();
+        if (ownerNone ? own !== '' : own !== ownerRaw) return false;
+      }
       if (tag && !(it.tags ?? []).some((x) => x.toLowerCase() === tag)) return false;
       if (proj !== undefined && (proj === null || it.project !== proj)) return false;
       if (parent !== undefined && it.parent !== parent) return false;

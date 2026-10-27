@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HudError, STATE_VERSION, Store } from '../src/store.ts';
+import { ticketsView } from '../src/summary.ts';
 import { attachmentPath, hashBytes, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
 import { buildZip, listZipEntries, zipEntry, zipSegment } from '../src/context-export.ts';
 import { unifiedDiff } from '../src/diff.ts';
@@ -161,6 +162,56 @@ function releaseHooks() {
   store.finish({ ids: [d.id] }, 'claude');
   assert.equal(store.claimOf(d.id), null, 'claim released on finish');
 
+  finish(store);
+}
+
+function ownershipBoard() {
+  const { store } = fresh('coord-ownership');
+  const eng = store.create({ type: 'project', title: 'Eng', key: 'ENG' }, ACTOR);
+  const hud = store.create({ type: 'project', title: 'Hud', key: 'HUD' }, ACTOR);
+  const alpha = ticket(store, 'alpha', { project: eng.id, assignee: 'alice' });
+  const child = ticket(store, 'alpha child', { project: eng.id, parent: alpha.id, assignee: 'bob' });
+  const beta = ticket(store, 'beta', { project: eng.id });
+  store.claim(beta.id, { session: 'agent-a' }, 'claude');
+  const gamma = ticket(store, 'gamma', { project: hud.id, assignee: 'alice' });
+  const loose = ticket(store, 'loose');
+  store.create({ type: 'monitor', title: 'cpu' }, ACTOR);
+
+  assert.deepEqual(store.ownership(alpha), { assignee: 'alice', claimer: null, claimSession: null, owner: 'alice' });
+  assert.deepEqual(store.ownership(beta), { assignee: null, claimer: 'claude', claimSession: 'agent-a', owner: 'claude' });
+  assert.deepEqual(store.listClaims('main').map((c) => c.ticket), [beta.id]);
+
+  const ids = (q: Record<string, unknown>) => store.search({ type: 'ticket', board: 'main', ...q }).map((t) => t.id).sort();
+  assert.deepEqual(ids({ project: 'ENG' }), [alpha.id, child.id, beta.id].sort());
+  assert.deepEqual(ids({ project: 'eng', owner: 'alice' }), [alpha.id]);
+  assert.deepEqual(ids({ owner: 'ALICE' }), [alpha.id, gamma.id].sort());
+  assert.deepEqual(ids({ owner: 'claude' }), [beta.id]);
+  assert.deepEqual(ids({ owner: 'bob' }), [child.id]);
+  assert.deepEqual(ids({ owner: 'none' }), [loose.id]);
+  assert.deepEqual(ids({ owner: '-' }), [loose.id]);
+  assert.equal(store.search({ board: 'main', owner: 'alice' }).every((it) => it.type === 'ticket'), true);
+  assert.equal(store.search({ board: 'main', type: 'monitor', owner: 'alice' }).length, 0);
+
+  const claimed = store.queue('main', { project: 'ENG', owner: 'claude' });
+  assert.deepEqual(claimed.items.map((r) => r.id), [beta.id]);
+  assert.equal(claimed.items[0]?.owner, 'claude');
+  const unowned = store.queue('main', { owner: 'none', includeDone: true });
+  assert.deepEqual(unowned.items.map((r) => r.id), [loose.id]);
+
+  const text = ticketsView(store, 'main');
+  const lines = text.split('\n');
+  const alphaLine = lines.find((l) => l.includes('alpha') && !l.includes('alpha child'));
+  const childLine = lines.find((l) => l.includes('alpha child'));
+  const betaLine = lines.find((l) => l.includes('beta'));
+  assert.ok(alphaLine && childLine && betaLine, text);
+  assert.match(alphaLine!, /→alice ⊕—/);
+  assert.match(childLine!, /→bob ⊕—/);
+  assert.match(betaLine!, /→— ⊕claude/);
+  assert.ok(childLine!.search(/\S/) > alphaLine!.search(/\S/), 'child sits deeper in the tree than its parent');
+  const filtered = ticketsView(store, 'main', { project: 'HUD', owner: 'alice' });
+  assert.match(filtered, /gamma/);
+  assert.match(filtered, /→alice ⊕—/);
+  assert.doesNotMatch(filtered, /alpha|beta/);
   finish(store);
 }
 
@@ -561,6 +612,7 @@ migration();
 sessions();
 claims();
 releaseHooks();
+ownershipBoard();
 queues();
 contexts();
 attachments();
