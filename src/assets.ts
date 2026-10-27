@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Electron adds these to `process`; type them here rather than pulling in electron's types everywhere */
@@ -45,6 +45,28 @@ export function asset(name: string, encoding: 'utf8' = 'utf8'): string | undefin
 /** does the asset exist on disk? */
 export function hasAsset(name: string): boolean {
   return existsSync(join(SOURCE_ROOT, name));
+}
+
+/**
+ * Real path of a `file:` URL that is a file inside `root`.
+ * Rejects other hosts, missing paths, the root itself, and anything that realpath resolves outside it.
+ */
+export function confineFileUrl(url: string, root: string = SOURCE_ROOT): string {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error('file URL is not allowed'); }
+  if (parsed.protocol !== 'file:') throw new Error('file URL is not allowed');
+  if (parsed.hostname !== '' && parsed.hostname !== 'localhost') throw new Error('file URL is not allowed');
+  let realRoot: string;
+  let realFile: string;
+  try {
+    realRoot = realpathSync(root);
+    realFile = realpathSync(fileURLToPath(parsed));
+  } catch {
+    throw new Error('file URL is not allowed');
+  }
+  const rel = relative(realRoot, realFile);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('file URL is not allowed');
+  return realFile;
 }
 
 /** Files shipped loose in the packaged app, used by the server to seed the user's probes/views. Empty from source. */

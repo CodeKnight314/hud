@@ -147,6 +147,9 @@ const RAW: RawTemplate[] = [
 
 const plain = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
+/** JSON own keys that rebind a result if assigned. `key in obj` is true for the inherited `__proto__` accessor. */
+const BLOCKED_MERGE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function flattenDefaults(defaults: MonitorTemplateDefaults): string {
   const lines: string[] = [];
   const walk = (value: unknown, prefix: string) => {
@@ -230,15 +233,41 @@ export function formatMonitorTemplateList(templates: readonly MonitorTemplate[])
 
 function deepMerge(base: unknown, over: unknown): unknown {
   if (over === undefined) return base;
-  if (plain(base) && plain(over)) {
-    const out: Record<string, unknown> = { ...base };
-    for (const key of Object.keys(over)) {
-      if (over[key] === undefined) continue;
-      out[key] = key in out ? deepMerge(out[key], over[key]) : over[key];
+  if (!plain(over)) return over;
+  // Null prototype so an own `__proto__` key cannot be consulted or assigned onto Object.prototype.
+  const out: Record<string, unknown> = Object.create(null);
+  if (plain(base)) {
+    for (const key of Object.keys(base)) {
+      if (BLOCKED_MERGE_KEYS.has(key)) continue;
+      out[key] = base[key];
     }
-    return out;
   }
-  return over;
+  for (const key of Object.keys(over)) {
+    if (BLOCKED_MERGE_KEYS.has(key) || over[key] === undefined) continue;
+    out[key] = Object.hasOwn(out, key) ? deepMerge(out[key], over[key]) : deepMerge(undefined, over[key]);
+  }
+  return out;
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+
+/** Kind, probe, command, and HTTP target are fixed by the template. Other fields may still be overridden. */
+function assertApplied(template: MonitorTemplate, merged: Record<string, unknown>): void {
+  const source = plain(merged.source) ? merged.source : {};
+  const expected = template.defaults.source;
+  if (source.kind !== expected.kind) throw new MonitorTemplateError(`template ${template.id} keeps source.kind ${expected.kind}`);
+  if (source.command != null && source.command !== '') throw new MonitorTemplateError(`template ${template.id} must not run a shell command`);
+  if (expected.kind === 'probe' && source.probe !== expected.probe)
+    throw new MonitorTemplateError(`template ${template.id} keeps probe ${expected.probe}`);
+  if (expected.kind !== 'http') return;
+  let url: URL;
+  try { url = new URL(String(source.url)); } catch { throw new MonitorTemplateError('http template needs a loopback URL'); }
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !LOOPBACK_HOSTS.has(host))
+    throw new MonitorTemplateError('http template URL must stay on loopback');
+  const method = source.method == null || source.method === '' ? 'GET' : source.method;
+  if (typeof method !== 'string' || method.toUpperCase() !== 'GET' || source.body)
+    throw new MonitorTemplateError('http template must stay a GET with no body');
 }
 
 function hostname(value: string): string {
@@ -277,5 +306,6 @@ export function applyMonitorTemplate(input: Record<string, unknown>): Record<str
       throw new MonitorTemplateError('tls template needs source.config.host (or --host); it does not connect until you name one');
     config.host = hostname(host);
   }
+  assertApplied(template, merged);
   return merged;
 }

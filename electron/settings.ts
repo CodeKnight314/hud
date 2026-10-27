@@ -1,7 +1,7 @@
 import { BrowserWindow, clipboard, ipcMain, shell } from 'electron';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { SOURCE_ROOT, hasAsset } from '../src/assets.ts';
+import { pathToFileURL } from 'node:url';
+import { SOURCE_ROOT, confineFileUrl, hasAsset } from '../src/assets.ts';
 import { listMonitorTemplates } from '../src/monitor-templates.ts';
 import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
@@ -23,16 +23,24 @@ export function desktopSettings(options: {
   const file = join(SOURCE_ROOT, 'web', 'settings.html');
   const settingsUrl = pathToFileURL(file).href;
   const updates = options.updateChecker ?? new UpdateChecker({ version: options.version });
-  // file: links are the local guide. shell.openExternal refuses those, so open the file itself.
-  const openExternal = options.openExternal ?? (async (url: string) => {
-    if (url.startsWith('file:')) {
-      const path = fileURLToPath(url.split('#')[0] || url);
+  // file: opens are the local guide, and only files inside the app tree. https stays a normal external open.
+  // Confinement runs before an injected handler so a test double cannot skip it.
+  const openExternal = async (url: string) => {
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new Error('URL is not allowed'); }
+    if (parsed.protocol === 'file:') {
+      const path = confineFileUrl(url, SOURCE_ROOT);
+      const confined = pathToFileURL(path);
+      confined.hash = parsed.hash;
+      if (options.openExternal) return options.openExternal(confined.href);
       const error = await shell.openPath(path);
       if (error) throw new Error(error);
       return;
     }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('URL is not allowed');
+    if (options.openExternal) return options.openExternal(url);
     return shell.openExternal(url);
-  });
+  };
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
   const state = async (refresh = false) => {
     if (refresh || !cachedConnections) cachedConnections = await (await connections()).list();

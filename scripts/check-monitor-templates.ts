@@ -1,10 +1,11 @@
 // Built-in monitor templates: disk, tls, http, and cron-heartbeat.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { confineFileUrl } from '../src/assets.ts';
 import { MonitorTemplateError, applyMonitorTemplate, formatMonitorTemplateList, listMonitorTemplates } from '../src/monitor-templates.ts';
 import type { MonitorTemplate } from '../src/monitor-templates.ts';
 import { Store } from '../src/store.ts';
@@ -172,6 +173,41 @@ function applyAndCreate() {
     assert.equal(cron.source?.period, 86400);
     assert.equal(cron.source?.grace, 3600);
     assert.equal(cron.value, undefined, 'creating a heartbeat is not itself a reading');
+
+    assert.throws(() => applyMonitorTemplate({ type: 'monitor', template: 'disk', source: { kind: 'command', command: 'true' } }), MonitorTemplateError);
+    assert.throws(() => applyMonitorTemplate({ type: 'monitor', template: 'http', source: { url: 'https://example.com/health' } }), MonitorTemplateError);
+    assert.throws(() => applyMonitorTemplate({ type: 'monitor', template: 'http', source: { method: 'POST', body: 'x' } }), MonitorTemplateError);
+    assert.throws(() => applyMonitorTemplate({ type: 'monitor', template: 'disk', source: { probe: 'tail' } }), MonitorTemplateError);
+    assert.throws(() => applyMonitorTemplate({ type: 'monitor', template: 'cron-heartbeat', source: { kind: 'command', command: 'true' } }), MonitorTemplateError);
+    const local = applyMonitorTemplate({ type: 'monitor', template: 'http', source: { url: 'http://127.0.0.1:8080/health' } });
+    assert.equal((local.source as { url?: string; kind?: string; method?: string }).url, 'http://127.0.0.1:8080/health');
+    assert.equal((local.source as { kind?: string }).kind, 'http');
+    assert.equal((local.source as { method?: string }).method, 'GET');
+    const v6 = applyMonitorTemplate({ type: 'monitor', template: 'http', source: { url: 'https://[::1]/health' } });
+    assert.equal((v6.source as { url?: string }).url, 'https://[::1]/health');
+    const named = applyMonitorTemplate({ type: 'monitor', template: 'http', source: { url: 'http://localhost/health' } });
+    assert.equal((named.source as { url?: string }).url, 'http://localhost/health');
+
+    const protoPayload = JSON.parse('{"__proto__": {"polluted": true}, "config": {"path": "/data"}}') as Record<string, unknown>;
+    const protoMerged = applyMonitorTemplate({ type: 'monitor', template: 'disk', source: protoPayload });
+    const protoSource = protoMerged.source as Record<string, unknown> & { polluted?: boolean; config?: { path?: string } };
+    assert.equal(({} as { polluted?: boolean }).polluted, undefined, 'merge must not change Object.prototype');
+    assert.equal(protoSource.polluted, undefined, 'merge must not rebind the result prototype');
+    assert.notEqual(Object.getPrototypeOf(protoSource), Object.getPrototypeOf(protoPayload.__proto__ ?? {}));
+    assert.ok(Object.getPrototypeOf(protoSource) === Object.prototype || Object.getPrototypeOf(protoSource) === null);
+    assert.equal(Object.hasOwn(protoSource, '__proto__'), false);
+    assert.equal(protoSource.config?.path, '/data');
+
+    const ctorMerged = applyMonitorTemplate({
+      type: 'monitor',
+      template: 'disk',
+      source: JSON.parse('{"constructor": {"prototype": {"polluted": true}}}') as Record<string, unknown>,
+    });
+    const ctorSource = ctorMerged.source as Record<string, unknown>;
+    assert.equal(({} as { polluted?: boolean }).polluted, undefined);
+    assert.equal(Object.hasOwn(ctorSource, 'constructor'), false);
+    assert.equal(Object.hasOwn(ctorSource, 'prototype'), false);
+    assert.equal((ctorSource.config as { path?: string } | undefined)?.path ?? (ctorMerged.source as { config?: { path?: string } }).config?.path, '/');
   } finally {
     store.stopBackups();
   }
@@ -218,6 +254,7 @@ function wiring() {
   assert(mcp.includes('hud_monitor_templates'), 'MCP tool is registered');
   assert(settings.includes('listMonitorTemplates'), 'Settings state includes the catalog');
   assert(settings.includes('open-template-docs'), 'Settings can open a template docs link');
+  assert(settings.includes('confineFileUrl'), 'Settings confines file: opens to the source root');
   assert(html.includes('id="tab-templates"'), 'Settings has a templates tab');
   assert(html.includes('id="panel-templates"'), 'Settings has a templates panel');
   assert(html.includes('id="template-list"'), 'Settings has a template gallery');
@@ -317,9 +354,32 @@ async function httpRoundTrip() {
   }
 }
 
+function fileOpensStayInsideRoot() {
+  const scratch = mkdtempSync(join(tmpdir(), 'hud-template-files-'));
+  const outside = mkdtempSync(join(tmpdir(), 'hud-template-outside-'));
+  roots.push(scratch, outside);
+  writeFileSync(join(scratch, 'GUIDE.md'), 'guide');
+  writeFileSync(join(scratch, '..hidden'), 'hidden');
+  writeFileSync(join(outside, 'secret'), 'nope');
+  symlinkSync(join(outside, 'secret'), join(scratch, 'escape'));
+
+  const guide = confineFileUrl(`${pathToFileURL(join(scratch, 'GUIDE.md')).href}#disk-template`, scratch);
+  assert.equal(guide, realpathSync(join(scratch, 'GUIDE.md')));
+  assert.equal(confineFileUrl(pathToFileURL(join(scratch, '..hidden')).href, scratch), realpathSync(join(scratch, '..hidden')));
+  assert.throws(() => confineFileUrl(pathToFileURL(join(outside, 'secret')).href, scratch));
+  assert.throws(() => confineFileUrl(pathToFileURL(join(scratch, 'escape')).href, scratch));
+  assert.throws(() => confineFileUrl(pathToFileURL(join(scratch, '..', basename(outside), 'secret')).href, scratch));
+  assert.throws(() => confineFileUrl('file:///etc/passwd', scratch));
+  assert.throws(() => confineFileUrl(`file://evil.example${pathToFileURL(join(scratch, 'GUIDE.md')).pathname}`, scratch));
+  assert.throws(() => confineFileUrl(pathToFileURL(scratch).href, scratch));
+  assert.throws(() => confineFileUrl(pathToFileURL(join(scratch, 'missing.md')).href, scratch));
+  assert.equal(confineFileUrl(pathToFileURL(join(root, 'GUIDE.md')).href), realpathSync(join(root, 'GUIDE.md')));
+}
+
 try {
   catalog();
   applyAndCreate();
+  fileOpensStayInsideRoot();
   cliListsWithoutStarting();
   wiring();
   await httpRoundTrip();
