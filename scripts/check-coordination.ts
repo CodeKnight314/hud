@@ -519,6 +519,9 @@ function runContextExportComplete() {
   assert(md.includes('entry-0-marker'), 'export keeps the oldest retained entry');
   assert(md.includes(`entry-${n - 1}-marker`), 'export keeps the newest entry');
   assert.equal(md.match(/^### /gm)?.length, n, 'export renders every retained entry');
+  finish(store);
+}
+
 function forests() {
   const { store } = fresh('coord-forest');
   const project = store.create({ type: 'project', title: 'Forest', key: 'FOR' }, ACTOR);
