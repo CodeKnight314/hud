@@ -94,7 +94,6 @@ holds overview, activity, coordination and settings in one scroll.
 
 ## Security
 
-hud binds to `127.0.0.1`/`::1`, rejects foreign `Host`/`Origin` headers, and sends a strict CSP. Command monitors and
-`apply` run with your permissions, so review anything an agent asks hud to execute. Your board, backups and the
+hud binds to `127.0.0.1`/`::1`, rejects foreign `Host`/`Origin` headers, and sends a strict CSP. Command monitors and `apply` run with your permissions, so review anything an agent asks hud to execute. Your board, backups and the
 single-server lock live in the per-user data directory (`~/Library/Application Support/hud` on macOS,
 `%APPDATA%\hud` on Windows, `~/.local/share/hud` elsewhere).

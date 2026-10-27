@@ -2,7 +2,7 @@
 
 hud is a local board a person and several agents share. The board coordinates the work. The person and the agents do the work. Monitors, notes and frames sit on the same board. MCP, the CLI and HTTP are one contract. Tool shapes and timings live in [GUIDE.md](GUIDE.md#coordination).
 
-The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. Issues RIC-7 through RIC-37 each map to one criterion. RIC-11, RIC-13, RIC-19, RIC-28, RIC-33, RIC-34, RIC-36 and RIC-37 have landed on 0.2.0; the other rows are still open.
+The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. Issues RIC-7 through RIC-37 each map to one criterion. RIC-11, RIC-13, RIC-15, RIC-19, RIC-28, RIC-33, RIC-34, RIC-36 and RIC-37 have landed on 0.2.0; the other rows are still open.
 
 ## Three rules
 
@@ -82,7 +82,7 @@ The same state the agents use is glanceable: canvas, attention, context, tickets
 The packaged app is the board people run. Signing, the Linux agent path and the release train are how it stays that way. Publishing a release stays a human step.
 
 - [RIC-14](https://linear.app/richards-project-space/issue/RIC-14/notarize-code-sign-macos-and-windows-installers) — Developer ID plus notarization on macOS, Authenticode on Windows.
-- [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) — an AppImage path for the CLI and MCP, or a clear steer to `.deb`.
+- [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) — landed. AppImage and `.deb` both install a stable `hud` command. Move the AppImage and run Install command again.
 - [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) — the 0.2.0 train is ready for a later human tag. This issue does not tag or publish.
 
 ## Open issues
@@ -99,7 +99,7 @@ Snapshot 2026-10-27, updated for the squash-merges now on 0.2.0. Each issue maps
 | [RIC-12](https://linear.app/richards-project-space/issue/RIC-12/rewrite-product-definition-for-board-as-coordination-trees) | This product definition | In-repo contract |
 | [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) | Coordination playbooks | Board-enforced leases (landed) |
 | [RIC-14](https://linear.app/richards-project-space/issue/RIC-14/notarize-code-sign-macos-and-windows-installers) | Notarize and code-sign installers | Install and keep the app |
-| [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) | AppImage CLI / MCP path | Install and keep the app |
+| [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) | AppImage CLI / MCP path | Install and keep the app (landed) |
 | [RIC-16](https://linear.app/richards-project-space/issue/RIC-16/one-click-in-app-update-apply-still-user-approved) | In-app update, user-approved | The human stays in charge |
 | [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) | Prepare the 0.2.0 release train | Install and keep the app |
 | [RIC-18](https://linear.app/richards-project-space/issue/RIC-18/confirm-before-run-ux-for-agent-authored-command-monitors) | Confirm agent command monitors | The human stays in charge |
