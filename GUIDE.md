@@ -101,7 +101,7 @@ MCP, the CLI and HTTP call the same store methods. A `KEY-n` ident is accepted a
 | List context scopes | `hud_context {action:"scopes", board?}` | `hud context scopes [--board b]` | `GET /api/context/scopes?board=` |
 | Update ticket status | `hud_update {id, status}` | `hud set <id> <status>` | `PATCH /api/items/:id {status}` |
 
-A lease row is `{ticket, ident, title, board, session, actor, claimedAt, renewedAt, expiresAt, live, sessionLive}`. `live` is the lease itself; `sessionLive` is whether the holder is still present. `hud_claim {action:"list"}` returns this session's leases; pass `all:true` for every lease, or `session` for one holder. `hud claim list` defaults to the CLI session; `--all` lists every lease. `GET /api/claims` has no implicit session, so leaving `session` off lists every lease. MCP list text stops at 60,000 characters on a lease boundary and ends with how many leases were omitted; narrow it with `session` or `board`.
+A lease row is `{ticket, ident, title, board, session, actor, claimedAt, renewedAt, expiresAt, live, sessionLive}`. `live` is the lease itself; `sessionLive` is whether the holder is still present. `hud_claim {action:"list"}` returns this session's leases; pass `all:true` for every lease, or `session` for one holder. `hud claim list` defaults to the CLI session; `--all` lists every lease. `GET /api/claims` has no implicit session, so leaving `session` off lists every lease. MCP list text is at most 60,000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with `session` or `board`.
 
 A tree node is `{id, ident, title, status, project?, parent?, children}`. Roots are tickets whose parent is missing from the same board and project filter. `move` with `parent:""` detaches. Cycles and cross-board parents are rejected before anything changes.
 
@@ -321,8 +321,8 @@ the agents decide the work.
   `hud_claim {action:"status", ticket}` and `GET /api/items/:id/claim` return the lease (`expiresAt`, `live`,
   `sessionLive`) or null when the ticket is free. `hud_claim {action:"list"}` lists this session's leases; pass
   `all:true` for every lease, or `session` for one holder. `GET /api/claims` lists every lease unless `session` is set.
-  MCP list text stops at 60,000 characters on a whole lease line and says how many were omitted; narrow with `session`
-  or `board`. `release` takes an optional `reason`.
+  MCP list text is at most 60,000 characters, including the omission line. It keeps whole lease lines and says how many
+  were omitted; narrow with `session` or `board`. `release` takes an optional `reason`.
 - **Ownership is explicit.** A live lease is never stolen, even with `takeover: true`. `takeover` only applies to a claim
   whose session is no longer live; an expired lease is released automatically. A ticket's `assignee` is durable human
   ownership: an agent cannot claim work assigned to someone else.

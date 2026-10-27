@@ -185,6 +185,35 @@ function assertLease(lease, session, label) {
   assert.ok(lease.expiresAt > Date.now(), `${label} expiry is in the future`);
 }
 
+// A lease row can report live=false and sessionLive=false before prune releases it. The scratch
+// server prunes every few seconds, so this uses a store directly and backdates the record.
+async function assertStaleLeaseRow() {
+  const { Store } = await import('../src/store.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'hud-mcp-stale-'));
+  const store = new Store(join(dir, 'state.json'));
+  try {
+    store.setBoard('main', { autoOrganize: false }, actor);
+    const ticket = store.create({ type: 'ticket', title: 'stale lease', status: 'todo' }, actor);
+    store.sessionStart({ id: 'ghost', kind: 'agent' }, actor);
+    const fresh = store.claim(ticket.id, { session: 'ghost', ttl: 30 }, actor);
+    assert.equal(fresh.live, true);
+    assert.equal(fresh.sessionLive, true);
+    store.claims.get(ticket.id).expiresAt = Date.now() - 1;
+    store.liveSessions.get('ghost').lastSeenAt = Date.now() - 90_001;
+    const listed = store.claimsList({ board: 'main' });
+    assert.equal(listed.items.length, 1);
+    assert.equal(typeof listed.now, 'number');
+    assert.equal(listed.items[0].live, false, 'an expired lease is live=false until prune');
+    assert.equal(listed.items[0].sessionLive, false, 'a silent holder is sessionLive=false');
+    const one = store.claimOf(ticket.id);
+    assert.equal(one.live, false);
+    assert.equal(one.sessionLive, false);
+  } finally {
+    store.stopBackups();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 let mcp;
 const clients = [];
 let boardId;
@@ -315,6 +344,7 @@ try {
   const mixed = await mcp.request('tools/call', { name: 'hud_claim', arguments: { action: 'list', all: true, session: 'mcp-surface', board: boardId } });
   assert.equal(mixed.result.isError, true, 'list rejects session and all together');
   const httpAll = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
+  assert.equal(typeof httpAll.now, 'number', 'GET /api/claims returns {items, now}');
   assert.deepEqual(httpAll.items.map((c) => c.session).sort(), [peer, 'mcp-surface'].sort(), 'HTTP list without session is every lease');
   const cliDefault = await cli(['claim', 'list', '--board', boardId], { HUD_SESSION: 'cli-surface-check' });
   assert.match(cliDefault, /no active claim for cli-surface-check/);
@@ -326,15 +356,26 @@ try {
 
   const parentLine = await mcp.tool('hud_claim', { action: 'status', ticket: parent.ident });
   const oneFooter = '… 1 more omitted (2 total); narrow with session or board';
-  const fitOne = new Mcp({ HUD_SESSION: 'mcp-cap-fit', HUD_CLAIM_LIST_MAX: String(parentLine.length + 1 + oneFooter.length) });
+  const fitBudget = parentLine.length + 1 + oneFooter.length;
+  const fitOne = new Mcp({ HUD_SESSION: 'mcp-cap-fit', HUD_CLAIM_LIST_MAX: String(fitBudget) });
   clients.push(fitOne);
   await fitOne.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-fit' } });
-  assert.equal(await fitOne.tool('hud_claim', { action: 'list', all: true, board: boardId }), `${parentLine}\n${oneFooter}`);
+  const fitted = await fitOne.tool('hud_claim', { action: 'list', all: true, board: boardId });
+  assert.equal(fitted, `${parentLine}\n${oneFooter}`);
+  assert.ok(fitted.length <= fitBudget, 'a kept lease plus the omission line stays inside the budget');
+  const fullNote = '… 2 more omitted (2 total); narrow with session or board';
+  const exact = new Mcp({ HUD_SESSION: 'mcp-cap-exact', HUD_CLAIM_LIST_MAX: String(fullNote.length) });
+  clients.push(exact);
+  await exact.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-exact' } });
+  const exactText = await exact.tool('hud_claim', { action: 'list', all: true, board: boardId });
+  assert.equal(exactText, fullNote);
+  assert.ok(exactText.length <= fullNote.length);
   const tiny = new Mcp({ HUD_SESSION: 'mcp-cap-tiny', HUD_CLAIM_LIST_MAX: '1' });
   clients.push(tiny);
   await tiny.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-tiny' } });
   const omitted = await tiny.tool('hud_claim', { action: 'list', all: true, board: boardId });
-  assert.equal(omitted, '… 2 more omitted (2 total); narrow with session or board');
+  assert.equal(omitted.length, 1, 'the omission line is clamped to the budget');
+  assert.equal(omitted, fullNote.slice(0, 1));
   assert.doesNotMatch(omitted, /claimed by/, 'a truncated list does not cut a lease line');
 
   const mcpReleased = await mcp.tool('hud_claim', { action: 'release', ticket: parent.ident, session: 'mcp-surface', reason: 'mcp-done' });
@@ -357,6 +398,35 @@ try {
   assert.equal(JSON.parse(await cli(['claim', 'status', parent.id, '--json'])), null, 'CLI release frees the lease');
   const gone = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
   assert.equal(gone.items.some((c) => c.ticket === parent.id), false, 'no lease remains on the board');
+  assert.equal(typeof gone.now, 'number');
+
+  // 9→10 makes note(10) one character longer than note(9). Budget note(9) and require the result to fit.
+  const capHint = 'narrow with session or board';
+  const capNote = (omitted, total) => `… ${omitted} more omitted (${total} total); ${capHint}`;
+  const capTotal = 10;
+  const capRows = [];
+  for (let i = 0; i < capTotal; i++) {
+    const ticket = await ok('/api/items', { method: 'POST', body: { type: 'ticket', board: boardId, title: `Cap ${nonce} ${i}`, status: 'todo' } });
+    const session = `cap-${nonce}-${i}`;
+    await ok('/api/sessions', { method: 'POST', body: { id: session, kind: 'agent' } });
+    await ok(`/api/items/${encodeURIComponent(ticket.id)}/claim`, { method: 'POST', body: { session, ttl: 60 } }, session);
+    capRows.push({ id: ticket.id, session });
+  }
+  const digitBudget = capNote(capTotal - 1, capTotal).length;
+  const digit = new Mcp({ HUD_SESSION: 'mcp-cap-digit', HUD_CLAIM_LIST_MAX: String(digitBudget) });
+  clients.push(digit);
+  await digit.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-digit' } });
+  const digitText = await digit.tool('hud_claim', { action: 'list', all: true, board: boardId });
+  const digitFull = capNote(capTotal, capTotal);
+  assert.equal(digitFull.length, digitBudget + 1, 'the 9→10 footer is one character over note(9)');
+  assert.ok(digitText.length <= digitBudget, 'omit-everything stays inside the budget across a digit boundary');
+  assert.equal(digitText, digitFull.slice(0, digitBudget));
+  assert.doesNotMatch(digitText, /claimed by/);
+  for (const row of capRows) {
+    await ok(`/api/items/${encodeURIComponent(row.id)}/claim?session=${encodeURIComponent(row.session)}&reason=cap-done`, { method: 'DELETE' }, row.session);
+  }
+
+  await assertStaleLeaseRow();
 
   // shared context publish
   const scope = `project:${treeProject.id}`;

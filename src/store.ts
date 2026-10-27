@@ -1198,7 +1198,10 @@ export class Store extends EventEmitter {
     return c ? this.claimView(c) : null;
   }
 
-  /** active leases, optionally limited to one session or board. Each row carries expiry and liveness. */
+  /**
+   * Active leases as `{items, now}`. Omit session to list every lease; board narrows that set.
+   * GET /api/claims and Hud.claims both return this. There is no second list helper.
+   */
   claimsList(filter: { session?: string; board?: string } = {}): { items: ClaimView[]; now: number } {
     const at = now();
     const board = filter.board ? this.requireBoard(filter.board).id : undefined;

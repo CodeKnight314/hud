@@ -595,6 +595,7 @@ route('POST', '/api/sessions', async (req) => {
 route('POST', '/api/sessions/:id/heartbeat', (_req, _res, [id]) => store.sessionHeartbeat(dec(id)));
 route('DELETE', '/api/sessions/:id', (req, _res, [id], q) => store.sessionEnd(dec(id), actorOf(req, undefined, q)));
 
+// Sole claims list. Omit session for every lease; board narrows it. Shape is {items, now} from claimsList.
 route('GET', '/api/claims', (_req, _res, _m, q) => store.claimsList({
   session: q.get('session') || undefined,
   board: q.get('board') || undefined,

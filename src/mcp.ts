@@ -502,7 +502,7 @@ const TOOLS = [
   {
     name: 'hud_claim',
     description:
-      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list past 60000 characters keeps whole lease lines and says how many were omitted; narrow it with session or board.',
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -658,7 +658,7 @@ function cap(text: string) {
   return text.length > MAX_OUT ? `${text.slice(0, MAX_OUT)}\n… truncated (${text.length} chars); narrow it with filters (board, status, limit, hud_search)` : text;
 }
 
-/** Character budget for a claim list. HUD_CLAIM_LIST_MAX shrinks it in tests; the omission line is never sliced. */
+/** Character budget for a claim list. HUD_CLAIM_LIST_MAX shrinks it in tests. The result, note included, stays within it. */
 function claimListMax(): number {
   const raw = process.env.HUD_CLAIM_LIST_MAX;
   if (raw === undefined || raw === '') return MAX_OUT;
@@ -666,23 +666,26 @@ function claimListMax(): number {
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : MAX_OUT;
 }
 
-/** Keep whole records. When the budget runs out, say how many rows were left out instead of cutting a line. */
+/** Keep whole records inside `max`. A cut list names how many rows were left out, and that note counts toward the budget. */
 function capRecords(lines: string[], hint: string, max = claimListMax()): string {
+  const note = (omitted: number) => `… ${omitted} more omitted (${lines.length} total); ${hint}`;
   const kept: string[] = [];
   let used = 0;
-  const note = (omitted: number) => `… ${omitted} more omitted (${lines.length} total); ${hint}`;
   for (const line of lines) {
-    const omittedAfter = lines.length - kept.length - 1;
-    const reserve = omittedAfter > 0 ? note(omittedAfter).length + 1 : 0;
+    const omittedIfStop = lines.length - kept.length;
+    const omittedIfKept = omittedIfStop - 1;
     const sep = kept.length ? 1 : 0;
-    if (line.length + sep + reserve > max - used) break;
+    const tail = omittedIfKept > 0 ? 1 + note(omittedIfKept).length : 0;
+    // Omitting everything emits note(lines.length). That is a digit longer than note(N-1) at 9/99/999.
+    if (kept.length === 0 && note(omittedIfStop).length > max) break;
+    if (used + sep + line.length + tail > max) break;
     kept.push(line);
     used += sep + line.length;
   }
   if (kept.length === lines.length) return kept.join('\n');
-  const omitted = lines.length - kept.length;
-  const body = kept.join('\n');
-  return body ? `${body}\n${note(omitted)}` : note(omitted);
+  const footer = note(lines.length - kept.length);
+  const text = kept.length ? `${kept.join('\n')}\n${footer}` : footer;
+  return text.length <= max ? text : text.slice(0, max);
 }
 
 async function needBoard(board?: string, client: Hud = baseHud) {
