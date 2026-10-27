@@ -6,13 +6,27 @@ const VIEWS_README_URL = 'https://github.com/CodeKnight314/hud/blob/0.2.0/views/
 const PRODUCT_URL = 'https://github.com/CodeKnight314/hud/blob/0.2.0/PRODUCT.md';
 /**
  * Repo markdown keeps relative links so GitHub can open the sibling file.
- * The served copy points at the localhost route, because `/api/guide` has no directory.
+ * The served copy has no directory, so each link becomes a URL or an in-page anchor.
  */
 function serveDocLink(markdown: string, file: string, url: string): string {
-  return markdown.replaceAll(`](./${file}`, `](${url}`).replaceAll(`](${file}`, `](${url}`);
+  return markdown
+    .replaceAll(`](./${file}#`, `](${url}#`)
+    .replaceAll(`](./${file})`, `](${url})`)
+    .replaceAll(`](${file}#`, `](${url}#`)
+    .replaceAll(`](${file})`, `](${url})`);
 }
 
-/** Agent contract plus the visual contract. Relative quickstart links become GET /api/quickstart. */
+function headingSlug(heading: string): string {
+  return heading.toLowerCase().trim().replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-');
+}
+
+/** Anchor of the visual contract once STYLE.md is appended to the served guide. */
+function styleAnchor(style: string): string {
+  const title = /^#\s+(.+)$/m.exec(style)?.[1]?.trim();
+  return `#${title ? headingSlug(title) : 'hud-visual-contract'}`;
+}
+
+/** Agent contract plus the visual contract. */
 export function guideText(port: number): string {
   const style = asset('STYLE.md', 'utf8') ?? '';
   const raw = `${asset('GUIDE.md', 'utf8') ?? ''}\n\n${style}`;

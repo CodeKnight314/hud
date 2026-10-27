@@ -55,7 +55,8 @@ electron/settings-preload.cjs the Settings-only, allowlisted context bridge
 electron/render.mjs screenshot helper used by the packaged server
 web/settings.html, settings.js, settings.css native desktop Settings interface (not the board renderer)
 web/             index.html, app.js, views.js, utils.js, style.css, programs.js, program-preview.js, table-controls.js
-views/           agent-authored chart renderers (display `view:<name>`), seeded into the data dir when packaged
+views/           agent-authored chart renderers (display `view:<name>`), seeded into the data dir when packaged.
+                 views/README.md has no HTTP route; the served guide links it to the GitHub blob on 0.2.0
 probes/          built-in probes (tcp tls dns disk file-age) + examples (git process tail) + README
 bin/hud.js       source CLI entry
 scripts/build.mjs  esbuild bundles -> bundle/{hud,main}.mjs (npm run bundle); bundle/ and appdir/main.mjs are generated
@@ -91,7 +92,8 @@ GUIDE.md         agent contract. Shipped (`extraResources` → `hud/GUIDE.md`) a
                  `hud guide`, and `hud://guide`. Served text rewrites quickstart links to GET /api/quickstart.
 QUICKSTART.md    human quickstart: install, Settings, Attention, Tickets. Shipped (`hud/QUICKSTART.md`) and
                  served at GET /api/quickstart, `hud quickstart`, and `hud://quickstart`. README links the repo file.
-STYLE.md         visual contract. Shipped and appended to the served guide. Not a separate route.
+STYLE.md         visual contract. Shipped and appended to GET /api/guide. Served links use its in-page
+                 heading, not a separate route.
 README.md        repo-only landing page. Not copied into the app.
 AGENTS.md        repo-only contributor notes (this file). Not copied into the app.
 PLAYBOOKS.md     coordination runbooks (decentralized, lead). Shipped (`hud/PLAYBOOKS.md`);

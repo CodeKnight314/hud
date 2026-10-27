@@ -89,12 +89,31 @@ ok(guide.includes('](QUICKSTART.md'), 'GUIDE links the quickstart with a relativ
 
 const servedGuide = guideText(7317);
 const servedQuick = quickstartText(7317);
-ok(!/\]\((?:\.\/)?QUICKSTART\.md/.test(servedGuide), 'served guide rewrites relative QUICKSTART links');
-ok(!/\]\((?:\.\/)?GUIDE\.md/.test(servedQuick), 'served quickstart rewrites relative GUIDE links');
+const style = readFileSync(join(root, 'STYLE.md'), 'utf8');
+const styleSlug = slug((/^#\s+(.+)$/m.exec(style)?.[1] ?? '').trim());
+const servedHeadings = new Set(headingSlugs(servedGuide, /^#{1,3} [^#]/));
+/** A markdown link target the served text can open: in-page anchor or an absolute URL. */
+function unresolvedLinks(markdown) {
+  const found = [];
+  for (const m of markdown.matchAll(/\]\(([^)\s]+)/g)) {
+    const target = m[1];
+    if (target.startsWith('#') || target.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+    found.push(target);
+  }
+  return found;
+}
+const guideLinks = unresolvedLinks(servedGuide);
+const quickLinks = unresolvedLinks(servedQuick);
+ok(guideLinks.length === 0, `served guide has relative links: ${guideLinks.join(', ') || '(none)'}`);
+ok(quickLinks.length === 0, `served quickstart has relative links: ${quickLinks.join(', ') || '(none)'}`);
 ok(servedGuide.includes('http://localhost:7317/api/quickstart'), 'served guide points at GET /api/quickstart');
 ok(servedQuick.includes('http://localhost:7317/api/guide'), 'served quickstart points at GET /api/guide');
+ok(styleSlug && servedGuide.includes(`](#${styleSlug})`), `served guide links STYLE.md to #${styleSlug || '?'}`);
+ok(servedHeadings.has(styleSlug), `served guide includes the visual-contract heading #${styleSlug || '?'}`);
+ok(servedGuide.includes('https://github.com/CodeKnight314/hud/blob/0.2.0/views/README.md'), 'served guide points views/README.md at GitHub');
 for (const m of servedGuide.matchAll(/\/api\/quickstart#([\w-]+)/g)) ok(quickSlugs.has(m[1]), `served guide anchor /api/quickstart#${m[1]} resolves`);
 for (const m of servedQuick.matchAll(/\/api\/guide#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `served quickstart anchor /api/guide#${m[1]} resolves`);
+for (const m of servedGuide.matchAll(/\]\(#([\w-]+)\)/g)) ok(servedHeadings.has(m[1]), `served guide in-page anchor #${m[1]} resolves`);
 
 const builder = readFileSync(join(root, 'electron-builder.yml'), 'utf8');
 ok(/from:\s*QUICKSTART\.md\s*\n\s*to:\s*hud\/QUICKSTART\.md/.test(builder), 'electron-builder ships QUICKSTART.md to hud/QUICKSTART.md');
