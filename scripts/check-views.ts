@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
+import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, MAX_VIEW_REVIEWS, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'hud-views-'));
 setViewsDir(dir);
@@ -162,5 +162,22 @@ const shownInstall = installUntrustedView('shown-mod', { approve: true, proposal
 assert.equal(shownInstall.installed, true);
 assert.equal(readViewFile('shown-mod'), remote);
 deleteViewFile('shown-mod');
+
+// A budget refusal must not occupy a review slot. At the queue cap, staging it used to prune an unrelated approval.
+const queueLimit = MAX_VIEW_REVIEWS;
+const queued = [];
+for (let i = 0; i < queueLimit; i++) {
+  const review = installUntrustedView(`keep-${i}`, { code: remote, maxChars: agentResultMax, now: 6_000, ttlMs: 60_000 });
+  assert.equal(review.approvable, true);
+  queued.push(review);
+}
+const refusal = installUntrustedView('queue-bomb', { code: bulky, maxChars: agentResultMax, now: 6_000, ttlMs: 60_000 });
+assert.equal(refusal.approvable, false);
+assert.equal(absent('queue-bomb'), false, 'a refused review does not write the module');
+const oldest = queued[0];
+const oldestStill = installUntrustedView(oldest.name, { approve: true, proposalId: oldest.id, sha256: oldest.sha256, now: 6_000 });
+assert.equal(oldestStill.installed, true, 'a budget refusal must not evict an unrelated pending approval');
+assert.equal(readViewFile(oldest.name), remote);
+deleteViewFile(oldest.name);
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

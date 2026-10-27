@@ -40,8 +40,8 @@ or replace them with `hud view set`.
 `hud view set` and `hud_view {action:"write"}` do not install caller-supplied source. They return a unified diff and a
 proposal id. The module lands only after `hud view approve <name> --proposal <id> --sha <sha256>` (or
 `hud_view {action:"approve", proposalId, sha256}`) for that exact review. Approving on the same call that submits the
-code does not install it. `hud_view` write refuses the proposal when the diff is larger than the tool result, so the
-approve recipe is not returned for source the agent did not see. A generated module (`generate` with `write: true`)
+code does not install it. `hud_view` write does not stage a proposal when the diff is larger than the tool result, so
+the approve recipe is not returned for source the agent did not see. A generated module (`generate` with `write: true`)
 is produced by hud and can still be written directly.
 
 Static checks reject dynamic imports, `require`, `eval`, `new Function`, network APIs (`fetch`, `XMLHttpRequest`,

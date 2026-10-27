@@ -232,7 +232,7 @@ export function writeViewFile(name: string, code: string, opts: { overwrite?: bo
 }
 
 const VIEW_REVIEW_TTL_MS = 15 * 60 * 1000;
-const MAX_VIEW_REVIEWS = 32;
+export const MAX_VIEW_REVIEWS = 32;
 
 /** a caller-supplied module staged for review. It is not installed, and it is not served. */
 export interface ViewReview {
@@ -279,8 +279,13 @@ interface StoredReview extends ViewReview {
 
 const reviews = new Map<string, StoredReview>();
 
-function pruneReviews(now: number) {
+function expireReviews(now: number) {
   for (const [id, review] of reviews) if (review.expiresAt <= now) reviews.delete(id);
+}
+
+/** drop expired reviews, then the oldest ones, until another review can be stored */
+function makeRoom(now: number) {
+  expireReviews(now);
   while (reviews.size >= MAX_VIEW_REVIEWS) {
     const oldest = reviews.keys().next().value;
     if (oldest === undefined) break;
@@ -340,24 +345,28 @@ export function installUntrustedView(name: string, body: {
   }
   if (typeof body.code !== 'string') throw new HudError(400, 'code is required');
   if (body.maxChars !== undefined && (!Number.isInteger(body.maxChars) || body.maxChars < 1)) throw new HudError(400, 'maxChars must be a positive integer');
-  const review = stageViewReview(name, body.code, { overwrite: body.overwrite, expectedSha256: body.expectedSha256, now, ttlMs: body.ttlMs });
-  if (body.maxChars === undefined) return review;
-  const text = formatAgentViewReview(review);
-  if (text.length <= body.maxChars) return review;
-  // The caller cannot show the whole diff, so the proposal must not remain approvable.
-  reviews.delete(review.id);
-  return {
-    installed: false,
-    trust: 'untrusted',
-    approvable: false,
-    name: review.name,
-    limit: body.maxChars,
-    reviewChars: text.length,
-    text: `NOT INSTALLED — untrusted view ${review.name} was not shown in full (${text.length} characters exceeds the ${body.maxChars} character review limit). The proposal was dropped and cannot be approved. Shorten the module and submit it again.`,
-  };
+  const review = buildViewReview(name, body.code, { overwrite: body.overwrite, expectedSha256: body.expectedSha256, now, ttlMs: body.ttlMs });
+  if (body.maxChars !== undefined) {
+    const text = formatAgentViewReview(review);
+    if (text.length > body.maxChars) {
+      // Never insert a review we are about to refuse: insertion prunes the oldest pending approval.
+      return {
+        installed: false,
+        trust: 'untrusted',
+        approvable: false,
+        name: review.name,
+        limit: body.maxChars,
+        reviewChars: text.length,
+        text: `NOT INSTALLED — untrusted view ${review.name} was not shown in full (${text.length} characters exceeds the ${body.maxChars} character review limit). No proposal was staged, so it cannot be approved. Shorten the module and submit it again.`,
+      };
+    }
+  }
+  makeRoom(now);
+  reviews.set(review.id, { ...review, code: body.code });
+  return review;
 }
 
-function stageViewReview(name: string, code: string, opts: { overwrite?: boolean; expectedSha256?: string; now: number; ttlMs?: number }): ViewReview {
+function buildViewReview(name: string, code: string, opts: { overwrite?: boolean; expectedSha256?: string; now: number; ttlMs?: number }): ViewReview {
   const n = normalizeViewName(name);
   const validation = validateViewCode(code);
   if (!validation.ok) throw new HudError(400, `view did not validate: ${validation.errors.join('; ')}`, { code: 'invalid', errors: validation.errors });
@@ -380,14 +389,12 @@ function stageViewReview(name: string, code: string, opts: { overwrite?: boolean
     expiresAt: opts.now + (opts.ttlMs ?? VIEW_REVIEW_TTL_MS),
     approvable: true,
   };
-  pruneReviews(opts.now);
-  reviews.set(review.id, { ...review, code });
   return review;
 }
 
 function approveReviewedView(name: string, proposalId: string, hash: string, now: number): ViewInstall {
   const n = normalizeViewName(name);
-  pruneReviews(now);
+  expireReviews(now);
   const review = reviews.get(proposalId);
   if (!review || review.expiresAt <= now) throw new HudError(404, 'no pending approval for that review', { code: 'approval-required' });
   if (review.name !== n) throw new HudError(409, 'proposal is for a different view', { code: 'approval-required' });
