@@ -427,7 +427,7 @@ async function run() {
   const installNotice = JSON.parse(readFileSync(join(dataDir, 'reconnect.json'), 'utf8'));
   assert.equal(installNotice.reason, 'quit-for-update');
   assert.equal(installNotice.fromVersion, '0.1.1');
-  assert.equal(installNotice.clients[0].name, 'Claude Code');
+  assert.deepEqual(installNotice.clients.map((item) => item.id), ['claude-live'], 'install update arms the snapshot with the live clients only');
   assert.equal(applied[0].kind, 'dmg');
   assert.equal(applied[0].destination, appRoot);
   assert.equal(applied[0].sha256, installerSha);

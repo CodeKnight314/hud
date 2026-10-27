@@ -1123,8 +1123,8 @@ When the server is newer, the app shows a one-shot reconnect checklist and `hud 
 Settings → Updates, or run `hud mcp reconnect` (add `--dry-run` to print it without clearing the reminder).
 In Claude Code the step is `/mcp`, then reconnect hud. Restart Codex and OpenCode so they respawn the MCP process. A client
 already running this server's version drops off the list. Reopening the same build does not show the checklist again.
-The 0.1.1 build adds the checker; version 0.1.0 has none, so upgrading from it the first time requires downloading the
-installer manually.
+The update checker has existed since 0.1.1. Version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual
+installer download.
 
 The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
 OS runners and upload seven-day workflow artifacts. When the signing secrets in AGENTS.md are configured, the macOS

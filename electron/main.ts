@@ -120,7 +120,6 @@ const settings = desktopSettings({
       throw error;
     }
   },
-  connectedClients: async () => clientsFromSessions((await new Hud({ actor: 'user', autostart: false }).sessions()).items),
   updateTarget: () => ({ platform: process.platform, execPath: process.execPath, appImage: process.env.APPIMAGE, commandExe: recordedInstallExe(dataDir) }),
 });
 const settingsEntry: Electron.MenuItemConstructorOptions = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => settings.show() };

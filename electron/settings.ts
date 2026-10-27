@@ -12,8 +12,6 @@ import { acknowledgeReconnect, armReconnectNotice, loadReconnectChecklist, readR
 import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
 import { recordedInstallExe, installApprovedUpdate } from '../src/update-apply.ts';
 import type { UpdatePlan } from '../src/update-apply.ts';
-import { armReconnectNotice } from '../src/reconnect.ts';
-import type { ReconnectClient } from '../src/reconnect.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
 export function desktopSettings(options: {
@@ -25,7 +23,6 @@ export function desktopSettings(options: {
   ackReconnect?: () => Promise<unknown>;
   confirmVerifiedUpdate?: (summary: { version: string; name: string; sha256: string; path: string }) => Promise<boolean> | boolean;
   applyVerifiedUpdate?: (plan: UpdatePlan) => Promise<void>;
-  connectedClients?: () => Promise<ReconnectClient[]>;
   downloadFetcher?: typeof fetch;
   downloadDirectory?: string;
   updateTarget?: () => { platform: string; execPath: string; appImage?: string; commandExe?: string };
