@@ -105,10 +105,10 @@ textarea { resize: vertical; border: 1px solid var(--line); padding: 6px; min-he
 .queue-table button { padding: 1px 6px; border: 1px solid var(--line); }
 
 /* compact claim/queue glance on the board canvas — monochrome; glyphs carry the state */
-#claim-widget { position: fixed; left: calc(var(--rail-width) + 10px); bottom: calc(var(--bar-height) + 10px); z-index: 46; width: max-content; max-width: min(320px, calc(100vw - var(--rail-width) - 24px)); background: var(--panel); border: 1px dashed var(--line2); padding: 4px 0; }
+#claim-widget { position: fixed; left: calc(var(--rail-width) + 10px); bottom: calc(var(--bar-height) + 10px); z-index: 46; width: max-content; max-width: min(320px, calc(100vw - var(--rail-width) - 24px)); max-height: min(40vh, 320px); overflow: auto; background: var(--panel); border: 1px dashed var(--line2); padding: 4px 0; }
 #claim-widget[hidden], body.supervision #claim-widget { display: none !important; }
 #claim-widget .cw-head, #claim-widget .cw-row { display: grid; gap: 8px; align-items: baseline; padding: 2px 8px; width: 100%; text-align: left; }
-#claim-widget .cw-head { grid-template-columns: auto auto; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; }
+#claim-widget .cw-head { position: sticky; top: 0; background: var(--panel); grid-template-columns: auto auto; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; font-size: 10px; }
 #claim-widget .cw-ready { color: var(--hi); letter-spacing: 0; text-transform: none; font-size: 12px; }
 #claim-widget .cw-row { grid-template-columns: 14px minmax(72px, 1fr) auto auto; border: 0; color: inherit; }
 #claim-widget .cw-row:hover { color: var(--bg); background: var(--hi); }
@@ -116,8 +116,7 @@ textarea { resize: vertical; border: 1px solid var(--line); padding: 6px; min-he
 #claim-widget .cw-name { color: var(--hi); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #claim-widget .cw-row:hover .cw-name { color: inherit; }
 #claim-widget .cw-ident, #claim-widget .cw-ttl, #claim-widget .cw-stale { color: var(--dim); white-space: nowrap; }
-#claim-widget .cw-more { padding: 2px 8px 3px; color: var(--faint); }
-body.claim-widget.list #list { padding-bottom: 108px; }
+body.claim-widget.list #list { padding-bottom: min(40vh, 320px); }
 
 /* ---------- inspector work block ---------- */
 .claim-box, .context-box { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 6px; }

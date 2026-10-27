@@ -19,28 +19,29 @@ export function formatClaimTtl(expiresAt, now) {
   return m ? `${hr}h ${m}m` : `${hr}h`;
 }
 
-function sessionName(row, sessions) {
+function sessionOf(row, sessions) {
   const id = String(row.claim?.session || '');
   const fromList = (sessions?.items || []).find((s) => s.id === id);
-  const name = String(fromList?.name || row.session?.name || id).trim();
-  return name || id || 'session';
+  const name = String(fromList?.name || row.session?.name || id).trim() || id || 'session';
+  // Presence is refreshed on its own; a queue row can still say the holder is live after the session has ended.
+  const holderLive = (fromList?.live ?? row.session?.live) !== false;
+  return { name, holderLive };
 }
 
 function claimRows(queue, sessions, now) {
   const rows = [];
   for (const row of queue.items || []) {
     if (!row?.claim) continue;
-    const name = sessionName(row, sessions);
+    const session = sessionOf(row, sessions);
     const expiresAt = Number(row.claim.expiresAt);
     const leaseLive = row.claim.live !== false && expiresAt > now;
-    const holderLive = row.session ? row.session.live !== false : true;
     rows.push({
       ticket: String(row.id || ''),
       ident: String(row.ident || row.claim.ident || ''),
       title: String(row.title || ''),
-      sessionName: name,
+      sessionName: session.name,
       ttl: formatClaimTtl(expiresAt, now),
-      live: leaseLive && holderLive,
+      live: leaseLive && session.holderLive,
       expiresAt: Number.isFinite(expiresAt) ? expiresAt : Number.POSITIVE_INFINITY,
     });
   }
@@ -48,19 +49,16 @@ function claimRows(queue, sessions, now) {
   return rows;
 }
 
-/** Empty when there is nothing claimed and nothing ready, so a quiet board stays clear. */
-export function claimWidgetHTML({ queue, sessions, now = Date.now(), limit = 4 } = {}) {
+/** Empty when there is nothing claimed and nothing ready, so a quiet board stays clear. Every claim is listed. */
+export function claimWidgetHTML({ queue, sessions, now = Date.now() } = {}) {
   if (!queue?.counts) return '';
   const ready = Math.max(0, Number(queue.counts.ready) || 0);
   const claims = claimRows(queue, sessions, now);
   if (!claims.length && ready <= 0) return '';
-  const shown = claims.slice(0, Math.max(0, limit));
-  const rest = claims.length - shown.length;
   const head = `<div class="cw-head" data-ready="${ready}"><span class="cw-label">queue</span><span class="cw-ready">${ready} ready</span></div>`;
-  const rows = shown.map((c) => {
+  const rows = claims.map((c) => {
     const tip = `${c.sessionName} · ${c.ident}${c.title ? ` · ${c.title}` : ''} · ${c.ttl}`;
-    return `<button type="button" class="cw-row${c.live ? '' : ' cw-stale'}" data-claim-focus="${esc(c.ticket)}" data-claim-session="${esc(c.sessionName)}" data-claim-ttl="${esc(c.ttl)}" title="${esc(tip)}"><span aria-hidden="true">${c.live ? '●' : '○'}</span><span class="cw-name">${esc(c.sessionName)}</span><span class="cw-ident">${esc(c.ident)}</span><span class="cw-ttl">${esc(c.ttl)}</span></button>`;
+    return `<button type="button" class="cw-row${c.live ? '' : ' cw-stale'}" data-claim-focus="${esc(c.ticket)}" data-claim-session="${esc(c.sessionName)}" data-claim-live="${c.live ? '1' : '0'}" data-claim-ttl="${esc(c.ttl)}" title="${esc(tip)}"><span aria-hidden="true">${c.live ? '●' : '○'}</span><span class="cw-name">${esc(c.sessionName)}</span><span class="cw-ident">${esc(c.ident)}</span><span class="cw-ttl">${esc(c.ttl)}</span></button>`;
   }).join('');
-  const more = rest > 0 ? `<div class="cw-more">+${rest} more</div>` : '';
-  return head + rows + more;
+  return head + rows;
 }

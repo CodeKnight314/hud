@@ -70,7 +70,9 @@ work, warnings, errors and stale reporters by board and run; review keeps an iss
 review. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
 **queue** tab lists open, claimed and done work with owner, live session, blockers and a claim/release action.
 The board canvas keeps the same glance in a compact corner widget: the ready count, and each current claim's
-session name, ticket and remaining lease. Choosing a claim opens that ticket in the inspector and stays on the canvas.
+session name, ticket and remaining lease, soonest lease first. ● is a live holder with time left on the lease;
+○ is an ended session or an expired lease, using the latest session list when it is newer than the queue row.
+The corner scrolls instead of dropping claims. Choosing a claim opens that ticket in the inspector and stays on the canvas.
 A quiet board with nothing ready and nothing claimed leaves the corner empty.
 Completed runs are hidden until **show completed** is selected.
 

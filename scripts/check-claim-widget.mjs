@@ -62,6 +62,31 @@ assert.match(namedFallback, /data-claim-ttl="10s"/);
 assert.match(namedFallback, /○/);
 assert.doesNotMatch(namedFallback, /●/);
 
+const fresherDead = claimWidgetHTML({
+  queue: {
+    counts: { ready: 0 },
+    items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-c', expiresAt: now + 20_000, live: true }, session: { id: 'agent-c', name: 'Queue Cara', live: true } }],
+  },
+  sessions: { items: [{ id: 'agent-c', name: 'Cara', live: false }] },
+  now,
+});
+assert.match(fresherDead, /data-claim-session="Cara"/);
+assert.match(fresherDead, /data-claim-live="0"/);
+assert.match(fresherDead, /○/);
+assert.doesNotMatch(fresherDead, /●/);
+
+const fresherLive = claimWidgetHTML({
+  queue: {
+    counts: { ready: 0 },
+    items: [{ id: 'held', ident: 'EGO-8', claim: { session: 'agent-d', expiresAt: now + 20_000, live: true }, session: { id: 'agent-d', name: 'Queue Dan', live: false } }],
+  },
+  sessions: { items: [{ id: 'agent-d', name: 'Dan', live: true }] },
+  now,
+});
+assert.match(fresherLive, /data-claim-session="Dan"/);
+assert.match(fresherLive, /data-claim-live="1"/);
+assert.match(fresherLive, /●/);
+
 const hostile = claimWidgetHTML({
   queue: {
     counts: { ready: 1 },
@@ -84,12 +109,8 @@ const many = claimWidgetHTML({
     })),
   },
   now,
-  limit: 4,
 });
-assert.match(many, /Session 0/);
-assert.match(many, /Session 3/);
-assert.doesNotMatch(many, /Session 4/);
-assert.doesNotMatch(many, /Session 5/);
-assert.match(many, /\+2 more/);
+for (let i = 0; i < 6; i++) assert.match(many, new RegExp(`Session ${i}`), `claim ${i} stays on the canvas`);
+assert.doesNotMatch(many, /\+\d+ more/);
 
 console.log('PASS claim widget: session name, TTL and ready count');
