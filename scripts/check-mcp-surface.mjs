@@ -106,13 +106,13 @@ function cli(args, env = {}) {
 }
 
 class Mcp {
-  constructor() {
+  constructor(extraEnv = {}) {
     this.nextId = 1;
     this.pending = new Map();
     this.stderr = '';
     this.child = spawn(process.execPath, [join(root, 'src/mcp.ts')], {
       cwd: root,
-      env: { ...process.env, ...scratchEnv, HUD_ACTOR: 'mcp-surface', HUD_SESSION: 'mcp-surface' },
+      env: { ...process.env, ...scratchEnv, HUD_ACTOR: 'mcp-surface', HUD_SESSION: 'mcp-surface', ...extraEnv },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.lines = createInterface({ input: this.child.stdout });
@@ -186,6 +186,7 @@ function assertLease(lease, session, label) {
 }
 
 let mcp;
+const clients = [];
 let boardId;
 try {
   const health = await waitForHealth();
@@ -204,6 +205,7 @@ try {
   const cliProject = JSON.parse(await cli(['project', 'new', `CLI ${nonce}`, '--key', keys.cli, '--board', boardId, '--json']));
   assert.equal(cliProject.key, keys.cli);
   mcp = new Mcp();
+  clients.push(mcp);
   await mcp.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-surface-check' } });
   const tools = (await mcp.request('tools/list')).result.tools.map((t) => t.name);
   for (const name of ['hud_project', 'hud_tree', 'hud_claim', 'hud_context', 'hud_update']) assert.ok(tools.includes(name), `MCP exposes ${name}`);
@@ -252,16 +254,43 @@ try {
   const afterUnlink = await ok(`/api/tree?board=${encodeURIComponent(boardId)}&project=${keys.tree}`);
   assert.equal(place(afterUnlink, child.id)?.depth, 0);
 
-  // claim, lease visibility, release — one holder at a time
+  // HTTP unlink accepts "" and null as clear. A falsy non-empty sentinel is not a clear.
+  await ok('/api/tree', { method: 'POST', body: { action: 'move', id: child.id, parent: parent.id } });
+  const ignored = await req(`/api/items/${encodeURIComponent(child.id)}/unlink`, { method: 'POST', body: { parent: false } });
+  assert.equal(ignored.res.status, 400, 'parent:false is not a clear');
+  assert.equal((await ok(`/api/items/${encodeURIComponent(child.id)}`)).graph.parent.id, parent.id, 'rejected unlink leaves the parent');
+  const clearedEmpty = await ok(`/api/items/${encodeURIComponent(child.id)}/unlink`, { method: 'POST', body: { parent: '' } });
+  assert.equal(clearedEmpty.graph.parent, null, 'HTTP unlink parent:"" clears the parent');
+  assert.equal(clearedEmpty.project, treeProject.id, 'clearing the parent leaves the project');
+  await ok('/api/tree', { method: 'POST', body: { action: 'move', id: child.id, parent: parent.id } });
+  const clearedNull = await ok(`/api/items/${encodeURIComponent(child.id)}/unlink`, { method: 'POST', body: { parent: null } });
+  assert.equal(clearedNull.graph.parent, null, 'HTTP unlink parent:null clears the parent');
+  const clearedProject = await ok(`/api/items/${encodeURIComponent(child.id)}/unlink`, { method: 'POST', body: { project: '' } });
+  assert.equal(clearedProject.project, undefined, 'HTTP unlink project:"" clears the project');
+  assert.equal(clearedProject.graph.parent, null);
+  const stillInProject = await ok(`/api/tree?board=${encodeURIComponent(boardId)}&project=${keys.tree}`);
+  assert.equal(place(stillInProject, child.id), null, 'a cleared project drops the ticket from that tree');
+
+  // claim, lease visibility, release — one holder at a time, including conflicts and list scope
   assert.equal(await ok(`/api/items/${encodeURIComponent(parent.id)}/claim`), null, 'an unclaimed ticket has no lease');
+  assert.match(await mcp.tool('hud_claim', { action: 'list', board: boardId }), /^no active claim for mcp-surface$/);
+  assert.equal(await mcp.tool('hud_claim', { action: 'list', all: true, board: boardId }), 'no active claims');
   const httpSession = `http-surface-${nonce}`;
+  const peer = `peer-${nonce}`;
   await ok('/api/sessions', { method: 'POST', body: { id: httpSession, kind: 'agent' } });
+  await ok('/api/sessions', { method: 'POST', body: { id: peer, kind: 'agent' } });
   const httpClaim = await ok(`/api/items/${encodeURIComponent(parent.ident)}/claim`, { method: 'POST', body: { session: httpSession, ttl: 60 } }, httpSession);
   assertLease(httpClaim, httpSession, 'HTTP claim');
   assertLease(await ok(`/api/items/${encodeURIComponent(parent.id)}/claim`), httpSession, 'HTTP status');
   const httpClaims = await ok(`/api/claims?session=${encodeURIComponent(httpSession)}&board=${encodeURIComponent(boardId)}`);
   assert.equal(httpClaims.items.length, 1);
   assertLease(httpClaims.items[0], httpSession, 'HTTP list');
+  const conflict = await req(`/api/items/${encodeURIComponent(parent.id)}/claim`, { method: 'POST', body: { session: peer, ttl: 60 } }, peer);
+  assert.equal(conflict.res.status, 409, 'a second session is refused');
+  assert.equal(conflict.body.code, 'claimed');
+  const wrongRelease = await req(`/api/items/${encodeURIComponent(parent.id)}/claim?session=${encodeURIComponent(peer)}&reason=not-mine`, { method: 'DELETE' }, peer);
+  assert.equal(wrongRelease.res.status, 403, 'a non-holder cannot release');
+  assertLease(await ok(`/api/items/${encodeURIComponent(parent.id)}/claim`), httpSession, 'refused release leaves the holder');
   await ok(`/api/items/${encodeURIComponent(parent.id)}/claim?session=${encodeURIComponent(httpSession)}&reason=http-done`, { method: 'DELETE' }, httpSession);
   assert.equal(await ok(`/api/items/${encodeURIComponent(parent.id)}/claim`), null, 'HTTP release frees the lease');
 
@@ -272,12 +301,46 @@ try {
   assert.match(mcpStatus, /live=true/);
   assert.match(mcpStatus, /sessionLive=true/);
   assert.match(mcpStatus, /expiresAt=\d+/);
+  const peerClaim = await ok(`/api/items/${encodeURIComponent(child.id)}/claim`, { method: 'POST', body: { session: peer, ttl: 90 } }, peer);
+  assertLease(peerClaim, peer, 'peer claim');
   const mcpLeases = await mcp.tool('hud_claim', { action: 'list', board: boardId });
-  assert.match(mcpLeases, new RegExp(`${parent.ident} claimed by mcp-surface`));
+  assert.match(mcpLeases, new RegExp(`^${parent.ident} claimed by mcp-surface`));
   assert.match(mcpLeases, /live=true sessionLive=true/);
+  assert.doesNotMatch(mcpLeases, new RegExp(peer), 'list without session stays on this MCP session');
+  const namedLeases = await mcp.tool('hud_claim', { action: 'list', session: 'mcp-surface', board: boardId });
+  assert.equal(namedLeases, mcpLeases);
+  const everyLease = await mcp.tool('hud_claim', { action: 'list', all: true, board: boardId });
+  assert.match(everyLease, new RegExp(`${parent.ident} claimed by mcp-surface`));
+  assert.match(everyLease, new RegExp(`${peerClaim.ident} claimed by ${peer}`));
+  const mixed = await mcp.request('tools/call', { name: 'hud_claim', arguments: { action: 'list', all: true, session: 'mcp-surface', board: boardId } });
+  assert.equal(mixed.result.isError, true, 'list rejects session and all together');
+  const httpAll = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
+  assert.deepEqual(httpAll.items.map((c) => c.session).sort(), [peer, 'mcp-surface'].sort(), 'HTTP list without session is every lease');
+  const cliDefault = await cli(['claim', 'list', '--board', boardId], { HUD_SESSION: 'cli-surface-check' });
+  assert.match(cliDefault, /no active claim for cli-surface-check/);
+  assert.doesNotMatch(cliDefault, /claimed by/);
+  const cliAll = await cli(['claim', 'list', '--all', '--board', boardId]);
+  assert.match(cliAll, new RegExp(`${parent.ident} claimed by mcp-surface`));
+  assert.match(cliAll, new RegExp(`${peerClaim.ident} claimed by ${peer}`));
+  await assert.rejects(() => cli(['claim', 'list', '--all', '--session', peer, '--board', boardId]), /not both/);
+
+  const parentLine = await mcp.tool('hud_claim', { action: 'status', ticket: parent.ident });
+  const oneFooter = '… 1 more omitted (2 total); narrow with session or board';
+  const fitOne = new Mcp({ HUD_SESSION: 'mcp-cap-fit', HUD_CLAIM_LIST_MAX: String(parentLine.length + 1 + oneFooter.length) });
+  clients.push(fitOne);
+  await fitOne.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-fit' } });
+  assert.equal(await fitOne.tool('hud_claim', { action: 'list', all: true, board: boardId }), `${parentLine}\n${oneFooter}`);
+  const tiny = new Mcp({ HUD_SESSION: 'mcp-cap-tiny', HUD_CLAIM_LIST_MAX: '1' });
+  clients.push(tiny);
+  await tiny.request('initialize', { protocolVersion: '2025-06-18', clientInfo: { name: 'mcp-cap-tiny' } });
+  const omitted = await tiny.tool('hud_claim', { action: 'list', all: true, board: boardId });
+  assert.equal(omitted, '… 2 more omitted (2 total); narrow with session or board');
+  assert.doesNotMatch(omitted, /claimed by/, 'a truncated list does not cut a lease line');
+
   const mcpReleased = await mcp.tool('hud_claim', { action: 'release', ticket: parent.ident, session: 'mcp-surface', reason: 'mcp-done' });
   assert.match(mcpReleased, new RegExp(`released ${parent.ident} \\(mcp-done\\)`));
   assert.match(await mcp.tool('hud_claim', { action: 'status', ticket: parent.id }), /is not claimed/);
+  await ok(`/api/items/${encodeURIComponent(child.id)}/claim?session=${encodeURIComponent(peer)}&reason=peer-done`, { method: 'DELETE' }, peer);
 
   const cliSession = `cli-surface-${nonce}`;
   const cliClaim = JSON.parse(await cli(['claim', parent.ident, '--session', cliSession, '--ttl', '60', '--json']));
@@ -331,7 +394,7 @@ try {
   process.exitCode = 1;
 } finally {
   if (boardId) await ok(`/api/boards/${encodeURIComponent(boardId)}`, { method: 'DELETE' }).catch(() => {});
-  mcp?.close();
+  for (const client of clients) client.close();
   if (server) {
     await req('/api/shutdown', { method: 'POST' }).catch(() => {});
     await new Promise((r) => setTimeout(r, 400));

@@ -790,9 +790,10 @@ route('POST', '/api/items/:id/link', async (req, _s, [id], q) => {
 route('POST', '/api/items/:id/unlink', async (req, _s, [id], q) => {
   const b = await readObj(req);
   const clear: Record<string, unknown> = {};
-  // parent and project are strings; an empty value clears them. blockedBy and refs are lists.
-  for (const k of ['project', 'parent'] as const) if (b[k]) clear[k] = null;
-  for (const k of ['blockedBy', 'refs'] as const) if (b[k]) clear[k] = [];
+  // Naming a link clears it. "" and null are empty clears; any truthy value is a sentinel (the CLI sends true).
+  const named = (v: unknown) => v === '' || v === null || !!v;
+  for (const k of ['project', 'parent'] as const) if (named(b[k])) clear[k] = null;
+  for (const k of ['blockedBy', 'refs'] as const) if (named(b[k])) clear[k] = [];
   if (!Object.keys(clear).length) throw new HudError(400, 'name at least one of project, parent, blockedBy, refs');
   return withGraph(store.link(rid(id, q), clear, actorOf(req, b)));
 });

@@ -502,18 +502,19 @@ const TOOLS = [
   {
     name: 'hud_claim',
     description:
-      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. Omit session on list to see every lease.',
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list past 60000 characters keeps whole lease lines and says how many were omitted; narrow it with session or board.',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['claim', 'renew', 'release', 'status', 'list'], description: 'default: claim' },
         ticket: { type: 'string', description: 'ticket id or KEY-12' },
-        session: { type: 'string', description: 'session name (default: this MCP session)' },
+        session: { type: 'string', description: 'session name (default: this MCP session). list: that holder only; use all for every lease' },
         ttl: { type: 'number', description: 'lease seconds (default 120, 15-900)' },
         start: { type: 'boolean', description: 'also set the ticket to doing' },
         takeover: { type: 'boolean', description: 'take a lease whose holder is no longer live' },
         reason: { type: 'string', description: 'release: short reason recorded on the claim event' },
         board: { type: 'string', description: 'list: limit leases to one board' },
+        all: { type: 'boolean', description: 'list: every lease. Default list is this session only' },
       },
     },
   },
@@ -655,6 +656,33 @@ function validate(name: string, args: any) {
 const MAX_OUT = VIEW_REVIEW_MAX_CHARS;
 function cap(text: string) {
   return text.length > MAX_OUT ? `${text.slice(0, MAX_OUT)}\n… truncated (${text.length} chars); narrow it with filters (board, status, limit, hud_search)` : text;
+}
+
+/** Character budget for a claim list. HUD_CLAIM_LIST_MAX shrinks it in tests; the omission line is never sliced. */
+function claimListMax(): number {
+  const raw = process.env.HUD_CLAIM_LIST_MAX;
+  if (raw === undefined || raw === '') return MAX_OUT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : MAX_OUT;
+}
+
+/** Keep whole records. When the budget runs out, say how many rows were left out instead of cutting a line. */
+function capRecords(lines: string[], hint: string, max = claimListMax()): string {
+  const kept: string[] = [];
+  let used = 0;
+  const note = (omitted: number) => `… ${omitted} more omitted (${lines.length} total); ${hint}`;
+  for (const line of lines) {
+    const omittedAfter = lines.length - kept.length - 1;
+    const reserve = omittedAfter > 0 ? note(omittedAfter).length + 1 : 0;
+    const sep = kept.length ? 1 : 0;
+    if (line.length + sep + reserve > max - used) break;
+    kept.push(line);
+    used += sep + line.length;
+  }
+  if (kept.length === lines.length) return kept.join('\n');
+  const omitted = lines.length - kept.length;
+  const body = kept.join('\n');
+  return body ? `${body}\n${note(omitted)}` : note(omitted);
 }
 
 async function needBoard(board?: string, client: Hud = baseHud) {
@@ -1054,9 +1082,13 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       const action = args.action ?? 'claim';
       const name = String(args.session ?? sessionName());
       if (action === 'list') {
-        const listed = await hud.claims({ session: args.session, board: args.board });
-        if (!listed.items.length) return args.session ? `no active claim for ${args.session}` : 'no active claims';
-        return cap(listed.items.map(leaseLine).join('\n'));
+        const named = typeof args.session === 'string' && args.session !== '' ? args.session : undefined;
+        if (args.all && named) throw new Error('list takes session or all, not both');
+        const every = args.all === true;
+        const session = every ? undefined : named ?? sessionName();
+        const listed = await hud.claims({ session, board: args.board });
+        if (!listed.items.length) return every ? 'no active claims' : `no active claim for ${session}`;
+        return capRecords(listed.items.map(leaseLine), 'narrow with session or board');
       }
       if (!args.ticket) throw new Error(`ticket is required for ${action}`);
       if (action === 'status') {

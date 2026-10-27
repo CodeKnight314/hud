@@ -85,7 +85,7 @@ usage:
   hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]
                                      take an exclusive lease on a ticket; --start also moves it to doing
   hud claim status <id>              the lease on one ticket (holder, expiry, live)
-  hud claim list [--session s] [--board b]   every active lease, or one session's
+  hud claim list [--session s] [--board b] [--all]   this session's leases; --all lists every lease
   hud claim renew <id> [--ttl sec]   extend the lease this session already holds
   hud release <id> [--session s] [--reason text]   release a claim
   hud context read [--scope run:<uuid>] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
@@ -242,7 +242,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
   queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'all', 'limit', 'board', 'json'] },
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
-  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'json'] },
+  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] [--all] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'all', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
   context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
   attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
@@ -586,9 +586,11 @@ async function main() {
     case 'claim': {
       const sub = rest[0];
       if (sub === 'list') {
-        const r = await hud.claims({ session: flags.session, board: flags.board });
+        if (flags.all && flags.session) throw new UsageError('hud claim list takes --session or --all, not both');
+        const whose = flags.all ? undefined : (typeof flags.session === 'string' ? flags.session : session);
+        const r = await hud.claims({ session: whose, board: flags.board });
         const lines = r.items.map((c) => `${c.ident} claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleString()} live=${c.live} sessionLive=${c.sessionLive}`);
-        return emit(r, lines.length ? lines.join('\n') : 'no active claims');
+        return emit(r, lines.length ? lines.join('\n') : (flags.all ? 'no active claims' : `no active claim for ${whose}`));
       }
       if (sub === 'status') {
         const id = rest[1];
