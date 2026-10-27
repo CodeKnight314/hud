@@ -228,7 +228,7 @@ const TOOLS = [
   {
     name: 'hud_guide',
     description:
-      'Full usage guide for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide.',
+      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide. Humans install and use the app from QUICKSTART.md.',
     inputSchema: {
       type: 'object',
       properties: {

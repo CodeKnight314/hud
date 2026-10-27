@@ -9,6 +9,8 @@ and charts. The board grants exclusive leases, takes work back from an agent tha
 tree as the owned decomposition of a job. Agents reach it through MCP, the CLI or HTTP. It runs on your machine, binds
 to loopback only, and keeps your data in a per-user directory. The contract is [PRODUCT.md](PRODUCT.md).
 
+People start with the [human quickstart](QUICKSTART.md); agents use [GUIDE.md](GUIDE.md).
+
 ## Install
 
 Download the installer for your platform from the [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
@@ -26,8 +28,7 @@ npm run dev      # Electron against this repo, scratch port and data dir
 npm run pack     # unpacked app in dist/
 ```
 
-The app is the primary interface: a window, a tray icon, and the server it keeps running for agents. `node bin/hud.js
-open` opens the board without the desktop shell.
+The app is the primary interface; `node bin/hud.js open` opens the board without the desktop shell.
 
 ## What you get
 
@@ -40,8 +41,7 @@ open` opens the board without the desktop shell.
 - **Attention and runs.** One inbox for decisions, blocked work, warnings, errors and stale monitors; a run view with
   explicit progress and ETA.
 - **Coordination for several agents.** The board enforces exclusive leases. A silent agent loses its hold, and a
-  live lease stays with its holder. A queue, typed shared context, file attachments and an event-driven wait let
-  parallel agents reuse findings.
+  live lease stays with its holder. A queue, typed context, attachments and an event-driven wait let agents share findings.
 
 ## Connect an agent
 
@@ -85,6 +85,7 @@ holds overview, activity, coordination and settings in one scroll.
 
 ## Learn more
 
+- [QUICKSTART.md](QUICKSTART.md) — install, Settings, Attention and Tickets.
 - [PRODUCT.md](PRODUCT.md) — the product contract: leases, reclaim, trees, and which issue serves which criterion.
 - [GUIDE.md](GUIDE.md) — the agent and operator guide: tools, schemas, renderers, coordination, install and updates.
 - [STYLE.md](STYLE.md) — the dark desktop visual contract.

@@ -1,4 +1,4 @@
-// Keeps the user-facing README short, current and link-correct. No dependencies.
+// Keeps the user-facing README short, the human quickstart linked, and each doc's TOC matched to its sections.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,9 +13,11 @@ const ok = (cond, msg) => {
 
 const readme = readFileSync(join(root, 'README.md'), 'utf8');
 const guide = readFileSync(join(root, 'GUIDE.md'), 'utf8');
+const quickstart = readFileSync(join(root, 'QUICKSTART.md'), 'utf8');
 const lines = readme.split('\n').length;
+const quickLines = quickstart.split('\n').length;
 
-ok(lines <= 100, `README is ${lines} lines; keep it under 100 (move detail to GUIDE.md/AGENTS.md)`);
+ok(lines <= 100, `README is ${lines} lines; keep it under 100 (move detail to QUICKSTART.md/GUIDE.md/AGENTS.md)`);
 ok(readme.includes('/releases/latest'), 'README links to /releases/latest');
 ok(readme.includes('latest stable release'), 'README names the latest stable release');
 ok(!/releases\/tag\/v\d/.test(readme), 'README must not pin an old release tag');
@@ -31,6 +33,16 @@ const signedReadme = readme.split(/Unsigned/)[0];
 ok(!/right-click/.test(signedReadme), 'signed-release instructions do not use the right-click workaround');
 ok(/Unsigned[\s\S]{0,400}right-click/.test(readme), 'the right-click workaround stays attached to unsigned builds');
 ok(guide.includes('Developer ID') && guide.includes('Authenticode'), 'GUIDE distinguishes signed macOS and Windows releases');
+ok(readme.includes('QUICKSTART.md'), 'README links the human quickstart');
+ok(quickLines <= 120, `QUICKSTART is ${quickLines} lines; keep the human quickstart under 120`);
+ok(quickstart.includes('/releases/latest'), 'QUICKSTART links to /releases/latest');
+ok(!/releases\/tag\/v\d/.test(quickstart), 'QUICKSTART must not pin an old release tag');
+ok(!/\b0\.1\.[01]\b/.test(quickstart), 'QUICKSTART must not hard-code an old version');
+ok(!/npm run dist/.test(quickstart), 'QUICKSTART leaves release mechanics to AGENTS.md');
+ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT/.test(quickstart), 'QUICKSTART leaves dev env vars to AGENTS.md');
+for (const id of ['install', 'settings', 'attention', 'tickets']) {
+  ok(new RegExp(`^## ${id[0].toUpperCase()}${id.slice(1)}$`, 'm').test(quickstart), `QUICKSTART has a ${id} section`);
+}
 
 function slug(heading) {
   return heading
@@ -39,8 +51,37 @@ function slug(heading) {
     .replace(/[^\w\- ]+/g, '')
     .replace(/\s+/g, '-');
 }
-const slugs = new Set(guide.split('\n').filter((l) => /^#{2,3} /.test(l)).map((l) => slug(l.replace(/^#+\s+/, ''))));
-for (const m of readme.matchAll(/GUIDE\.md#([\w-]+)/g)) ok(slugs.has(m[1]), `README anchor GUIDE.md#${m[1]} resolves`);
+function headingSlugs(markdown, levels) {
+  return markdown.split('\n').filter((l) => levels.test(l)).map((l) => slug(l.replace(/^#+\s+/, '')));
+}
+/** The first markdown list before any section. Its anchors must equal the h2 slugs, in order. */
+function tocAnchors(markdown) {
+  const lines = markdown.split('\n');
+  const start = lines.findIndex((l) => /^- \[/.test(l));
+  if (start < 0) return [];
+  const anchors = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '') break;
+    if (!/^- \[/.test(line) && !/^\s+\[/.test(line)) break;
+    for (const m of line.matchAll(/\]\(#([\w-]+)\)/g)) anchors.push(m[1]);
+  }
+  return anchors;
+}
+function tocInSync(markdown, name) {
+  const headings = headingSlugs(markdown, /^## [^#]/);
+  const toc = tocAnchors(markdown);
+  const same = toc.length === headings.length && toc.every((anchor, i) => anchor === headings[i]);
+  ok(same, `${name} TOC is out of sync\n  TOC: ${toc.join(' | ') || '(none)'}\n  H2:  ${headings.join(' | ')}`);
+}
+tocInSync(guide, 'GUIDE');
+tocInSync(quickstart, 'QUICKSTART');
+
+const guideSlugs = new Set(headingSlugs(guide, /^#{2,3} [^#]/));
+const quickSlugs = new Set(headingSlugs(quickstart, /^#{2,3} [^#]/));
+for (const m of readme.matchAll(/GUIDE\.md#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `README anchor GUIDE.md#${m[1]} resolves`);
+for (const m of readme.matchAll(/QUICKSTART\.md#([\w-]+)/g)) ok(quickSlugs.has(m[1]), `README anchor QUICKSTART.md#${m[1]} resolves`);
+for (const m of quickstart.matchAll(/GUIDE\.md#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `QUICKSTART anchor GUIDE.md#${m[1]} resolves`);
 
 const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
 const store = readFileSync(join(root, 'src/store.ts'), 'utf8');
@@ -116,4 +157,4 @@ if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, PRODUCT.md link, latest stable links, version gates, GUIDE anchors, change surfaces match comments');
+console.log('PASS docs: README shape, human quickstart, PRODUCT.md link, latest stable links, version gates, GUIDE anchors, change surfaces match comments');

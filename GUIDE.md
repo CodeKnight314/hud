@@ -1,5 +1,8 @@
 # hud — agent guide
 
+This is the agent contract for MCP, CLI and HTTP. Humans install the app and use Settings, Attention and Tickets
+from [QUICKSTART.md](QUICKSTART.md).
+
 hud is a local, live canvas shared between a human and agents. It holds **tickets**, **monitors**,
 **notes** and **frames** on one or more **boards**. The product contract — board-enforced leases,
 reclaim of a stuck agent, and a parent that owns its decomposition — is [PRODUCT.md](PRODUCT.md).
@@ -10,9 +13,10 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 - [Ways in](#ways-in-all-equivalent) · [Tool matrix](#tool-matrix) · [Browser navigation](#browser-navigation) · [Items](#items) ·
   [Projects, tickets and links](#projects-tickets-and-links) · [Coordination](#coordination) ·
   [Shared context](#shared-context) · [Monitors](#monitors) · [Renderers](#renderers) ·
-  [Attention, runs and changes](#attention-runs-and-incremental-changes) · [Decisions](#decisions-when-youre-blocked) ·
-  [Finishing a run](#finishing-a-run) · [Trash and backups](#trash-backups-and-undo) ·
-  [Install as an app](#install-hud-as-an-app-macos-windows-linux) · [Connect your agent](#connect-your-agent)
+  [Utilities](#utilities) · [Attention, runs and changes](#attention-runs-and-incremental-changes) ·
+  [Decisions](#decisions-when-youre-blocked) · [Finishing a run](#finishing-a-run) ·
+  [Trash and backups](#trash-backups-and-undo) · [Conventions](#conventions) ·
+  [Install and connect](#install-and-connect) · [Connect your agent](#connect-your-agent)
 
 ## Ways in (all equivalent)
 - **MCP**: tools `hud_overview`, `hud_tickets`, `hud_search`, `hud_project`, `hud_link`, `hud_create`, `hud_update`,
@@ -307,7 +311,8 @@ the board's loose sequence); deleting a ticket removes it from other tickets' `p
 **Notifications.** A ticket with a non-empty `notify` list raises an alert (to those sessions) when someone *not* in that
 list comments on it, changes its status or changes its assignee. The alert's `to` is `comment`, `status` or `assigned`.
 
-The human reads the same structure in the **Tickets view** (or press `l` on a board). Project chips switch
+The human reads the same structure in the **Tickets view** (or press `l` on a board). The human walkthrough — chips,
+list/tree/board, the completed filter — is [Tickets](QUICKSTART.md#tickets). Project chips switch
 the view to one project (or all of them); the project filter does the same. **list** groups by status, **tree**
 nests sub-tickets under their parents, and **board** is a column per status. Every task shows its assignee
 (`→name`) and its live claimer (`⊕name`); a dash means that side is unset. `＋` beside a status adds a ticket
@@ -975,9 +980,11 @@ State is ordinary item state, so it persists and survives a reload; a running ti
 
 
 ## Attention, runs and incremental changes
-`hud_attention {action:"list"}` (or `hud attention`) is the human-attention queue for command approvals, decisions, blocked work, warnings,
-errors and stale monitors. It is intentionally separate from `hud_alerts`: reviewing an attention item does not
-acknowledge old agent alerts, and reviewing a `command` item does not approve or start the shell. Use the returned `revision` when calling `hud_attention` with `action:"review"`,
+`hud_attention {action:"list"}` (or `hud attention`) is the human-attention queue for command approvals, decisions,
+blocked work, warnings, errors and stale monitors. The inbox UI is [Attention](QUICKSTART.md#attention). It is
+intentionally separate from `hud_alerts`: reviewing an attention item does not acknowledge old agent alerts, and
+reviewing a `command` item does not approve or start the shell. Use the returned `revision` when calling
+`hud_attention` with `action:"review"`,
 `"unreview"`, or `"snooze"`; snoozing requires `until` as an epoch-millisecond deadline. A changed or stale revision is
 rejected so one agent cannot overwrite a newer human-review state. The human approves a pending command in the Attention
 UI (or `POST /api/monitors/:id/approve` as actor `user`).
@@ -1059,17 +1066,19 @@ dir (`hud.lock`); a second one refuses to start.
 - Use `group` rather than coordinates; run `hud_organize` after adding a batch of items (or turn on `auto`).
 - `hud_arrange` fits the whole board; prefer `hud_organize` for explicit auto/manual control.
 
-## Install hud as an app (macOS, Windows, Linux)
-hud ships as a desktop app (Electron shell around the same local server): a real window, a menu-bar/tray icon,
-and the CLI + MCP server built into the same binary.
+## Install and connect
 
-    npm install        # once, for the build tooling
-    npm run dev        # run the app against this repo on a scratch port + scratch data dir
+Humans install the desktop app and use Settings, Attention and Tickets from [QUICKSTART.md](QUICKSTART.md). This
+file is the agent contract.
 
-    npm run dist       # installers for the current OS -> dist/
-    npm run dist:mac   # dmg (arm64, x64)
-    npm run dist:win   # nsis installer (x64, arm64)
-    npm run dist:linux # AppImage + deb
+The packaged app runs the same local server the CLI and MCP use. It keeps data in the per-user directory
+(`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
+probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
+(one board, one server). `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. On startup, a newer packaged
+app backs up the board and replaces only its own older packaged server in that directory. It refuses to replace a
+source or other installation, a newer server, or a server reporting a save error. **Quit HUD for update** backs up the
+board and stops that server, including when **Keep server running after quit** is on. Reconnect existing clients after
+an update. Publishing a release is described in `AGENTS.md`.
 
 Prebuilt downloads for the latest stable release are on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest):
 macOS arm64/x64 DMGs, a Windows x64 installer and Linux x64 AppImage/deb. This tree's app version is 0.2.0
@@ -1165,12 +1174,18 @@ Merging does not create a tag or a GitHub release.
     hud mcp install                 # claude + codex + opencode (skips any that aren't installed)
     hud mcp install claude          # just one
     hud mcp install all --dry-run   # show exactly what would change
-    hud mcp status                  # where hud is wired in, and which command is used
+    hud mcp status [--json]         # read-only: saved registrations, no MCP handshake
+    hud mcp repair [clients...]     # refresh an entry, including one that still points at a source checkout
     hud mcp uninstall               # remove the hud entry again
     hud mcp print generic           # a snippet to paste into any other client (e.g. muse)
 
-Config files are parsed and backed up before any write, and only the `hud` entry is ever touched.
-When run from a packaged binary it registers `<hud> mcp`, so nothing else needs to be on `PATH`.
+**Registered** means the `hud` entry is saved. It does not mean a client session is connected. Config files are parsed
+and backed up before any write, and only the `hud` entry is ever touched. Backups stay beside the config file.
+Disconnect removes that entry and nothing else. OpenCode JSONC is detected and left untouched so its comments survive;
+use `hud mcp print` and edit it by hand. `--json` on `status`, `install`, `repair` and `uninstall` prints
+machine-readable status. When run from a packaged binary, install registers `<hud> mcp`, so nothing else needs to be
+on `PATH`. Connecting or repairing from the packaged app also refreshes the managed `hud` command shim, then registers
+that command. Existing client sessions must be restarted or reconnected after a change.
 
 In the packaged desktop app, Settings → Connections → **Install command** (or `hud cli install`) puts the `hud` command
 on your `PATH`; the managed shim points at the app binary, so the CLI and MCP server use the same program. The app
