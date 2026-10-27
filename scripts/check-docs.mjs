@@ -41,8 +41,27 @@ const version = Number(/STATE_VERSION = (\d+)/.exec(store)?.[1]);
 ok(Number.isFinite(version), 'STATE_VERSION is declared');
 ok(agents.includes(`STATE_VERSION ${version}`), `AGENTS.md mentions the current state version (${version})`);
 
+const change = agents.split(/^## /m).find((part) => part.startsWith('Change surfaces\n'));
+ok(!!change, 'AGENTS.md has a Change surfaces section');
+if (change) {
+  for (const bit of [
+    '- [ ] **Route.**',
+    '- [ ] **Client.**',
+    '- [ ] **MCP.**',
+    '- [ ] **CLI.**',
+    '- [ ] **GUIDE.**',
+    'non-skippable',
+    'route → client → MCP → CLI → GUIDE',
+    'POST /api/items/:id/comments',
+    'Hud.comment()',
+    'hud_comment',
+    "case 'comment'",
+    'hud comment',
+  ]) ok(change.includes(bit), `Change surfaces section includes ${bit}`);
+}
+
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, release link, logo and GUIDE anchors');
+console.log('PASS docs: README shape, release link, logo, GUIDE anchors, change surfaces');
