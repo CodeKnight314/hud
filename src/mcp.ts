@@ -12,6 +12,7 @@ import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
 import { line } from './summary.ts';
 import type { Item, QueueResult } from './types.ts';
+import { formatViewReview } from './views.ts';
 
 const VERSION = JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version;
 
@@ -552,21 +553,23 @@ const TOOLS = [
   {
     name: 'hud_view',
     description:
-      'Create, inspect or validate a chart renderer module for display:"view:<name>". generate turns a small declarative spec into a module; validate runs static checks and a headless render. Trust boundary: these modules run unsandboxed in the board page, so only install code you trust. Prefer hud_graph/hud_canvas for sandboxed custom programs.',
+      'Create, inspect or validate a chart renderer module for display:"view:<name>". generate turns a small declarative spec into a module and may install that generated source. write stages caller-supplied source and returns a review diff; it does not install. approve installs only that reviewed proposal. These modules run unsandboxed in the board page. Prefer hud_graph/hud_canvas for sandboxed custom programs.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['list', 'get', 'generate', 'write', 'validate', 'delete'], description: 'default: list' },
+        action: { type: 'string', enum: ['list', 'get', 'generate', 'write', 'approve', 'validate', 'delete'], description: 'default: list' },
         name: { type: 'string', description: 'module name (lowercase letters, digits, . _ -)' },
         spec: {
           type: 'object',
           description: '{kind:"bar"|"line"|"sparkline"|"gauge"|"bullet"|"scatter"|"heatmap"|"table"|"slo", series?, unit?, max?, targets?, thresholds?, maxRows?}',
         },
-        code: { type: 'string', description: 'write/validate: module source' },
-        write: { type: 'boolean', description: 'generate: write the module to disk (default false)' },
+        code: { type: 'string', description: 'write/validate: module source. write stages a review and does not install.' },
+        write: { type: 'boolean', description: 'generate: write the generated module to disk (default false). Does not apply to caller-supplied code.' },
         overwrite: { type: 'boolean' },
         expectedSha256: { type: 'string' },
-        display: { type: 'string', description: 'monitor id to set display:"view:<name>" on after a successful write' },
+        proposalId: { type: 'string', description: 'approve: id from the write review' },
+        sha256: { type: 'string', description: 'approve: sha256 of the reviewed module' },
+        display: { type: 'string', description: 'monitor id to set display:"view:<name>" on after a successful generate write' },
       },
     },
   },
@@ -1015,7 +1018,12 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       if (action === 'write') {
         if (typeof args.code !== 'string') throw new Error('code is required');
         const r = await hud.viewWrite(args.name, { code: args.code, overwrite: !!args.overwrite, expectedSha256: args.expectedSha256 });
-        return `wrote ${r.name} at ${r.path} (sha256 ${r.sha256.slice(0, 12)}…)\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`;
+        return cap(`hud_view {action:"approve", name:"${r.name}", proposalId:"${r.id}", sha256:"${r.sha256}"}\n${formatViewReview(r)}`);
+      }
+      if (action === 'approve') {
+        if (typeof args.proposalId !== 'string' || typeof args.sha256 !== 'string') throw new Error('approve requires proposalId and sha256 from the review');
+        const r = await hud.viewApprove(args.name, { proposalId: args.proposalId, sha256: args.sha256 });
+        return `installed ${r.name} at ${r.path} (sha256 ${r.sha256.slice(0, 12)}…)\nTrust: this module runs unsandboxed in the board page. The installed bytes are the reviewed module.`;
       }
       if (action === 'validate') {
         const r = await hud.viewValidate(args.name, args.code);
@@ -1025,7 +1033,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
         const r = await hud.viewDelete(args.name, args.expectedSha256);
         return `deleted ${args.name}: ${r.deleted}`;
       }
-      throw new Error('action must be list|get|generate|write|validate|delete');
+      throw new Error('action must be list|get|generate|write|approve|validate|delete');
     }
     case 'hud_attach': {
       const action = args.action ?? 'list';

@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
 import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
+import type { ViewInstall, ViewReview } from './views.ts';
 
 export interface HudOptions {
   url?: string;
@@ -410,8 +411,13 @@ export class Hud {
   viewGenerate(name: string, spec: Record<string, unknown>, opts: { write?: boolean; overwrite?: boolean } = {}): Promise<{ name: string; code: string; validation: { ok: boolean; errors: string[]; warnings: string[]; sha256: string }; written: boolean; sha256?: string; mtime?: number; path?: string }> {
     return this.request('POST', '/api/views', { name, spec, ...opts });
   }
-  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string }): Promise<{ name: string; sha256: string; mtime: number; path: string }> {
+  /** stage caller-supplied renderer source. Returns the review diff; the module is not installed. */
+  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string }): Promise<ViewReview> {
     return this.request('PUT', `/api/views/${encodeURIComponent(name)}`, input);
+  }
+  /** install a previously staged review. The sha256 must be the one from that review. */
+  viewApprove(name: string, input: { proposalId: string; sha256: string }): Promise<ViewInstall> {
+    return this.request('PUT', `/api/views/${encodeURIComponent(name)}`, { approve: true, proposalId: input.proposalId, sha256: input.sha256 });
   }
   viewValidate(name: string, code?: string): Promise<{ ok: boolean; errors: string[]; warnings: string[]; sha256: string; rendered: boolean; renderErrors?: string[]; image?: { mimeType: string; data: string } }> {
     return this.request('POST', `/api/views/${encodeURIComponent(name)}/validate`, code === undefined ? {} : { code });

@@ -729,20 +729,26 @@ renderers with their separate contract in [views/README.md](views/README.md); th
 For a reusable chart that follows one of the standard shapes, generate a view module instead of hand-writing HTML.
 
     hud_view {action: "generate", name: "latency-bar", spec: {kind: "bar", series: "categories", unit: "ms"}, write: true}
+    hud_view {action: "write", name: "latency-bar", code: "<module source>"}
+    hud_view {action: "approve", name: "latency-bar", proposalId: "<id from write>", sha256: "<sha256 from write>"}
     hud_view {action: "validate", name: "latency-bar"}
     hud_view {action: "list" | "get" | "delete", name?}
     hud set <monitor> --display "view:latency-bar"
 
 `spec.kind` is one of `bar`, `line`, `sparkline`, `gauge`, `bullet`, `scatter`, `heatmap`, `table` or `slo`.
 `series` is a dot path into `meta` (or omitted for history/table reads); `unit`, `max`, `targets`, `thresholds` and
-`maxRows` shape the output. `generate` returns the code and its validation; add `write: true` to install it in the
-views directory, and `display` to point a monitor at it in one step.
+`maxRows` shape the output. `generate` returns the code and its validation; add `write: true` to install that
+generated module in the views directory, and `display` to point a monitor at it in one step. `write` (and
+`hud view set`) is for caller-supplied source: it returns a review diff and does not install the file. `approve`
+installs the staged bytes when `proposalId` and `sha256` match that review. A review expires after 15 minutes.
+A write that also sets `approve` does not skip the review.
 
 - **Validation is two-stage.** Static checks reject imports, network/storage access, `eval`, script/iframe tags and
   inline handlers, then compile the module without executing it. `validate` also renders it in a headless Electron
   window against a fixture, so a blank or throwing renderer is caught before it reaches a card.
-- **Trust boundary.** Views execute unsandboxed in the board page. Only install code you trust; publish a view as an
-  attachment and inspect it before writing. Sandboxed custom programs (`hud_graph`/`hud_canvas`) are the right tool
+- **Trust boundary.** Views execute unsandboxed in the board page. Generated modules are installed by hud itself.
+  Caller-supplied and other remote modules cannot land until their review diff is approved. Publish a view as an
+  attachment and inspect it before staging it. Sandboxed custom programs (`hud_graph`/`hud_canvas`) are the right tool
   for untrusted or data-heavy UI.
 - **Native alternatives.** `bullet` (value against warn/error ticks and a target) and `waterfall` (categorical
   contributions to a total) are built in, so an agent can use `display: "bullet"` with `max`/`warnAbove`/`target`

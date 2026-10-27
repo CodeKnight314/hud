@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { deleteViewFile, generateViewCode, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, writeViewFile } from '../src/views.ts';
+import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, writeViewFile } from '../src/views.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'hud-views-'));
 setViewsDir(dir);
@@ -85,5 +85,59 @@ assert.equal(readdirSync(dir).includes('bad-view.js'), false);
 
 writeFileSync(join(dir, 'unrelated.txt'), 'ignored');
 assert.equal(listViewInfos().some((v) => v.name === 'unrelated'), false, 'non-js files are ignored');
+
+// caller-supplied modules are untrusted: a review diff is surfaced and nothing lands until that exact review is approved
+const remote = "export function render() { return '<div>' + esc('remote') + '</div>'; }\n";
+const absent = (name: string) => readdirSync(dir).includes(`${name}.js`);
+const staged = installUntrustedView('remote-mod', { code: remote, now: 1_000, ttlMs: 60_000 });
+assert.equal(staged.installed, false);
+assert.equal(staged.trust, 'untrusted');
+assert.equal(absent('remote-mod'), false, 'staging a remote module does not write it');
+assert.match(staged.diff, /\+export function render/);
+const reviewText = formatViewReview(staged);
+assert.match(reviewText, /NOT INSTALLED/);
+assert.match(reviewText, /remote-mod/);
+assert.match(reviewText, new RegExp(staged.id));
+assert.match(reviewText, /\+export function render/);
+
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, code: remote, sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(absent('remote-mod'), false, 'approve on the submit itself does not install');
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: 'not-a-review', sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(absent('remote-mod'), false, 'an unknown review cannot install a module');
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: '0'.repeat(64), now: 1_000 }), /reviewed/);
+assert.equal(absent('remote-mod'), false, 'a mismatched sha256 cannot install a module');
+const other = "export function render() { return '<div>' + esc('other') + '</div>'; }\n";
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, code: other, now: 1_000 }), /reviewed|approval/);
+assert.equal(absent('remote-mod'), false, 'different code cannot ride along with an approval');
+
+const installed = installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, now: 1_000 });
+assert.equal(installed.installed, true);
+assert.equal(readViewFile('remote-mod'), remote);
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: staged.id, sha256: staged.sha256, now: 1_000 }), /approval/);
+assert.equal(readViewFile('remote-mod'), remote, 'a spent review cannot write again');
+
+const expired = installUntrustedView('expired-mod', { code: remote, now: 2_000, ttlMs: 0 });
+assert.equal(expired.installed, false);
+assert.match(formatViewReview(expired), /NOT INSTALLED/);
+assert.throws(() => installUntrustedView('expired-mod', { approve: true, proposalId: expired.id, sha256: expired.sha256, now: 2_000 }), /approval/);
+assert.equal(absent('expired-mod'), false, 'an expired review cannot install a module');
+
+assert.throws(() => installUntrustedView('blocked-mod', { code: "export function render() { return fetch('/api/state'); }" }), /did not validate/);
+assert.equal(absent('blocked-mod'), false, 'a module that fails static checks is not staged or written');
+
+const nextCode = "export function render() { return '<div>' + esc('next') + '</div>'; }\n";
+const pending = installUntrustedView('remote-mod', { code: nextCode, overwrite: true, now: 3_000, ttlMs: 60_000 });
+assert.equal(pending.installed, false);
+assert.match(pending.diff, /^-export function render/m);
+assert.match(pending.diff, /^\+export function render/m);
+assert.equal(readViewFile('remote-mod'), remote, 'a replacement review leaves the installed module untouched');
+writeViewFile('remote-mod', other, { overwrite: true });
+assert.throws(() => installUntrustedView('remote-mod', { approve: true, proposalId: pending.id, sha256: pending.sha256, now: 3_000 }), /changed since/);
+assert.equal(readViewFile('remote-mod'), other, 'approval does not overwrite a module that changed after review');
+
+assert.throws(() => installUntrustedView('remote-mod', { code: remote, now: 4_000 }), /already exists/);
+assert.equal(readViewFile('remote-mod'), other);
+
+deleteViewFile('remote-mod');
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

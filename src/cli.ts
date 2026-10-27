@@ -7,6 +7,7 @@ import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
 import { line } from './summary.ts';
+import { formatViewReview } from './views.ts';
 
 /** open the canvas: the desktop app when running from it, otherwise the user's browser */
 function openApp(url: string): void {
@@ -124,8 +125,9 @@ usage:
   hud guide                          full guide (for agents)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
   hud view list | show <name> | generate <name> --spec '<json>' [--write] [--display monitor]
-           | set <name> --code-file path [--overwrite] | validate <name> | rm <name>
-                                     agent-authored chart modules (trusted local code; see GUIDE)
+           | set <name> --code-file path [--overwrite] | approve <name> --proposal id --sha sha256
+           | validate <name> | rm <name>
+                                     chart modules. set stages a review diff; approve installs that exact module
   hud mcp                            run the MCP server on stdio (what agents connect to)
   hud mcp install [clients...] [--dry-run]   wire hud into claude / codex / opencode / all
   hud mcp uninstall [clients...]     remove the hud MCP entry again
@@ -148,7 +150,7 @@ examples:
 class UsageError extends Error {}
 
 const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite']);
-const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display']);
+const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'expected-sha', 'display', 'proposal', 'sha']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
@@ -251,7 +253,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   board: { u: 'hud board [list|add <name>|rename <id> <name>|clear <id>|rm <id>]', f: ['json'] },
   guide: { u: 'hud guide', max: 0, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
-  view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | validate <name> | rm <name>', max: 2, f: '*' },
+  view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | approve <name> --proposal id --sha sha256 | validate <name> | rm <name>', max: 2, f: '*' },
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
   cli: { u: 'hud cli [install|uninstall|status]', max: 1, f: [] },
 };
@@ -929,7 +931,12 @@ async function main() {
       if (sub === 'set') {
         if (!flags['code-file']) throw new UsageError('set requires --code-file path');
         const r = await hud.viewWrite(name, { code: readFileSync(String(flags['code-file']), 'utf8'), overwrite: !!flags.overwrite, expectedSha256: flags['expected-sha'] as string | undefined });
-        return emit(r, `wrote ${name} (${r.sha256})\nTrust: this module runs unsandboxed in the board page. Only install code you trust.`);
+        return emit(r, `${formatViewReview(r)}\nhud view approve ${name} --proposal ${r.id} --sha ${r.sha256}`);
+      }
+      if (sub === 'approve') {
+        if (!flags.proposal || !flags.sha) throw new UsageError('approve requires --proposal <id> --sha <sha256>');
+        const r = await hud.viewApprove(name, { proposalId: String(flags.proposal), sha256: String(flags.sha) });
+        return emit(r, `installed ${name} (${r.sha256})\nTrust: this module runs unsandboxed in the board page. The installed bytes are the reviewed module.`);
       }
       if (sub === 'validate') {
         const code = flags['code-file'] ? readFileSync(String(flags['code-file']), 'utf8') : undefined;
@@ -940,7 +947,7 @@ async function main() {
         const r = await hud.viewDelete(name, flags['expected-sha'] as string | undefined);
         return emit(r, `deleted ${name}`);
       }
-      throw new UsageError(`unknown view command "${sub}" — try: hud view list|show|generate|set|validate|rm`);
+      throw new UsageError(`unknown view command "${sub}" — try: hud view list|show|generate|set|approve|validate|rm`);
     }
     case 'mcp': {
       const sub = rest[0];
