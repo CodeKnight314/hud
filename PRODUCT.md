@@ -2,7 +2,7 @@
 
 hud is a local board a person and several agents share. The board coordinates the work. The person and the agents do the work. Monitors, notes and frames sit on the same board. MCP, the CLI and HTTP are one contract. Tool shapes and timings live in [GUIDE.md](GUIDE.md#coordination).
 
-The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. Issues RIC-7 through RIC-37 each map to one criterion. RIC-11, RIC-13, RIC-15, RIC-19, RIC-28, RIC-33, RIC-34, RIC-36 and RIC-37 have landed on 0.2.0; the other rows are still open.
+The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. Issues RIC-7 through RIC-37 each map to one criterion. RIC-11, RIC-13, RIC-15, RIC-17, RIC-19, RIC-28, RIC-31, RIC-33, RIC-34, RIC-36 and RIC-37 have landed on 0.2.0; the other rows are still open.
 
 ## Three rules
 
@@ -73,7 +73,7 @@ The same state the agents use is glanceable: canvas, attention, context, tickets
 - [RIC-28](https://linear.app/richards-project-space/issue/RIC-28/human-friendly-shared-context-timeline-in-inspector) — landed. The inspector shows a FACT/FAIL/SUMMARY timeline with a handoff copy.
 - [RIC-29](https://linear.app/richards-project-space/issue/RIC-29/saved-ticket-filters-views-assignee-run-overdue) — a few named ticket filters in the UI and the CLI.
 - [RIC-30](https://linear.app/richards-project-space/issue/RIC-30/ticket-git-branch-status-hint-local) — a read-only local hint that the ticket's branch exists or is checked out.
-- [RIC-31](https://linear.app/richards-project-space/issue/RIC-31/built-in-monitor-templates-gallery) — disk, TLS, HTTP and heartbeat templates with safe defaults.
+- [RIC-31](https://linear.app/richards-project-space/issue/RIC-31/built-in-monitor-templates-gallery) — landed. Disk, TLS, loopback HTTP, and cron-heartbeat templates (`hud add monitor --template`) ship with safe defaults.
 - [RIC-32](https://linear.app/richards-project-space/issue/RIC-32/alert-routing-desktop-notification-optional-webhook) — desktop notifications, plus an optional webhook for severity-up events.
 - [RIC-34](https://linear.app/richards-project-space/issue/RIC-34/context-retention-and-export-for-finished-runs) — landed. A finished or canceled run exports its context and attachments (`hud context export`).
 
@@ -83,7 +83,7 @@ The packaged app is the board people run. Signing, the Linux agent path and the 
 
 - [RIC-14](https://linear.app/richards-project-space/issue/RIC-14/notarize-code-sign-macos-and-windows-installers) — Developer ID plus notarization on macOS, Authenticode on Windows.
 - [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) — landed. AppImage and `.deb` both install a stable `hud` command. Move the AppImage and run Install command again.
-- [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) — the 0.2.0 train is ready for a later human tag. This issue does not tag or publish.
+- [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) — landed. The four version fields agree at 0.2.0. A person pushing the tag `v0.2.0` lets CI create a draft. This issue does not tag or publish.
 
 ## Open issues
 
@@ -101,7 +101,7 @@ Snapshot 2026-10-27, updated for the squash-merges now on 0.2.0. Each issue maps
 | [RIC-14](https://linear.app/richards-project-space/issue/RIC-14/notarize-code-sign-macos-and-windows-installers) | Notarize and code-sign installers | Install and keep the app |
 | [RIC-15](https://linear.app/richards-project-space/issue/RIC-15/ship-appimage-cli-mcp-path-integration-or-document-deb-only) | AppImage CLI / MCP path | Install and keep the app (landed) |
 | [RIC-16](https://linear.app/richards-project-space/issue/RIC-16/one-click-in-app-update-apply-still-user-approved) | In-app update, user-approved | The human stays in charge |
-| [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) | Prepare the 0.2.0 release train | Install and keep the app |
+| [RIC-17](https://linear.app/richards-project-space/issue/RIC-17/publish-v013-or-next-stable-release-from-ci-draft) | Prepare the 0.2.0 release train | Install and keep the app (landed) |
 | [RIC-18](https://linear.app/richards-project-space/issue/RIC-18/confirm-before-run-ux-for-agent-authored-command-monitors) | Confirm agent command monitors | The human stays in charge |
 | [RIC-19](https://linear.app/richards-project-space/issue/RIC-19/trust-gate-for-installing-views-renderer-modules) | Trust gate for view modules | The human stays in charge (landed) |
 | [RIC-20](https://linear.app/richards-project-space/issue/RIC-20/surface-saveerror-recoveredfrom-loudly-in-app-chrome) | Loud save-error banner | The human stays in charge |
@@ -115,7 +115,7 @@ Snapshot 2026-10-27, updated for the squash-merges now on 0.2.0. Each issue maps
 | [RIC-28](https://linear.app/richards-project-space/issue/RIC-28/human-friendly-shared-context-timeline-in-inspector) | Shared-context timeline | A person can read the board (landed) |
 | [RIC-29](https://linear.app/richards-project-space/issue/RIC-29/saved-ticket-filters-views-assignee-run-overdue) | Saved ticket filters | A person can read the board |
 | [RIC-30](https://linear.app/richards-project-space/issue/RIC-30/ticket-git-branch-status-hint-local) | Local git branch hint | A person can read the board |
-| [RIC-31](https://linear.app/richards-project-space/issue/RIC-31/built-in-monitor-templates-gallery) | Monitor templates | A person can read the board |
+| [RIC-31](https://linear.app/richards-project-space/issue/RIC-31/built-in-monitor-templates-gallery) | Monitor templates | A person can read the board (landed) |
 | [RIC-32](https://linear.app/richards-project-space/issue/RIC-32/alert-routing-desktop-notification-optional-webhook) | Alert routing | A person can read the board |
 | [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) | Claim and queue visibility | Board-enforced leases (landed) |
 | [RIC-34](https://linear.app/richards-project-space/issue/RIC-34/context-retention-and-export-for-finished-runs) | Export a finished run | A person can read the board (landed) |
