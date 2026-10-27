@@ -575,8 +575,8 @@ export function bulletSVG(it, w, h, plot = {}) {
   ].filter(([v]) => Number.isFinite(v)).map(([v, color]) => `<line x1="${x(v).toFixed(1)}" y1="${H / 2 - 13}" x2="${x(v).toFixed(1)}" y2="${H / 2 + 13}" stroke="${color}" stroke-width="1"/>`).join('');
   const targets = [...(plot.targets || []).map((t) => Number(t.value)), Number(it.metric?.target)].filter(Number.isFinite);
   const target = targets.map((v) => `<line x1="${(x(v) - 1).toFixed(1)}" y1="${H / 2 - 15}" x2="${(x(v) - 1).toFixed(1)}" y2="${H / 2 + 15}" stroke="var(--hi)" stroke-width="2"/>`).join('');
-  const body = `<rect x="8" y="${H / 2 - 5}" width="${W - 16}" height="10" fill="var(--raised)"/>`
-    + `<rect x="8" y="${H / 2 - 5}" width="${Math.max(0, x(value) - 8).toFixed(1)}" height="10" fill="var(--fg)"/>`
+  const body = `<rect x="8" y="${H / 2 - 5}" width="${W - 16}" height="10" fill="var(--inset)"/>`
+    + `<rect x="8" y="${H / 2 - 5}" width="${Math.max(0, x(value) - 8).toFixed(1)}" height="10" fill="var(--hi)"/>`
     + ticks + target
     + `<text x="8" y="${H - 4}" fill="var(--dim)" font-size="9">${esc(fmt(value))}${it.metric?.unit || it.unit ? ` ${esc(it.metric?.unit || it.unit)}` : ''} · ${esc(fmt(max))}</text>`;
   return svg(it, 'bullet', W, H, body, [{ px: x(value), py: H / 2, value, label: 'value' }]);
@@ -705,7 +705,7 @@ export function capacitySVG(it, w, h) {
   const ratio = clamp(value / capacity, 0, 1);
   const x = 4, width = W - 8, barY = H * 0.58, barH = Math.max(6, Math.min(12, H * 0.18));
   const label = `${fmt(value)} / ${fmt(capacity)}${unit ? ` ${unit}` : ''}`;
-  const body = `<text x="4" y="${Math.max(17, H * 0.34)}" class="gv">${esc(label)}</text><rect x="${x}" y="${barY.toFixed(1)}" width="${width.toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--raised)" stroke="var(--dim)"/><rect x="${x}" y="${barY.toFixed(1)}" width="${(width * ratio).toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--hi)"/><text x="${W - 4}" y="${H - 4}" text-anchor="end">${(ratio * 100).toFixed(0)}%</text>`;
+  const body = `<text x="4" y="${Math.max(17, H * 0.34)}" class="gv">${esc(label)}</text><rect x="${x}" y="${barY.toFixed(1)}" width="${width.toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--inset)" stroke="var(--dim)"/><rect x="${x}" y="${barY.toFixed(1)}" width="${(width * ratio).toFixed(1)}" height="${barH.toFixed(1)}" fill="var(--hi)"/><text x="${W - 4}" y="${H - 4}" text-anchor="end">${(ratio * 100).toFixed(0)}%</text>`;
   return svg(it, 'capacity', W, H, body, [{ px: x + width * ratio, py: barY + barH / 2, value, label: `${fmt(value)} / ${fmt(capacity)}` }]);
 }
 

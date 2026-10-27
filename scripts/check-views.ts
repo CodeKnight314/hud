@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
+import { programDocument } from '../src/programs.ts';
+import type { ProgramSpec } from '../src/types.ts';
 import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, MAX_VIEW_REVIEWS, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
 
 const TERMINAL_HEX = /#(?:e8e8e8|8c8c8c|2c2c2c|ff5c5c|46d67a|a9c4ff|6d7888|333|777|222)\b|#fff\b/i;
@@ -213,8 +215,59 @@ assert.ok(contrast(faint, token('raised')) >= 4.5, `--faint ${faint} is readable
 assert.match(css, /\.run-progress > i \{[^}]*background: var\(--hi\)/);
 assert.doesNotMatch(css, /\.run-progress > i \{[^}]*accent/);
 assert.match(settings, /\.button\.primary:hover \{[^}]*background: var\(--accent-dim/);
-for (const file of ['web/views.js', 'web/app.js', 'web/settings.css', 'web/style.css', 'views/bullet.js', 'src/views.ts', 'GUIDE.md']) {
+for (const file of ['web/views.js', 'web/app.js', 'web/settings.css', 'web/style.css', 'views/bullet.js', 'src/views.ts', 'src/programs.ts', 'GUIDE.md']) {
   assert.doesNotMatch(readFileSync(join(root, file), 'utf8'), TERMINAL_HEX, `${file} has no terminal palette leftovers`);
 }
+function normColor(value: string) {
+  return value.replace(/\s+/g, '').toLowerCase().replace(/0\./g, '.');
+}
+function rgbaToken(name: string) {
+  const found = css.match(new RegExp(`--${name}:\\s*(rgba\\([^)]+\\))`));
+  assert.ok(found, `web/style.css defines --${name}`);
+  return normColor(found[1]);
+}
+const allowedHex = new Set(['bg', 'chrome', 'panel', 'card', 'note', 'raised', 'inset', 'fg', 'hi', 'dim', 'faint', 'accent', 'red', 'green'].map((name) => token(name)));
+const allowedRgba = new Set([rgbaToken('line'), rgbaToken('line2')]);
+for (const kind of VIEW_KINDS) {
+  const code = generateViewCode(`sync-${kind}`, { kind, series: kind === 'bar' ? 'categories' : kind === 'scatter' ? 'points' : kind === 'heatmap' ? 'grid' : undefined, unit: 'ms', max: 100, targets: [{ value: 80 }], thresholds: { warn: 60, error: 90 } });
+  for (const hex of code.matchAll(/#[0-9a-fA-F]{6}\b/g)) assert.ok(allowedHex.has(hex[0].toLowerCase()), `${kind} hex ${hex[0]} is a :root token`);
+  for (const rgba of code.matchAll(/rgba\([^)]+\)/g)) assert.ok(allowedRgba.has(normColor(rgba[0])), `${kind} ${rgba[0]} matches --line or --line2`);
+}
+for (const kind of ['gauge', 'bullet'] as const) {
+  const code = generateViewCode(`meter-${kind}`, { kind, max: 100, unit: 'ms', targets: [{ value: 80 }], thresholds: { warn: 60, error: 90 } });
+  const api = runInNewContext(executable(code), { helpers });
+  const out = api.render({ item, w: 420, h: 160, helpers });
+  const fills = [...out.matchAll(/fill="(#[0-9a-fA-F]{6})"/g)].map((match) => match[1].toLowerCase());
+  assert.equal(fills[0], token('inset'), `${kind} track uses --inset`);
+  assert.equal(fills[1], token('hi'), `${kind} meter uses --hi`);
+}
+const viewsJs = readFileSync(join(root, 'web/views.js'), 'utf8');
+function fnBody(name: string) {
+  const start = viewsJs.indexOf(`export function ${name}`);
+  assert.ok(start >= 0, name);
+  const next = viewsJs.indexOf('\nexport function ', start + 1);
+  return viewsJs.slice(start, next === -1 ? undefined : next);
+}
+for (const name of ['bulletSVG', 'capacitySVG']) {
+  const body = fnBody(name);
+  assert.match(body, /fill="var\(--inset\)"/, `${name} track`);
+  assert.match(body, /fill="var\(--hi\)"/, `${name} meter`);
+  assert.doesNotMatch(body, /fill="var\(--(?:raised|fg)\)"/, `${name} stays off hover and body text fills`);
+}
+const doc = programDocument({ code: '<p>x</p>', language: 'html', description: 'sync', bindings: [], capabilities: [] } as ProgramSpec, 'sess', {});
+const sandbox = doc.match(/:root\{([^}]+)\}/);
+assert.ok(sandbox, 'program sandbox defines :root');
+function sandboxVar(name: string) {
+  const found = sandbox![1].match(new RegExp(`--${name}:([^;}]+)`));
+  assert.ok(found, `sandbox :root defines --${name}`);
+  return found[1].trim().toLowerCase();
+}
+for (const name of ['fg', 'bg', 'dim', 'panel', 'accent', 'red', 'green']) assert.equal(sandboxVar(name), token(name), `sandbox --${name}`);
+assert.equal(normColor(sandboxVar('line')), rgbaToken('line'));
+assert.equal(normColor(sandboxVar('line2')), rgbaToken('line2'));
+assert.doesNotMatch(sandbox![1], /--muted:/);
+assert.match(doc, /background:var\(--panel\)/);
+assert.doesNotMatch(doc, /background:#[0-9a-fA-F]/);
+for (const hex of doc.matchAll(/#[0-9a-fA-F]{6}\b/g)) assert.ok(allowedHex.has(hex[0].toLowerCase()), `sandbox hex ${hex[0]} is a :root token`);
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

@@ -107,7 +107,7 @@ return svg(item, 'gen-line', w, h, '<path d="' + d + '" fill="none" stroke="#e6e
       body = `const value = Number(Object.hasOwn(item, 'value') ? item.value : 0);
 const max = Number(spec.max ?? item.max ?? 100) || 100;
 const pct = Math.max(0, Math.min(100, value / max * 100));
-return svg(item, 'gen-gauge', w, h, '<rect x="6" y="' + (h / 2 - 5) + '" width="' + (w - 12) + '" height="10" rx="5" fill="#283140"/>' + '<rect x="6" y="' + (h / 2 - 5) + '" width="' + ((w - 12) * pct / 100) + '" height="10" rx="5" fill="#e6ebf2"/>' + '<text x="' + (w / 2) + '" y="' + (h / 2 - 12) + '" fill="#f6f8fb" font-size="13" text-anchor="middle">' + esc(fmt(value)) + (spec.unit ? esc(spec.unit) : '') + ' · ' + Math.round(pct) + '%</text>');`;
+return svg(item, 'gen-gauge', w, h, '<rect x="6" y="' + (h / 2 - 5) + '" width="' + (w - 12) + '" height="10" rx="5" fill="#0b0e13"/>' + '<rect x="6" y="' + (h / 2 - 5) + '" width="' + ((w - 12) * pct / 100) + '" height="10" rx="5" fill="#f6f8fb"/>' + '<text x="' + (w / 2) + '" y="' + (h / 2 - 12) + '" fill="#f6f8fb" font-size="13" text-anchor="middle">' + esc(fmt(value)) + (spec.unit ? esc(spec.unit) : '') + ' · ' + Math.round(pct) + '%</text>');`;
       break;
     case 'bullet':
       body = `const value = Number(Object.hasOwn(item, 'value') ? item.value : 0);
@@ -116,7 +116,7 @@ const scale = (v) => 6 + Math.max(0, Math.min(1, v / max)) * (w - 12);
 const warn = spec.thresholds && spec.thresholds.warn, error = spec.thresholds && spec.thresholds.error;
 const ticks = [[warn, '#9aa6b6'], [error, '#ff6d6d']].filter(t => Number.isFinite(t[0])).map(t => '<rect x="' + scale(t[0]) + '" y="' + (h / 2 - 10) + '" width="1" height="20" fill="' + t[1] + '"/>').join('');
 const target = (spec.targets || []).map(t => Number(t.value)).filter(Number.isFinite).map(v => '<rect x="' + (scale(v) - 1) + '" y="' + (h / 2 - 12) + '" width="2" height="24" fill="#f6f8fb"/>').join('');
-return svg(item, 'gen-bullet', w, h, '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (w - 12) + '" height="8" fill="#283140"/>' + '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (scale(value) - 6) + '" height="8" fill="#e6ebf2"/>' + ticks + target + '<text x="6" y="' + (h - 4) + '" fill="#9aa6b6" font-size="9">' + esc(fmt(value)) + (spec.unit ? ' ' + esc(spec.unit) : '') + '</text>');`;
+return svg(item, 'gen-bullet', w, h, '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (w - 12) + '" height="8" fill="#0b0e13"/>' + '<rect x="6" y="' + (h / 2 - 4) + '" width="' + (scale(value) - 6) + '" height="8" fill="#f6f8fb"/>' + ticks + target + '<text x="6" y="' + (h - 4) + '" fill="#9aa6b6" font-size="9">' + esc(fmt(value)) + (spec.unit ? ' ' + esc(spec.unit) : '') + '</text>');`;
       break;
     case 'scatter':
       body = `const pts = pointsOf(item, { series: ${series} });
