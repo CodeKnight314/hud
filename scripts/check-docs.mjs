@@ -17,6 +17,7 @@ const lines = readme.split('\n').length;
 
 ok(lines <= 100, `README is ${lines} lines; keep it under 100 (move detail to GUIDE.md/AGENTS.md)`);
 ok(readme.includes('/releases/latest'), 'README links to /releases/latest');
+ok(readme.includes('latest stable release'), 'README names the latest stable release');
 ok(!/releases\/tag\/v\d/.test(readme), 'README must not pin an old release tag');
 ok(!/\b0\.1\.[01]\b/.test(readme), 'README must not hard-code an old version');
 ok(readme.includes('build/icon.svg'), 'README shows the logo');
@@ -94,8 +95,17 @@ if (ways) {
   }
 }
 
+ok(guide.includes('/releases/latest'), 'GUIDE links downloads to /releases/latest');
+ok(guide.includes('latest stable release'), 'GUIDE names the latest stable release');
+ok(!/releases\/tag\/v\d/.test(guide), 'GUIDE must not pin a release tag for downloads');
+ok(guide.includes('update checker has existed since 0.1.1'), 'GUIDE keeps the update-checker version gate');
+ok(guide.includes('0.1.0 has none'), 'GUIDE keeps the 0.1.0 manual-upgrade gate');
+ok(guide.includes('leave every published stable release unchanged'), 'GUIDE does not freeze one historical release');
+ok(!/v0\.1\.0/.test(agents), 'AGENTS.md must not treat v0.1.0 as the standing release');
+ok(agents.includes('published stable releases unchanged'), 'AGENTS.md leaves published releases unchanged');
+
 if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, release link, logo, GUIDE anchors, change surfaces match comments');
+console.log('PASS docs: README shape, latest stable links, version gates, GUIDE anchors, change surfaces match comments');

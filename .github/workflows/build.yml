@@ -144,4 +144,4 @@ jobs:
       - name: Validate installers and write checksums
         run: node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"
       - name: Create GitHub draft release
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "Unsigned installers. See README for installation and upgrade instructions." --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "Unsigned installers. See the README and GUIDE for install and upgrade instructions." --generate-notes
