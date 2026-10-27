@@ -9,6 +9,7 @@ import { Hud } from '../src/client.ts';
 import { config } from '../src/config.ts';
 import { refreshInstalledCli } from '../src/cliinstall.ts';
 import { RECONNECT_DIALOG, clientsFromSessions } from '../src/reconnect.ts';
+import { recordedInstallExe, rejectServerRestartDuringUpdate, runVerifiedUpdateHandoff, spawnUpdateHelper } from '../src/update-apply.ts';
 import { prepareBackendUpdate, stopBackendForUpdate } from '../src/updates.ts';
 import { desktopSettings } from './settings.ts';
 
@@ -80,8 +81,13 @@ const settings = desktopSettings({
     writeFileSync(stateFile(), JSON.stringify({ ...readPrefs(), checkUpdatesOnLaunch: enabled }));
   },
   quitForUpdate: async () => {
-    await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
     quittingForUpdate = true;
+    try {
+      await stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
+    } catch (error) {
+      quittingForUpdate = false;
+      throw error;
+    }
     app.quit();
   },
   connectedClients: async () => {
@@ -96,6 +102,25 @@ const settings = desktopSettings({
       return await client.reconnect();
     } catch { return null; }
   },
+  applyVerifiedUpdate: async (plan) => {
+    // Fence heal before the server stops. A failed load during shutdown must not start the old server again.
+    quittingForUpdate = true;
+    try {
+      const health = await new Hud({ actor: 'user', autostart: false }).healthInfo();
+      const pid = health?.pid;
+      const serverPid = typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+      await runVerifiedUpdateHandoff({
+        spawnHelper: () => spawnUpdateHelper(plan, process.pid, join(dataDir, 'update-apply.log'), serverPid),
+        stopBackend: () => stopBackendForUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, plan.version),
+        // Next turn, after the install promise marks the download as kept. Quit inside this await can delete it.
+        quit: () => { setTimeout(() => { app.quit(); }, 0); },
+      });
+    } catch (error) {
+      quittingForUpdate = false;
+      throw error;
+    }
+  },
+  updateTarget: () => ({ platform: process.platform, execPath: process.execPath, appImage: process.env.APPIMAGE, commandExe: recordedInstallExe(dataDir) }),
 });
 const settingsEntry: Electron.MenuItemConstructorOptions = { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => settings.show() };
 
@@ -194,6 +219,7 @@ function createWindow(): void {
     if (!isMainFrame || code === -3) return; // -3 = ERR_ABORTED: a normal cancelled navigation
     if (String(failedUrl).startsWith('data:')) return;
     console.error(`[hud renderer] load failed ${code} ${desc} ${failedUrl}`);
+    if (quittingForUpdate) return;
     showUnreachable(true);
     void heal();
   });
@@ -224,20 +250,26 @@ function showUnreachable(retrying = false): void {
 let healing = false;
 let connecting: Promise<void> | null = null;
 function ensureCurrentServer(): Promise<void> {
+  rejectServerRestartDuringUpdate(quittingForUpdate);
   return connecting ??= (async () => {
+    rejectServerRestartDuringUpdate(quittingForUpdate);
     if (cfg.packaged) await prepareBackendUpdate(new Hud({ actor: 'user', autostart: false }), dataDir, version);
+    rejectServerRestartDuringUpdate(quittingForUpdate);
     hud = new Hud({ actor: 'user', autostart: true });
     await hud.ensureServer();
   })().finally(() => { connecting = null; });
 }
 async function heal(retries = 20): Promise<void> {
-  if (healing) return;
+  if (quittingForUpdate || healing) return;
   healing = true;
   try {
     for (let i = 0; i < retries; i++) {
+      if (quittingForUpdate) return;
       await new Promise((r) => setTimeout(r, 1500));
+      if (quittingForUpdate) return;
       try {
         await ensureCurrentServer();
+        if (quittingForUpdate) return;
         await win?.loadURL(url);
         return;
       } catch {
@@ -272,6 +304,7 @@ async function offerClientReconnect(): Promise<void> {
 
 /** start (or find) the server, then load it; never silently respawn after an explicit stop */
 async function connect(): Promise<void> {
+  if (quittingForUpdate) return;
   try {
     await ensureCurrentServer();
     await win?.loadURL(url);

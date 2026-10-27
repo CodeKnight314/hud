@@ -61,7 +61,8 @@
             </div>
             <div class="update-actions">
               <button id="check-updates" class="button" type="button" disabled>Check for updates</button>
-              <button id="download-update" class="button primary" type="button" disabled>Download update</button>
+              <button id="install-update" class="button primary" type="button" disabled>Install update</button>
+              <button id="download-update" class="button" type="button" disabled>Download in browser</button>
               <button id="quit-for-update" class="button" type="button" disabled>Quit HUD for update</button>
               <button id="open-release" class="text-button" type="button" disabled>View release</button>
             </div>
@@ -72,7 +73,7 @@
             <pre id="reconnect-text" class="reconnect-text"></pre>
             <div class="update-actions"><button id="reconnect-dismiss" class="button" type="button" disabled>Dismiss checklist</button></div>
           </section>
-          <p class="footnote">Download the installer, quit HUD using this button, then replace the app and reopen it. Your saved boards stay in the data folder. After an update, reconnect Claude Code with /mcp and restart Codex or OpenCode. A one-shot checklist for the clients that are still on the previous version appears here.</p>
+          <p class="footnote">Install update downloads the matching installer, checks its SHA256 against the SHA256SUMS file from that GitHub release over HTTPS, and asks before replacing this app and reopening it. That check is not a developer signature or notarization. HUD does not download or install an update by itself. Download in browser and Quit HUD for update remain available when you want to replace the app yourself. Saved boards stay in the data folder. After an update, reconnect Claude Code with /mcp and restart Codex or OpenCode; a one-shot checklist for clients still on the previous version appears here.</p>
         </section>
 
         <section id="panel-templates" role="tabpanel" aria-labelledby="tab-templates" tabindex="0" hidden>

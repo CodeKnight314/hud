@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -204,10 +205,27 @@ async function run() {
   let quits = 0;
   let quitFails = false;
   let reconnectAcks = 0;
+  const appRoot = join(fixtureRoot, 'Applications', 'hud.app');
+  mkdirSync(join(appRoot, 'Contents', 'MacOS'), { recursive: true });
+  writeFileSync(join(appRoot, 'Contents', 'MacOS', 'hud'), 'fixture-binary\n');
+  chmodSync(join(appRoot, 'Contents', 'MacOS', 'hud'), 0o755);
   const matchingName = installerName('0.1.2', 'darwin', 'arm64');
   assert.equal(matchingName, 'hud-0.1.2-mac-arm64.dmg', 'fixed supported fixture installer name');
   const releaseUrl = `https://github.com/CodeKnight314/hud/releases/tag/v0.1.2`;
   const downloadUrl = `https://github.com/CodeKnight314/hud/releases/download/v0.1.2/${matchingName}`;
+  const installerBytes = Buffer.from('settings installer bytes');
+  const installerSha = createHash('sha256').update(installerBytes).digest('hex');
+  let downloadCalls = 0;
+  const prompts = [];
+  const applied = [];
+  let confirmInstall = false;
+  const downloadFetcher = async (url) => {
+    downloadCalls++;
+    const target = String(url);
+    if (target.endsWith('/SHA256SUMS')) return new Response(`${installerSha}  ${matchingName}\n`, { status: 200 });
+    if (target === downloadUrl) return new Response(installerBytes, { status: 200 });
+    throw new Error(`unexpected download ${target}`);
+  };
   const updateChecker = new UpdateChecker({
     version: '0.1.1', platform: 'darwin', arch: 'arm64',
     fetcher: async () => new Response(JSON.stringify({
@@ -230,6 +248,11 @@ async function run() {
       { id: 'claude-ended', name: 'claude-ended', actor: 'claude', kind: 'agent', version: '0.1.0', live: false },
     ],
     ackReconnect: async () => { reconnectAcks++; acknowledgeReconnect(dataDir); },
+    downloadFetcher,
+    downloadDirectory: join(fixtureRoot, 'downloads'),
+    updateTarget: () => ({ platform: 'darwin', execPath: join(appRoot, 'Contents', 'MacOS', 'hud') }),
+    confirmVerifiedUpdate: async (summary) => { prompts.push(summary); return confirmInstall; },
+    applyVerifiedUpdate: async (plan) => { applied.push(plan); },
     visible: false,
   });
 
@@ -333,6 +356,7 @@ async function run() {
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('reconnect-card')?.hidden === true`), 'dismissed reconnect checklist');
   assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'dismiss clears the one-shot reminder');
   assert.equal(reconnectAcks, 1, 'Settings dismisses through the server ack path');
+  assert.equal(await pageEval(primaryWindow, `document.getElementById('install-update')?.disabled`), true, 'install stays disabled before a matching release is known');
   await click(primaryWindow, '#check-updates');
   await waitText(primaryWindow, '#update-status-text', 'Update available');
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('download-update')?.disabled === false`), 'matching installer readiness');
@@ -384,6 +408,30 @@ async function run() {
   await waitText(primaryWindow, '#action-status', 'Could not quit HUD.');
   assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'a failed quit clears the snapshot it just armed');
   quitFails = false;
+  assert.equal(await pageEval(primaryWindow, `document.getElementById('install-update')?.textContent`), 'Install update');
+  await click(primaryWindow, '#install-update');
+  await waitText(primaryWindow, '#action-status', 'Update left uninstalled.');
+  assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'declining Install update does not arm reconnect.json');
+  assert.equal(applied.length, 0, 'declining the prompt does not replace the app');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0].sha256, installerSha);
+  assert.equal(prompts[0].version, '0.1.2');
+  assert.equal(prompts[0].name, matchingName);
+  const callsAfterCancel = downloadCalls;
+  await settingsController.checkAtLaunch();
+  assert.equal(downloadCalls, callsAfterCancel, 'launch check does not download or install');
+  confirmInstall = true;
+  await click(primaryWindow, '#install-update');
+  await waitText(primaryWindow, '#action-status', 'Release checksum matched. HUD is quitting to install and relaunch.');
+  assert.equal(applied.length, 1, 'approval replaces the app once');
+  const installNotice = JSON.parse(readFileSync(join(dataDir, 'reconnect.json'), 'utf8'));
+  assert.equal(installNotice.reason, 'quit-for-update');
+  assert.equal(installNotice.fromVersion, '0.1.1');
+  assert.deepEqual(installNotice.clients.map((item) => item.id), ['claude-live'], 'install update arms the snapshot with the live clients only');
+  assert.equal(applied[0].kind, 'dmg');
+  assert.equal(applied[0].destination, appRoot);
+  assert.equal(applied[0].sha256, installerSha);
+  assert.equal(existsSync(applied[0].assetPath), true, 'approved download stays for the helper');
 
   // A second page with the same URL and preload cannot use the main Settings window's IPC identity.
   const settingsUrl = pathToFileURL(join(repo, 'web', 'settings.html')).href;
@@ -407,7 +455,7 @@ async function run() {
   assert.deepEqual(consoleFailures, [], `renderer console errors: ${consoleFailures.join(' | ')}`);
   assert.deepEqual(loadFailures, [], `renderer load failures: ${loadFailures.join(' | ')}`);
   assert.equal(readFileSync(cliEntry, 'utf8'), '# inert fixture; the shim is verified, never executed\n');
-  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, post-update reconnect checklist, quit-for-update reminder and armed-snapshot rollback, IPC identity and no board bridge.`);
+  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, post-update reconnect checklist, quit-for-update reminder and armed-snapshot rollback, verified update approval, IPC identity and no board bridge.`);
   console.log(`Artifacts: ${connectionShot}, ${templateShot}, ${updatesShot}`);
 }
 

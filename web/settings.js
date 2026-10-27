@@ -181,8 +181,10 @@
     const busy = Boolean(mutationBusy || externalBusy);
     $('check-updates').disabled = !bridgeAvailable || !appState || busy || status === 'checking' || !method('checkUpdates');
     $('check-updates').textContent = mutationBusy === 'checkUpdates' || status === 'checking' ? 'Checking…' : 'Check for updates';
+    $('install-update').disabled = !bridgeAvailable || !appState?.packaged || busy || status !== 'available' || !method('installUpdate');
+    $('install-update').textContent = mutationBusy === 'installUpdate' ? 'Downloading…' : 'Install update';
     $('download-update').disabled = !bridgeAvailable || busy || status !== 'available' || !method('downloadUpdate');
-    $('download-update').textContent = externalBusy === 'downloadUpdate' ? 'Opening…' : 'Download update';
+    $('download-update').textContent = externalBusy === 'downloadUpdate' ? 'Opening…' : 'Download in browser';
     $('quit-for-update').disabled = !bridgeAvailable || !appState?.packaged || busy || !method('quitForUpdate');
     $('quit-for-update').textContent = externalBusy === 'quitForUpdate' ? 'Quitting…' : 'Quit HUD for update';
     $('open-release').disabled = !bridgeAvailable || busy || !u.releaseUrl || !method('openRelease');
@@ -269,6 +271,11 @@
   $('install-command').addEventListener('click', () => mutate('installCommand', [], 'Installing or repairing the HUD command…', (s) => s.command?.ready ? 'The HUD command is ready.' : s.command?.detail || 'The HUD command needs attention.'));
   $('copy-config').addEventListener('click', () => external('copyConfig', 'Copying MCP configuration…', 'MCP configuration copied.'));
   $('check-updates').addEventListener('click', () => mutate('checkUpdates', [], 'Checking for updates…', (s) => s.updates?.status === 'error' ? { text: s.updates.message || 'The update check failed.', kind: 'bad' } : s.updates?.message || 'Update status refreshed.'));
+  $('install-update').addEventListener('click', () => mutate('installUpdate', [], 'Downloading the installer and checking SHA256…', (s) => {
+    if (s.updateApply === 'started') return 'Release checksum matched. HUD is quitting to install and relaunch.';
+    if (s.updateApply === 'cancelled') return 'Update left uninstalled.';
+    return { text: 'HUD did not confirm the update.', kind: 'bad' };
+  }));
   $('download-update').addEventListener('click', () => external('downloadUpdate', 'Opening installer download…', 'Opened the installer download in your browser.'));
   $('quit-for-update').addEventListener('click', () => external('quitForUpdate', 'Saving boards and quitting HUD…', 'HUD is quitting for the update.'));
   $('open-release').addEventListener('click', () => external('openRelease', 'Opening release information…', 'Opened release information in your browser.'));
