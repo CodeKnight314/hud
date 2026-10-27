@@ -148,8 +148,8 @@ assert.doesNotMatch(String(trash.body), /^## Install hud as an app/m);
 
 const connect = renderGuide(7317, 'connect-your-agent', null);
 assert.match(String(connect.body), /^## Connect your agent\n/);
-assert.doesNotMatch(String(connect.body), /Palette and state/);
-assert.match(style, /## Palette and state/);
+assert.doesNotMatch(String(connect.body), /## Status/);
+assert.match(style, /## Status/);
 const tocSlices = toc.map((anchor) => {
   const rendered = renderGuide(7317, anchor, null);
   assert.equal(rendered.status, 200, anchor);

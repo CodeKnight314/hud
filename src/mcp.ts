@@ -229,11 +229,7 @@ const TOOLS = [
   {
     name: 'hud_guide',
     description:
-<<<<<<< HEAD
-      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide. Quickstart links in this text point at GET /api/quickstart. Humans install and use the app from QUICKSTART.md.',
-=======
-      'Full usage guide for hud. Omit section and playbook for the whole guide. section is a table-of-contents anchor (coordination, monitors) for one slice. playbook is decentralized or lead (centralized is lead) for that coordination runbook. format "json" lists the TOC anchors, or returns one slice as {anchor,title,level,markdown}. An unknown section names those anchors. Do not pass section and playbook together.',
->>>>>>> 87d9aca (Serve GUIDE slices on top of the playbook guide)
+      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Omit section and playbook for the whole guide. section is a table-of-contents anchor (coordination, monitors) for one slice. playbook is decentralized or lead (centralized is lead) for that coordination runbook. format "json" lists the TOC anchors, or returns one slice as {anchor,title,level,markdown}. An unknown section names those anchors. Do not pass section and playbook together. Quickstart links in this text point at GET /api/quickstart; humans install and use the app from QUICKSTART.md.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -893,13 +889,9 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       return cap(`${await hud.summary(args.board)}${al}\n\nlive canvas: ${hud.url}`);
     }
     case 'hud_guide':
-<<<<<<< HEAD
-      return hud.guide(args.playbook);
+      return readGuide(hud, { section: args.section, playbook: args.playbook, format: args.format === 'json' ? 'json' : undefined });
     case 'hud_quickstart':
       return hud.quickstart();
-=======
-      return readGuide(hud, { section: args.section, playbook: args.playbook, format: args.format === 'json' ? 'json' : undefined });
->>>>>>> 87d9aca (Serve GUIDE slices on top of the playbook guide)
     case 'hud_search': {
       await needBoard(args.board, hud);
       const q = filters(args);
@@ -1609,39 +1601,22 @@ async function handleOne(msg: any): Promise<void> {
       case 'resources/list':
         return void reply({
           resources: [
-<<<<<<< HEAD
-            { uri: 'hud://guide', name: 'Hud guide', description: 'Agent contract: metric fields, dashboard schemas, and rendering conventions. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
+            { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide: metric fields, dashboard schemas, and rendering conventions. Append #<anchor> for one table-of-contents section. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
             { uri: 'hud://quickstart', name: 'Hud quickstart', description: 'Human quickstart: install, Settings, Attention and Tickets.', mimeType: 'text/markdown' },
-=======
-            { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide, metric fields, dashboard schemas, and rendering conventions. Append #<anchor> for one table-of-contents section.', mimeType: 'text/markdown' },
->>>>>>> 87d9aca (Serve GUIDE slices on top of the playbook guide)
             { uri: 'hud://playbook/decentralized', name: 'Decentralized coordination playbook', description: 'Copy-paste runbook: claim, publish a FACT, wait, finish. No lead. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/lead', name: 'Lead coordination playbook', description: 'Copy-paste runbook for a lead who links and assigns work, and for workers who pull. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
           ],
         });
       case 'resources/read': {
         const uri = String(params?.uri ?? '');
-<<<<<<< HEAD
-        const play = /^hud:\/\/playbook\/([A-Za-z0-9_-]+)$/.exec(uri);
-        if (uri === 'hud://guide') {
-          const text = await baseHud.guide();
-          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
-        }
         if (uri === 'hud://quickstart') {
           const text = await baseHud.quickstart();
           return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
         }
-        if (play) {
-          const text = await baseHud.guide(play[1]);
-          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
-        }
-        throw new Error(`unknown resource ${uri}`);
-=======
         const parsed = parseGuideResource(uri);
         if (!parsed) throw new Error(`unknown resource ${uri}`);
         const text = await readGuide(baseHud, parsed);
         return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
->>>>>>> 87d9aca (Serve GUIDE slices on top of the playbook guide)
       }
       case 'prompts/list':
         return void reply({ prompts: [] });
