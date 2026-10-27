@@ -156,7 +156,8 @@
     $('command-glyph').textContent = ready ? '✓' : installed ? '▲' : '○';
     $('command-status').className = `state-label${ready ? ' ok' : ''}`;
     $('command-state-text').textContent = ready ? 'Ready' : installed ? 'Needs repair' : 'Not installed';
-    $('command-detail').textContent = ready ? 'Available to terminals and MCP clients.' : command.detail || 'Used by HUD connections and terminal workflows.';
+    const detail = ready ? 'Available to terminals and MCP clients.' : command.detail || 'Used by HUD connections and terminal workflows.';
+    $('command-detail').textContent = ready && command.appImage ? `${detail} Move the AppImage and choose Repair command so the path stays current.` : detail;
     $('command-path').textContent = command.path ? `Path · ${command.path}` : ''; $('command-path').hidden = !command.path;
     const button = $('install-command');
     button.disabled = !bridgeAvailable || !appState || Boolean(mutationBusy || externalBusy) || !method('installCommand');

@@ -12,8 +12,10 @@ in a per-user directory.
 
 Download the installer for your platform from the
 [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
-or Linux (x64 AppImage/deb). Builds are not notarized: on macOS, right-click the app and choose **Open** the first
-time (and again after each update); Windows may show a SmartScreen prompt.
+or Linux (x64 AppImage or `.deb`). Builds are not notarized: on macOS, right-click the app and choose **Open** the first
+time (and again after each update); Windows may show a SmartScreen prompt. On Linux, both packages can install the
+`hud` command that agents use. From the app, choose Settings → Connections → **Install command**. If you move an
+AppImage, run that action again so the command follows the file.
 
 From a source checkout:
 
@@ -46,6 +48,9 @@ hud mcp install        # register hud with Claude Code, Codex and OpenCode
 hud mcp status         # what is configured where
 hud mcp print generic  # a snippet for any other MCP client
 ```
+
+The packaged app installs its own `hud` command first (`hud cli install`, or **Install command** in Settings). A source
+checkout uses `node bin/hud.js` instead. On Linux, the AppImage and the `.deb` both register that command for MCP.
 
 Agents get the full surface: tickets, monitors, charts, coordination and the guide (`hud guide`, `hud://guide`,
 `GET /api/guide`). Existing agent sessions keep their old MCP process after an upgrade — reconnect them (`/mcp` in

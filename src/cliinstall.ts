@@ -1,6 +1,7 @@
 import { accessSync, chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { appImageBootstrapPath, appImageBootstrapSource, appImageTarget, ensureAppImageBootstrap, resolveAppImageCliEntry } from './appimage-cli.ts';
 import { isElectron } from './assets.ts';
 import { config } from './config.ts';
 import { bundledCli } from './electron-runtime.ts';
@@ -11,6 +12,9 @@ import { bundledCli } from './electron-runtime.ts';
  * A wrapper script, not a symlink: a symlink to the app binary would launch the GUI, because it
  * cannot set ELECTRON_RUN_AS_NODE or point at the bundled CLI entry. The script `exec`s so MCP's
  * JSON-RPC over stdin/stdout passes straight through.
+ *
+ * An AppImage's mount path changes every launch, so that shim execs the `.AppImage` file and a
+ * bootstrap outside the mount (`appimage-boot.mjs`) imports the CLI from the fresh mount.
  */
 
 const appExe = (): string => process.execPath;
@@ -125,15 +129,31 @@ function isOurShim(p: string): boolean {
   }
 }
 
+export type CommandInfo = { installed: boolean; ready: boolean; path: string | null; detail: string; appImage?: boolean };
+
 /** install the `hud` command; returns a one-line report */
 export function installCli(): string {
   if (!isElectron()) return 'not running from the app — from a source checkout just use node bin/hud.js';
-  if (process.env.APPIMAGE) return 'the hud command cannot be installed from an AppImage (its CLI path changes on every run)';
-  const entry = bundledCli();
+  return installManagedCli();
+}
+
+/**
+ * Write the packaged shim. The app calls this through `installCli` (source checkouts are refused
+ * there). Regression tests call it directly so the AppImage path can run under plain node.
+ */
+export function installManagedCli(): string {
+  const image = appImageTarget();
+  if (image && !image.ok) return `not installing: ${image.detail}`;
+  if (image?.ok) {
+    ensureAppImageBootstrap();
+    if (!resolveAppImageCliEntry()) return 'not installing: the packaged CLI was not found inside this AppImage';
+  }
+  const exe = image?.ok ? image.path : appExe();
+  const entry = image?.ok ? appImageBootstrapPath() : bundledCli();
   const selected = shimTarget();
   const recorded = recordedManagedShim();
   const path = recorded || selected.path;
-  const hint = path === selected.path ? selected.hint : undefined;
+  const hints = [path === selected.path ? selected.hint : undefined, image?.ok ? 're-run "Install hud command" after moving the AppImage' : undefined].filter((hint): hint is string => !!hint);
   let existing = false;
   try {
     lstatSync(path);
@@ -141,10 +161,10 @@ export function installCli(): string {
   } catch {}
   if (existing && !isOurShim(path)) return `not installing: ${path} exists and was not created by hud (remove it first, or set HUD_BIN_DIR)`;
   mkdirSync(dirname(path), { recursive: true });
-  atomicWriteFile(path, shimBody(appExe(), entry, path), process.platform === 'win32' ? undefined : 0o755);
+  atomicWriteFile(path, shimBody(exe, entry, path), process.platform === 'win32' ? undefined : 0o755);
   mkdirSync(config().dataDir, { recursive: true });
-  atomicWriteFile(recordPath(), JSON.stringify({ path, entry, exe: appExe(), installedAt: Date.now() }, null, 2));
-  return `installed ${path}${hint ? `\n  ${hint}` : ''}`;
+  atomicWriteFile(recordPath(), JSON.stringify({ path, entry, exe, installedAt: Date.now() }, null, 2));
+  return `installed ${path}${hints.length ? `\n  ${hints.join('\n  ')}` : ''}`;
 }
 
 /** remove the `hud` command; returns a one-line report */
@@ -175,12 +195,17 @@ export function uninstallCli(): string {
 export function cliStatus(): string {
   const p = installedShim();
   if (!p) return 'hud command: not installed';
+  const image = appImageTarget();
+  if (image) {
+    const entry = image.ok ? resolveAppImageCliEntry() : undefined;
+    return `hud command: ${p}\n  app:   ${image.ok ? image.path : process.env.APPIMAGE}\n  entry: ${entry ?? '(not found in the mounted AppImage)'}`;
+  }
   return `hud command: ${p}\n  entry: ${bundledCli()}\n  app:   ${appExe()}`;
 }
 
 /** Keep a previously installed managed command pointed at the current app after replacement. */
 export function refreshInstalledCli(): void {
-  if (recordedManagedShim() && isElectron() && !process.env.APPIMAGE && !cliInfo().ready) installCli();
+  if (recordedManagedShim() && isElectron() && !cliInfo().ready) installCli();
 }
 
 function isExecutable(path: string): boolean {
@@ -193,7 +218,7 @@ function isExecutable(path: string): boolean {
 }
 
 /** Structured, read-only state for the installed command shim. */
-export function cliInfo(): { installed: boolean; ready: boolean; path: string | null; detail: string } {
+export function cliInfo(): CommandInfo {
   const path = installedShim();
   if (!isElectron()) {
     return {
@@ -203,36 +228,37 @@ export function cliInfo(): { installed: boolean; ready: boolean; path: string | 
       detail: 'source: not running from the app; from a source checkout just use node bin/hud.js',
     };
   }
-  if (process.env.APPIMAGE) {
-    return {
-      installed: path !== null,
-      ready: false,
-      path,
-      detail: 'AppImage: the hud command cannot be installed from an AppImage (its CLI path changes on every run)',
-    };
-  }
-  if (!path) return { installed: false, ready: false, path: null, detail: 'missing: no hud command is installed' };
-  if (!isOurShim(path)) {
-    return { installed: true, ready: false, path, detail: `stale: ${path} is missing or was not created by hud` };
-  }
+  return managedCommandStatus();
+}
 
-  const exe = appExe();
-  const entry = bundledCli();
+/** Same report as `cliInfo` without the source-checkout guard, so tests can run it under plain node. */
+export function managedCommandStatus(): CommandInfo {
+  const path = installedShim();
+  const image = appImageTarget();
+  const appImage = image ? true : undefined;
+  if (image && !image.ok) return { installed: path !== null, ready: false, path, detail: image.detail, appImage };
+  if (image?.ok && !resolveAppImageCliEntry()) {
+    return { installed: path !== null, ready: false, path, detail: 'AppImage CLI was not found inside the mounted app', appImage };
+  }
+  if (!path) return { installed: false, ready: false, path: null, detail: 'missing: no hud command is installed', ...(appImage ? { appImage } : {}) };
+  if (!isOurShim(path)) return { installed: true, ready: false, path, detail: `stale: ${path} is missing or was not created by hud`, ...(appImage ? { appImage } : {}) };
+
+  const exe = image?.ok ? image.path : appExe();
+  const entry = image?.ok ? appImageBootstrapPath() : bundledCli();
   let bodyMatches = false;
   try {
     bodyMatches = readFileSync(path, 'utf8') === shimBody(exe, entry, path);
   } catch {}
-  if (!bodyMatches) {
-    return { installed: true, ready: false, path, detail: `stale: ${path} points to a different app or CLI entry` };
+  if (!bodyMatches) return { installed: true, ready: false, path, detail: `stale: ${path} points to a different app or CLI entry`, ...(appImage ? { appImage } : {}) };
+  if (image?.ok) {
+    let bootstrap = '';
+    try { bootstrap = readFileSync(entry, 'utf8'); } catch {}
+    if (bootstrap !== appImageBootstrapSource()) {
+      return { installed: true, ready: false, path, detail: `stale: AppImage CLI bootstrap is missing or outdated: ${entry}`, appImage };
+    }
   }
-  if (!existsSync(exe) || !isExecutable(exe)) {
-    return { installed: true, ready: false, path, detail: `stale: app executable is missing or not executable: ${exe}` };
-  }
-  if (!existsSync(entry)) {
-    return { installed: true, ready: false, path, detail: `stale: CLI entry is missing: ${entry}` };
-  }
-  if (!isExecutable(path)) {
-    return { installed: true, ready: false, path, detail: `stale: shim is not executable: ${path}` };
-  }
-  return { installed: true, ready: true, path, detail: `ready: ${path}` };
+  if (!existsSync(exe) || !isExecutable(exe)) return { installed: true, ready: false, path, detail: `stale: app executable is missing or not executable: ${exe}`, ...(appImage ? { appImage } : {}) };
+  if (!existsSync(entry)) return { installed: true, ready: false, path, detail: `stale: CLI entry is missing: ${entry}`, ...(appImage ? { appImage } : {}) };
+  if (!isExecutable(path)) return { installed: true, ready: false, path, detail: `stale: shim is not executable: ${path}`, ...(appImage ? { appImage } : {}) };
+  return { installed: true, ready: true, path, detail: `ready: ${path}`, ...(appImage ? { appImage } : {}) };
 }

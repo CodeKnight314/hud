@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { appImageCliInvocation } from './appimage-cli.ts';
 import { SOURCE_ROOT, isElectron, isPackaged } from './assets.ts';
 
 export { isElectron };
@@ -43,10 +44,25 @@ export function primeLoginEnv(refresh = false): Promise<void> {
 /** how to run the hud CLI here: command, args to prefix, and the env it needs */
 export function cliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } {
   if (isElectron()) {
+    // AppImage: re-exec the .AppImage file so the child owns a mount that outlives this process.
+    const appImage = appImageCliInvocation();
+    if (appImage) return appImage;
     // the app binary is its own CLI in node mode — no second runtime to ship
     return { cmd: process.execPath, prefix: [bundledCli()], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
   }
   return { cmd: process.execPath, prefix: [join(SOURCE_ROOT, 'src', 'server.ts')], env: process.env };
+}
+
+/** Env for a fresh GUI process. The installed command sets node mode; a window must not inherit it or the parent mount. */
+export function guiLaunchEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  if (env.APPIMAGE) {
+    delete env.APPDIR;
+    delete env.ARGV0;
+    delete env.LD_LIBRARY_PATH;
+  }
+  return env;
 }
 
 /** how to start the isolated Electron capture runner, when this checkout has Electron available */

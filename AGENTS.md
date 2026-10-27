@@ -40,7 +40,8 @@ src/config.ts    ROOT and env config (fixed port + per-user data dir; HUD_PORT/H
 src/assets.ts    source-vs-packaged file access. `isPackaged()` (Electron), `asset()`, `assetKeys()`,
                  SOURCE_ROOT, isElectron/isElectronDev. The ONLY place that knows where files live
 src/electron-runtime.ts  `cliInvocation()` / `bundledCli()` — how the app shell runs the CLI+server in node mode
-src/cliinstall.ts  `hud cli install|uninstall|status` — the PATH shim the desktop app writes
+src/cliinstall.ts  `hud cli install|uninstall|status` — the PATH shim the desktop app writes. AppImage shims exec the
+  `.AppImage` file (`src/appimage-cli.ts` resolves the CLI inside each new mount) so agents keep a stable command.
 src/mcpinstall.ts `hud mcp install|uninstall|status|print` — wires hud into other agents' MCP configs
 src/updates.ts     stable GitHub release checks and safe replacement of the app's older packaged backend
 electron/main.ts the desktop shell: window, tray, menu, single-instance lock, keep-server-on-quit
