@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
 import type { MonitorTemplate } from './monitor-templates.ts';
-import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunContextExport, RunContextExportFile, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
+import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunContextExport, RunContextExportFile, RunOverview, SessionKind, SessionView, TextFormat, TicketForest } from './types.ts';
 import type { ViewInstall, ViewReview, ViewReviewRefusal } from './views.ts';
 
 export interface HudOptions {
@@ -391,6 +391,26 @@ export class Hud {
   projects(board?: string): Promise<ProjectGroup[]> {
     return this.request('GET', '/api/projects' + (board ? `?board=${encodeURIComponent(board)}` : ''));
   }
+  /** create a project; `name` and `title` are the same field */
+  createProject(input: { name?: string; title?: string; key?: string; board?: string; body?: string; description?: string; lead?: string; target?: string }): Promise<Item> {
+    return this.request('POST', '/api/projects', input);
+  }
+  /** patch a project by id or KEY: title/name, key, body/description, lead, target, status */
+  updateProject(id: string, patch: { name?: string; title?: string; key?: string; board?: string; body?: string; description?: string; lead?: string; target?: string; status?: string }): Promise<Item> {
+    return this.request('PATCH', `/api/projects/${encodeURIComponent(id)}`, patch);
+  }
+  /** nested ticket tree for a board, optionally one project */
+  tree(board = 'main', project?: string): Promise<TicketForest> {
+    return this.request('GET', '/api/tree' + qs({ board, project }));
+  }
+  /** move a ticket under a parent and/or into a project */
+  treeMove(id: string, patch: { parent?: string; project?: string } = {}): Promise<Item> {
+    return this.request('POST', '/api/tree', { action: 'move', id, ...patch });
+  }
+  /** clear a ticket's parent; the ticket stays in its project */
+  treeDetach(id: string): Promise<Item> {
+    return this.request('POST', '/api/tree', { action: 'detach', id });
+  }
   /** set a ticket's structure: project, parent, blockedBy, refs, branch */
   link(id: string, patch: { project?: string; parent?: string; blockedBy?: string[]; refs?: string[]; branch?: string }): Promise<Item> {
     return this.request('POST', `/api/items/${encodeURIComponent(id)}/link`, patch);
@@ -566,9 +586,15 @@ export class Hud {
   claimOf(id: string): Promise<ClaimView | null> {
     return this.request('GET', `/api/items/${encodeURIComponent(id)}/claim`);
   }
-  releaseClaim(id: string, session = this.session): Promise<ClaimView> {
+  releaseClaim(id: string, sessionOrOpts?: string | { session?: string; reason?: string }): Promise<ClaimView> {
+    const opts = sessionOrOpts !== undefined && typeof sessionOrOpts === 'object' && sessionOrOpts !== null ? sessionOrOpts : { session: sessionOrOpts };
+    const session = opts.session ?? this.session;
     if (!session) throw new HudRequestError(0, 'this client has no session; pass one or set HUD_SESSION');
-    return this.request('DELETE', `/api/items/${encodeURIComponent(id)}/claim?session=${encodeURIComponent(session)}`);
+    return this.request('DELETE', `/api/items/${encodeURIComponent(id)}/claim` + qs({ session, reason: opts.reason }));
+  }
+  /** active leases, with expiry and whether the lease and its session are still live */
+  claims(q: { session?: string; board?: string } = {}): Promise<{ items: ClaimView[]; now: number }> {
+    return this.request('GET', '/api/claims' + qs(q));
   }
   queue(q: { board?: string; status?: string; project?: string; assignee?: string; includeDone?: boolean; limit?: number } = {}): Promise<QueueResult> {
     return this.request('GET', '/api/queue' + qs({ ...q, includeDone: q.includeDone ? 1 : undefined }));

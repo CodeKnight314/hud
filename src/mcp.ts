@@ -175,17 +175,18 @@ const TOOLS = [
   {
     name: 'hud_project',
     description:
-      'Create or list Linear-style projects. A project groups tickets and gives them a KEY-n ident (EGO-12), a git branch name and a home in the list view. List first to reuse an existing KEY rather than making a near-duplicate.',
+      'Create, list or update Linear-style projects. A project groups tickets and gives them a KEY-n ident (EGO-12), a git branch name and a home in the list view. List first to reuse an existing KEY rather than making a near-duplicate. update renames the project or its KEY; tickets keep their numbers and pick up the new ident.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['create', 'list'], description: 'default list' },
-        name: { type: 'string', description: 'create: project name. The KEY is derived from it unless you pass key.' },
-        key: { type: 'string', description: 'create: 2-8 char prefix, A-Z/0-9 starting with a letter' },
+        action: { type: 'string', enum: ['create', 'list', 'update'], description: 'default list' },
+        id: { type: 'string', description: 'update: project id or KEY' },
+        name: { type: 'string', description: 'create/update: project name. On create the KEY is derived from it unless you pass key.' },
+        key: { type: 'string', description: 'create/update: 2-8 char prefix, A-Z/0-9 starting with a letter' },
         board: { type: 'string' },
-        description: { type: 'string', description: 'create: markdown description' },
+        description: { type: 'string', description: 'create/update: markdown description' },
         lead: { type: 'string' },
-        target: { type: 'string', description: 'create: target date yyyy-mm-dd' },
+        target: { type: 'string', description: 'create/update: target date yyyy-mm-dd' },
       },
     },
   },
@@ -203,6 +204,21 @@ const TOOLS = [
         blockedBy: { type: 'array', items: { type: 'string' }, description: 'tickets this waits on (replaces the current list; [] to clear)' },
         refs: { type: 'array', items: { type: 'string' }, description: 'related tickets (replaces the current list; [] to clear)' },
         branch: { type: 'string', description: '"regen" to regenerate the branch name, or an explicit name' },
+      },
+    },
+  },
+  {
+    name: 'hud_tree',
+    description:
+      'Read or reshape a ticket tree. get returns the nested forest for a board (optionally one project). move sets a ticket\'s parent and/or project. detach clears its parent and leaves the project membership alone. Relationships stay a DAG: cycles and cross-board parents are rejected.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['get', 'move', 'detach'], description: 'default get' },
+        board: { type: 'string', description: 'board id (default "main")' },
+        project: { type: 'string', description: 'get: limit to this project id or KEY; move: also place the ticket in this project' },
+        id: { type: 'string', description: 'move/detach: ticket id or KEY-n' },
+        parent: { type: 'string', description: 'move: parent ticket id or KEY-n. Pass "" to detach.' },
       },
     },
   },
@@ -486,16 +502,19 @@ const TOOLS = [
   {
     name: 'hud_claim',
     description:
-      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked).',
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board.',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['claim', 'renew', 'release', 'status', 'list'], description: 'default: claim' },
         ticket: { type: 'string', description: 'ticket id or KEY-12' },
-        session: { type: 'string', description: 'session name (default: this MCP session)' },
+        session: { type: 'string', description: 'session name (default: this MCP session). list: that holder only; use all for every lease' },
         ttl: { type: 'number', description: 'lease seconds (default 120, 15-900)' },
         start: { type: 'boolean', description: 'also set the ticket to doing' },
         takeover: { type: 'boolean', description: 'take a lease whose holder is no longer live' },
+        reason: { type: 'string', description: 'release: short reason recorded on the claim event' },
+        board: { type: 'string', description: 'list: limit leases to one board' },
+        all: { type: 'boolean', description: 'list: every lease. Default list is this session only' },
       },
     },
   },
@@ -639,6 +658,36 @@ function cap(text: string) {
   return text.length > MAX_OUT ? `${text.slice(0, MAX_OUT)}\n… truncated (${text.length} chars); narrow it with filters (board, status, limit, hud_search)` : text;
 }
 
+/** Character budget for a claim list. HUD_CLAIM_LIST_MAX shrinks it in tests. The result, note included, stays within it. */
+function claimListMax(): number {
+  const raw = process.env.HUD_CLAIM_LIST_MAX;
+  if (raw === undefined || raw === '') return MAX_OUT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : MAX_OUT;
+}
+
+/** Keep whole records inside `max`. A cut list names how many rows were left out, and that note counts toward the budget. */
+function capRecords(lines: string[], hint: string, max = claimListMax()): string {
+  const note = (omitted: number) => `… ${omitted} more omitted (${lines.length} total); ${hint}`;
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const omittedIfStop = lines.length - kept.length;
+    const omittedIfKept = omittedIfStop - 1;
+    const sep = kept.length ? 1 : 0;
+    const tail = omittedIfKept > 0 ? 1 + note(omittedIfKept).length : 0;
+    // Omitting everything emits note(lines.length). That is a digit longer than note(N-1) at 9/99/999.
+    if (kept.length === 0 && note(omittedIfStop).length > max) break;
+    if (used + sep + line.length + tail > max) break;
+    kept.push(line);
+    used += sep + line.length;
+  }
+  if (kept.length === lines.length) return kept.join('\n');
+  const footer = note(lines.length - kept.length);
+  const text = kept.length ? `${kept.join('\n')}\n${footer}` : footer;
+  return text.length <= max ? text : text.slice(0, max);
+}
+
 async function needBoard(board?: string, client: Hud = baseHud) {
   if (!board) return;
   const boards = await client.boards();
@@ -651,6 +700,20 @@ function filters(a: any) {
   if (a.text) q.set('q', String(a.text));
   if (a.overdue) q.set('overdue', '1');
   return q;
+}
+
+function leaseLine(c: { ident: string; session: string; expiresAt: number; live: boolean; sessionLive: boolean }) {
+  return `${c.ident} claimed by ${c.session} until ${localTime(c.expiresAt)} live=${c.live} sessionLive=${c.sessionLive} expiresAt=${c.expiresAt}`;
+}
+
+function treeText(forest: { board: string; nodes: { ident: string; status: string; title: string; children: any[] }[] }): string {
+  const lines: string[] = [];
+  const walk = (n: { ident: string; status: string; title: string; children?: any[] }, depth: number) => {
+    lines.push(`${'  '.repeat(depth)}${n.ident} [${n.status}] ${n.title}`);
+    for (const c of n.children ?? []) walk(c, depth + 1);
+  };
+  for (const n of forest.nodes) walk(n, 0);
+  return lines.length ? lines.join('\n') : `no tickets on board ${forest.board}`;
 }
 
 function brief(it: Item | (Item & { ident?: string; graph?: any })) {
@@ -808,7 +871,8 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_project': {
       await needBoard(args.board, hud);
-      if ((args.action ?? 'list') === 'list') {
+      const action = args.action ?? 'list';
+      if (action === 'list') {
         const list = await hud.projects(args.board);
         if (!list.length) return `no projects on board ${args.board ?? 'main'}. Create one: hud_project {action:"create", name:"..."}`;
         return cap(
@@ -817,10 +881,41 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
             .join('\n'),
         );
       }
-      if (args.action !== 'create') throw new Error('action must be list|create');
-      if (!args.name) throw new Error('missing required argument "name" for create');
-      const p = await hud.create({ type: 'project', title: args.name, key: args.key, board: args.board, body: args.description, lead: args.lead, target: args.target });
-      return `project ${p.key} "${p.title}" (id ${p.id}). New tickets in it: hud_create {type:"ticket", project:"${p.key}", title:"..."}`;
+      if (action === 'create') {
+        if (!args.name) throw new Error('missing required argument "name" for create');
+        const p = await hud.createProject({ name: args.name, key: args.key, board: args.board, description: args.description, lead: args.lead, target: args.target });
+        return `project ${p.key} "${p.title}" (id ${p.id}). New tickets in it: hud_create {type:"ticket", project:"${p.key}", title:"..."}`;
+      }
+      if (action !== 'update') throw new Error('action must be list|create|update');
+      if (!args.id) throw new Error('missing required argument "id" for update');
+      const patch: Record<string, unknown> = {};
+      if (args.name !== undefined) patch.name = args.name;
+      if (args.key !== undefined) patch.key = args.key;
+      if (args.description !== undefined) patch.description = args.description;
+      if (args.lead !== undefined) patch.lead = args.lead;
+      if (args.target !== undefined) patch.target = args.target;
+      if (args.board !== undefined) patch.board = args.board;
+      if (!args.name && args.key === undefined && args.description === undefined && args.lead === undefined && args.target === undefined)
+        throw new Error('update needs name, key, description, lead or target');
+      const p = await hud.updateProject(args.id, patch);
+      return `updated project ${p.key} "${p.title}" (id ${p.id})`;
+    }
+    case 'hud_tree': {
+      const action = args.action ?? 'get';
+      if (action === 'get') {
+        await needBoard(args.board, hud);
+        const forest = await hud.tree(args.board ?? 'main', args.project);
+        return cap(treeText(forest));
+      }
+      if (!args.id) throw new Error(`missing required argument "id" for ${action}`);
+      if (action === 'detach') {
+        const t: any = await hud.treeDetach(args.id);
+        return `detached ${brief(t)}`;
+      }
+      if (action !== 'move') throw new Error('action must be get|move|detach');
+      if (args.parent === undefined && args.project === undefined) throw new Error('move needs parent and/or project');
+      const t: any = await hud.treeMove(args.id, { parent: args.parent, project: args.project });
+      return `moved ${brief(t)}`;
     }
     case 'hud_link': {
       const { id, ...patch } = args;
@@ -990,17 +1085,22 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       const action = args.action ?? 'claim';
       const name = String(args.session ?? sessionName());
       if (action === 'list') {
-        const s = (await hud.sessions()).items.find((x) => x.id === name);
-        return s?.claims.length ? s.claims.map((c) => `${c.ident}  until ${localTime(c.expiresAt)}`).join('\n') : `no active claim for ${name}`;
+        const named = typeof args.session === 'string' && args.session !== '' ? args.session : undefined;
+        if (args.all && named) throw new Error('list takes session or all, not both');
+        const every = args.all === true;
+        const session = every ? undefined : named ?? sessionName();
+        const listed = await hud.claims({ session, board: args.board });
+        if (!listed.items.length) return every ? 'no active claims' : `no active claim for ${session}`;
+        return capRecords(listed.items.map(leaseLine), 'narrow with session or board');
       }
       if (!args.ticket) throw new Error(`ticket is required for ${action}`);
       if (action === 'status') {
         const c = await hud.claimOf(args.ticket);
-        return c ? `${c.ident} claimed by ${c.session} until ${localTime(c.expiresAt)}${c.live ? '' : ' (expired)'}` : `${args.ticket} is not claimed`;
+        return c ? leaseLine(c) : `${args.ticket} is not claimed`;
       }
       if (action === 'release') {
-        const c = await hud.releaseClaim(args.ticket, name);
-        return `released ${c.ident}`;
+        const c = await hud.releaseClaim(args.ticket, { session: name, reason: args.reason });
+        return `released ${c.ident}${args.reason ? ` (${args.reason})` : ''}`;
       }
       if (action === 'renew') {
         const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl });
@@ -1354,7 +1454,7 @@ const INSTRUCTIONS =
   'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); use hud_runs for run summaries and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
   'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view opens rows in a scrollable sidebar and tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. ' +
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
-  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes projects, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
+  'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents, hud_project makes and updates projects, hud_tree reads and reparents the ticket tree, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
   'Prefer hud_monitor_templates when adding a disk, TLS, HTTP, or cron heartbeat monitor. Those templates use safe local defaults and do not run a shell command; the tls template connects only after host or source.config.host is set. ' +
   'A monitor with source.kind "command" runs a shell command as the user: only create one when the user wants it. ' +

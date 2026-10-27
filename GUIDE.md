@@ -7,7 +7,7 @@ Everything you change appears instantly in the
 human's browser at http://localhost:{{PORT}} and vice versa. The human rearranges things too, so
 re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
 
-- [Ways in](#ways-in-all-equivalent) · [Browser navigation](#browser-navigation) · [Items](#items) ·
+- [Ways in](#ways-in-all-equivalent) · [Tool matrix](#tool-matrix) · [Browser navigation](#browser-navigation) · [Items](#items) ·
   [Projects, tickets and links](#projects-tickets-and-links) · [Coordination](#coordination) ·
   [Shared context](#shared-context) · [Monitors](#monitors) · [Renderers](#renderers) ·
   [Attention, runs and changes](#attention-runs-and-incremental-changes) · [Decisions](#decisions-when-youre-blocked) ·
@@ -20,11 +20,11 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   `hud_arrange`, `hud_run`, `hud_views`, `hud_watch`, `hud_alerts`, `hud_attention`, `hud_runs`, `hud_changes`,
   `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare`, `hud_lint`, `hud_graph`,
   `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_session`, `hud_claim`, `hud_queue`,
-  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_guide`. MCP also exposes the
+  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_guide`. MCP also exposes the
   `hud://guide` resource.
   Times in tool output are in the machine's local time zone. `source.kind: "command"` runs a shell command on the
   user's machine, so only set it for checks the user would run themselves.
-- **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
+- **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud project`, `hud tree`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
   `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud guide [decentralized|lead]`, … (`hud help`;
@@ -34,14 +34,17 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   a 404; ids may be a `KEY-12` ident.
   - read: `GET /api/summary[?board=]` text overview · `GET /api/readout[?board=]` metrics and evidence ·
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
-    `GET /api/tickets[?format=text]` · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
+    `GET /api/tickets[?format=text]` · `GET /api/tree[?board=&project=]` · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
     `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
     project tag q overdue=1 parent limit`. An unknown board is a 404.
   - write: `POST /api/items` (one or an array) · `PATCH /api/items/:id` · `PATCH /api/items` (array of `{id,...}`) ·
-    `DELETE /api/items/:id` (to the trash) · `POST /api/items/:id/link {project?,parent?,blockedBy?,refs?,branch?}` ·
-    `POST /api/items/:id/unlink {fields?}` · `POST /api/items/:id/comments {text,format?}` ·
+    `DELETE /api/items/:id` (to the trash) · `POST /api/projects {name,key?,board?,description?,lead?,target?}` ·
+    `PATCH /api/projects/:id {name?,key?,description?,lead?,target?,status?}` ·
+    `POST /api/tree {action:"move"|"detach",id,parent?,project?}` ·
+    `POST /api/items/:id/link {project?,parent?,blockedBy?,refs?,branch?}` ·
+    `POST /api/items/:id/unlink {project?,parent?,blockedBy?,refs?}` · `POST /api/items/:id/comments {text,format?}` ·
     `PATCH /api/items/:id/comments/:cid {text,format?}` · `DELETE /api/items/:id/comments/:cid`
   - monitors: `POST /api/monitors/:id/push {value,state,message,messageFormat,details,progress,...}` · `POST /api/monitors/:id/run` ·
     heartbeat **`/ping/:id`** (see Monitors)
@@ -56,6 +59,11 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `GET|PUT /api/boards/:id/dashboard` · `GET|POST|DELETE /api/boards/:id/annotations` ·
     `GET|POST|DELETE /api/boards/:id/comparisons` · `GET /api/boards/:id/lint` ·
     `GET|POST|DELETE /api/boards/:id/program` · `GET|POST|DELETE /api/items/:id/program`
+  - coordination: `GET|POST /api/sessions` · `POST /api/sessions/:id/heartbeat` · `DELETE /api/sessions/:id` ·
+    `GET /api/claims[?session=&board=]` · `GET|POST /api/items/:id/claim` · `DELETE /api/items/:id/claim?session=&reason=` ·
+    `GET /api/queue` · `POST /api/context` · `GET /api/context` · `POST /api/context/read` · `GET /api/context/scopes` ·
+    `POST /api/wait` · `GET|POST /api/attachments` · `GET /api/attachments/:id` · `GET /api/attachments/:id/content` ·
+    `GET /api/attachments/:id/expand` · `DELETE /api/attachments/:id` · `POST /api/attachments/:id/applied`
   - alerts: `GET /api/alerts[?all=1&notify=name&since=]` · `POST /api/alerts/ack {ids?}` · `POST /api/watch {name, ids?, boards?, off?}` ·
     `POST /api/attention/:id {action,revision,until?}` (`review`, `unreview`, `snooze`; review is separate from alert acknowledgement)
   - safety net: `GET /api/trash[?board=]` · `POST /api/trash/:id/restore` · `DELETE /api/trash/:id` and `DELETE /api/trash`
@@ -67,6 +75,78 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   after 15 s (`HUD_TIMEOUT` ms) and failures throw `HudRequestError` with a `status`.
 
 The server starts automatically the first time the CLI, MCP server or client needs it.
+
+## Tool matrix
+MCP, the CLI and HTTP call the same store methods. A `KEY-n` ident is accepted anywhere an id is.
+
+### Projects, trees, claims, context and status
+
+| Operation | MCP | CLI | HTTP |
+| --- | --- | --- | --- |
+| Create a project | `hud_project {action:"create", name, key?, board?, description?, lead?, target?}` | `hud project new <name> [--key EGO] [--lead @who] [--target date] [--body text]` | `POST /api/projects {name, key?, board?, description?, lead?, target?}` |
+| List projects | `hud_project {action:"list", board?}` | `hud project list [--board b]` | `GET /api/projects?board=` |
+| Update a project | `hud_project {action:"update", id, name?, key?, description?, lead?, target?}` | `hud project set <id> [--key NEW] [--title t] [--body text] [--lead @who] [--target date]` | `PATCH /api/projects/:id {name?, key?, description?, lead?, target?, status?}` |
+| Read a ticket tree | `hud_tree {action:"get", board?, project?}` | `hud tree [board] [--project KEY]` | `GET /api/tree?board=&project=` |
+| Move a ticket in the tree | `hud_tree {action:"move", id, parent?, project?}` | `hud tree move <id> [--parent EGO-1] [--project KEY]` | `POST /api/tree {action:"move", id, parent?, project?}` |
+| Detach a sub-ticket | `hud_tree {action:"detach", id}` | `hud tree detach <id>` | `POST /api/tree {action:"detach", id}` |
+| Set links | `hud_link {id, project?, parent?, blockedBy?, refs?, branch?}` | `hud link <id> parent=EGO-1 ...` | `POST /api/items/:id/link` |
+| Clear links | `hud_link` with `parent:""`, `project:""`, `blockedBy:[]` or `refs:[]` | `hud unlink <id> [parent blockedBy refs project]` | `POST /api/items/:id/unlink {parent?, project?, blockedBy?, refs?}` |
+| Claim a ticket | `hud_claim {action:"claim", ticket, session?, ttl?, start?, takeover?}` | `hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]` | `POST /api/items/:id/claim {session, ttl?, start?, takeover?}` |
+| Renew a lease | `hud_claim {action:"renew", ticket, ttl?}` | `hud claim renew <id> [--ttl sec]` | `POST /api/items/:id/claim` again as the holder |
+| Lease on one ticket | `hud_claim {action:"status", ticket}` | `hud claim status <id>` | `GET /api/items/:id/claim` |
+| List leases | `hud_claim {action:"list", all?:true, session?, board?}` | `hud claim list [--session s] [--board b] [--all]` | `GET /api/claims?session=&board=` |
+| Release a lease | `hud_claim {action:"release", ticket, reason?}` | `hud release <id> [--reason text]` | `DELETE /api/items/:id/claim?session=&reason=` |
+| Publish shared context | `hud_context {action:"publish", scope, kind, text}` | `hud context publish --scope s --kind FACT --text t` | `POST /api/context {scope, kind, text}` |
+| Read shared context | `hud_context {action:"read", scope?, since?}` | `hud context read [--scope s] [--since n]` | `GET /api/context` or `POST /api/context/read` |
+| List context scopes | `hud_context {action:"scopes", board?}` | `hud context scopes [--board b]` | `GET /api/context/scopes?board=` |
+| Update ticket status | `hud_update {id, status}` | `hud set <id> <status>` | `PATCH /api/items/:id {status}` |
+
+A lease row is `{ticket, ident, title, board, session, actor, claimedAt, renewedAt, expiresAt, live, sessionLive}`. `live` is the lease itself; `sessionLive` is whether the holder is still present. `hud_claim {action:"list"}` returns this session's leases; pass `all:true` for every lease, or `session` for one holder. `hud claim list` defaults to the CLI session; `--all` lists every lease. `GET /api/claims` has no implicit session, so leaving `session` off lists every lease. MCP list text is at most 60,000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with `session` or `board`.
+
+A tree node is `{id, ident, title, status, project?, parent?, children}`. Roots are tickets whose parent is missing from the same board and project filter. `move` with `parent:""` detaches. Cycles and cross-board parents are rejected before anything changes.
+
+### Every other tool
+
+| MCP | CLI | HTTP |
+| --- | --- | --- |
+| `hud_overview` | `hud ls [board]` | `GET /api/summary` |
+| `hud_tickets` | `hud ls tickets` / `hud tickets` | `GET /api/tickets` |
+| `hud_search` | `hud find <text>` | `GET /api/items` |
+| `hud_create` | `hud add <type>` | `POST /api/items` |
+| `hud_get` | `hud show <id>` | `GET /api/items/:id` |
+| `hud_delete` | `hud rm <id>` | `DELETE /api/items/:id` |
+| `hud_comment` | `hud comment` | `POST / PATCH / DELETE /api/items/:id/comments` |
+| `hud_push` | `hud push <id>` | `POST /api/monitors/:id/push` |
+| `hud_run` | `hud run <id>` | `POST /api/monitors/:id/run` |
+| `hud_watch` | `hud watch <name>` | `POST /api/watch` |
+| `hud_alerts` | `hud alerts` | `GET /api/alerts`, `POST /api/alerts/ack` |
+| `hud_attention` | `hud attention` | `GET /api/attention`, `POST /api/attention/:id` |
+| `hud_runs` | `hud runs` | `GET /api/runs` |
+| `hud_changes` | `hud changes --since ms` | `GET /api/changes?since=` |
+| `hud_readout` | `hud readout` | `GET /api/readout` |
+| `hud_snapshot` | `hud snapshot` | `POST /api/snapshot` |
+| `hud_dashboard` | `hud dashboard` | `GET / PUT /api/boards/:id/dashboard` |
+| `hud_annotate` | `hud annotate` | `GET / POST / DELETE /api/boards/:id/annotations` |
+| `hud_compare` | `hud compare` | `GET / POST / DELETE /api/boards/:id/comparisons` |
+| `hud_lint` | `hud lint` | `GET /api/boards/:id/lint` |
+| `hud_graph` | `hud graph <item>` | `GET / POST / DELETE /api/items/:id/program` |
+| `hud_canvas` | `hud canvas` | `GET / POST / DELETE /api/boards/:id/program` |
+| `hud_board` | `hud board` | `GET / POST /api/boards`, `PATCH / DELETE /api/boards/:id`, `POST /api/boards/:id/clear` |
+| `hud_clear_canvas` | `hud board clear <id>` | `POST /api/boards/:id/clear` |
+| `hud_organize` | `hud organize` | `POST /api/organize` |
+| `hud_arrange` | `hud arrange` | `POST /api/arrange` |
+| `hud_views` | `hud views` | `GET /api/views` |
+| `hud_view` | `hud view` | `GET / PUT / POST / DELETE /api/views` |
+| `hud_ask` | `hud ask <id>` | `POST /api/items/:id/ask` |
+| `hud_decide` | `hud decide <id>` | `POST /api/items/:id/decide` |
+| `hud_finish` | `hud finish` | `POST /api/finish` |
+| `hud_session` | `hud session` | `GET / POST /api/sessions`, `POST /api/sessions/:id/heartbeat`, `DELETE /api/sessions/:id` |
+| `hud_queue` | `hud queue` | `GET /api/queue` |
+| `hud_attach` | `hud attach` | `/api/attachments` |
+| `hud_wait` | `hud wait` | `POST /api/wait` |
+| `hud_trash` | `hud trash` / `hud restore` / `hud purge` | `/api/trash` |
+| `hud_backup` | `hud backup` | `GET / POST /api/backups` |
+| `hud_guide` | `hud guide` | `GET /api/guide` |
 
 ## Browser navigation
 The app opens on the last board. A persistent **left rail** switches **Attention**, **Runs** and boards; the board rows
@@ -182,14 +262,20 @@ Tickets are the work tracker, and they do not need the canvas at all. A **projec
 `KEY-n` ident (`EGO-3`) that every other tool, comment and branch name uses.
 
     hud_project {action: "create", name: "Eng org", key?: "EGO"}   # key is derived from the name when omitted
+    hud_project {action: "list", board?}
+    hud_project {action: "update", id: "EGO", name?, key?, description?, lead?, target?}
+    hud_tree    {action: "get", board?, project?}                 # nested {id, ident, title, status, children}
+    hud_tree    {action: "move", id: "EGO-3", parent?: "EGO-1", project?: "EGO"}
+    hud_tree    {action: "detach", id: "EGO-3"}                   # clear parent; project membership stays
     hud_tickets {board?, status?, assignee?, project?, tag?, priority?, overdue?, limit?}   # list, or format:"json"
     hud_search  {text?, board?, type?, status?, assignee?, project?, tag?, priority?, overdue?, limit?}
     hud_create  {type: "ticket", title: "…", project: "EGO"}
     hud_link    {id: "EGO-3", project?, parent?, blockedBy?, refs?, branch?}
+    hud_update  {id: "EGO-3", status: "doing"}
 
 `hud_create`/`hud_update` also accept `project`, `parent`, `blockedBy`, `refs` and `branch` directly, so one call can
 create a ticket already in its place. Anything that takes an item id also accepts a `KEY-12` ident (resolved as exact id, then `KEY-n`, then `#n`/`n` among
-loose tickets on the board). Rename a project's key with `hud_update {id, key}` or `hud project set <id> --key NEW`.
+loose tickets on the board). Rename a project's key with `hud_project {action:"update", id, key}`, `hud project set <id> --key NEW`, or `PATCH /api/projects/:id`. Tickets keep their numbers and their idents follow the new key.
 
 - **`parent`** makes a sub-ticket. Subtrees nest in the list view and in `hud_tickets`; `ident` and `rollup` report
   progress (`3/5 done`) for the parent.
@@ -223,7 +309,7 @@ the agents decide the work.
 
     hud_session {action: "start" | "heartbeat" | "end" | "list", name?, kind?, run?}
     hud_queue   {board?, status?, project?, assignee?, includeDone?, limit?}
-    hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?}
+    hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?, reason?, board?, all?}
 
 - **Presence is automatic.** An MCP client registers a session on `initialize` and renews it every 20 s; the framework
   records the session, never the agent. A session that stops renewing expires after 90 s, and its claims are released.
@@ -232,6 +318,11 @@ the agents decide the work.
   `code:"claimed"` for everyone else. Leases last 120 s by default (15–900 via `ttl`); renew by calling `claim` again,
   or rely on the session heartbeat. One session holds at most one unfinished claim, so two agents cannot silently grab
   the same work. `start: true` also moves the ticket to `doing`; it is refused while the ticket is blocked.
+  `hud_claim {action:"status", ticket}` and `GET /api/items/:id/claim` return the lease (`expiresAt`, `live`,
+  `sessionLive`) or null when the ticket is free. `hud_claim {action:"list"}` lists this session's leases; pass
+  `all:true` for every lease, or `session` for one holder. `GET /api/claims` lists every lease unless `session` is set.
+  MCP list text is at most 60,000 characters, including the omission line. It keeps whole lease lines and says how many
+  were omitted; narrow with `session` or `board`. `release` takes an optional `reason`.
 - **Ownership is explicit.** A live lease is never stolen, even with `takeover: true`. `takeover` only applies to a claim
   whose session is no longer live; an expired lease is released automatically. A ticket's `assignee` is durable human
   ownership: an agent cannot claim work assigned to someone else.

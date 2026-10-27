@@ -506,6 +506,47 @@ route('GET', '/api/projects', (_r, _s, _m, q) => {
   const board = store.requireBoard(q.get('board') || 'main').id;
   return store.projectsView(board).map((g) => ({ ...g, project: g.project ? Store.lite(g.project) : undefined }));
 });
+route('POST', '/api/projects', async (req) => {
+  const b = await readObj(req);
+  const title = typeof b.name === 'string' ? b.name : b.title;
+  if (typeof title !== 'string' || !title.trim()) throw new HudError(400, 'name is required');
+  const input: Record<string, unknown> = { type: 'project', title };
+  if (b.key !== undefined) input.key = b.key;
+  if (b.board !== undefined) input.board = b.board;
+  if (b.body !== undefined || b.description !== undefined) input.body = b.body ?? b.description;
+  if (b.lead !== undefined) input.lead = b.lead;
+  if (b.target !== undefined) input.target = b.target;
+  return Store.lite(store.create(input, actorOf(req, b)));
+});
+route('PATCH', '/api/projects/:id', async (req, _res, [id]) => {
+  const b = await readObj(req);
+  const board = typeof b.board === 'string' ? b.board : undefined;
+  const found = store.project(dec(id), board);
+  if (!found) throw new HudError(404, `no project "${dec(id).slice(0, 80)}"`);
+  const patch: Record<string, unknown> = {};
+  if (b.name !== undefined || b.title !== undefined) patch.title = b.name ?? b.title;
+  if (b.key !== undefined) patch.key = b.key;
+  if (b.body !== undefined || b.description !== undefined) patch.body = b.body ?? b.description;
+  if (b.lead !== undefined) patch.lead = b.lead;
+  if (b.target !== undefined) patch.target = b.target;
+  if (b.status !== undefined) patch.status = b.status;
+  if (!Object.keys(patch).length) throw new HudError(400, 'nothing to update');
+  return Store.lite(store.update(found.id, patch, actorOf(req, b)));
+});
+route('GET', '/api/tree', (_r, _s, _m, q) => store.ticketForest(q.get('board') || 'main', q.get('project') || undefined));
+route('POST', '/api/tree', async (req) => {
+  const b = await readObj(req);
+  if (typeof b.id !== 'string' || !b.id.trim()) throw new HudError(400, 'id is required');
+  const action = String(b.action ?? 'move');
+  const id = store.resolveId(b.id, typeof b.board === 'string' ? b.board : undefined);
+  if (action === 'detach') return withGraph(store.link(id, { parent: '' }, actorOf(req, b)));
+  if (action !== 'move') throw new HudError(400, 'action must be move|detach');
+  const patch: Record<string, unknown> = {};
+  if (b.parent !== undefined) patch.parent = b.parent;
+  if (b.project !== undefined) patch.project = b.project;
+  if (!('parent' in patch) && !('project' in patch)) throw new HudError(400, 'move needs parent and/or project');
+  return withGraph(store.link(id, patch, actorOf(req, b)));
+});
 route('GET', '/api/tickets', (_r, res, _m, q) => {
   const filter = queryOf(q);
   const board = filter.board ?? store.requireBoard('main').id;
@@ -554,6 +595,11 @@ route('POST', '/api/sessions', async (req) => {
 route('POST', '/api/sessions/:id/heartbeat', (_req, _res, [id]) => store.sessionHeartbeat(dec(id)));
 route('DELETE', '/api/sessions/:id', (req, _res, [id], q) => store.sessionEnd(dec(id), actorOf(req, undefined, q)));
 
+// Sole claims list. Omit session for every lease; board narrows it. Shape is {items, now} from claimsList.
+route('GET', '/api/claims', (_req, _res, _m, q) => store.claimsList({
+  session: q.get('session') || undefined,
+  board: q.get('board') || undefined,
+}));
 route('GET', '/api/items/:id/claim', (_req, _res, [id], q) => store.claimOf(rid(id, q)));
 route('POST', '/api/items/:id/claim', async (req, _res, [id], q) => {
   const b = await readObj(req);
@@ -745,7 +791,11 @@ route('POST', '/api/items/:id/link', async (req, _s, [id], q) => {
 route('POST', '/api/items/:id/unlink', async (req, _s, [id], q) => {
   const b = await readObj(req);
   const clear: Record<string, unknown> = {};
-  for (const k of ['project', 'parent', 'blockedBy', 'refs']) if (b[k]) clear[k] = [];
+  // Naming a link clears it. "" and null are empty clears; any truthy value is a sentinel (the CLI sends true).
+  const named = (v: unknown) => v === '' || v === null || !!v;
+  for (const k of ['project', 'parent'] as const) if (named(b[k])) clear[k] = null;
+  for (const k of ['blockedBy', 'refs'] as const) if (named(b[k])) clear[k] = [];
+  if (!Object.keys(clear).length) throw new HudError(400, 'name at least one of project, parent, blockedBy, refs');
   return withGraph(store.link(rid(id, q), clear, actorOf(req, b)));
 });
 route('PATCH', '/api/items/:id', async (req, _s, [id], q) => {

@@ -489,6 +489,24 @@ export interface ClaimView {
   sessionLive: boolean;
 }
 
+/** one node of a ticket tree: children are sub-tickets, in ident order */
+export interface TicketNode {
+  id: string;
+  ident: string;
+  title: string;
+  status: string;
+  project?: string;
+  parent?: string;
+  children: TicketNode[];
+}
+
+/** nested tickets on a board, optionally limited to one project */
+export interface TicketForest {
+  board: string;
+  project?: string;
+  nodes: TicketNode[];
+}
+
 export interface QueueRow {
   id: string;
   ident: string;

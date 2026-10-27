@@ -74,6 +74,7 @@ scripts/check-coordination.ts    presence, claim leases, queue, shared context, 
 scripts/check-context-timeline.mjs shared-context timeline labels, filters, handoff text and escaping
 scripts/check-views.ts           generated view templates, static validation, writes and deletes
 scripts/check-coordination-api.mjs HTTP/MCP/CLI coordination parity check against an existing scratch server
+scripts/check-mcp-surface.mjs MCP/CLI/HTTP smoke for projects, ticket trees, claims, context and status (boots a scratch server)
 scripts/check-coordination-ui.mjs headless sessions, queue, claim and inspector checks
 scripts/check-supervision-api.mjs HTTP/CLI/MCP supervision API check against an existing scratch server
 scripts/check-supervision-ui.mjs headless browser supervision landing, navigation, report and sidebar checks

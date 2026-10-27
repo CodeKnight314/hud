@@ -522,6 +522,41 @@ function runContextExportComplete() {
   finish(store);
 }
 
+function forests() {
+  const { store } = fresh('coord-forest');
+  const project = store.create({ type: 'project', title: 'Forest', key: 'FOR' }, ACTOR);
+  const parent = store.create({ type: 'ticket', title: 'Parent', project: project.id }, ACTOR);
+  const child = store.create({ type: 'ticket', title: 'Child', project: project.id }, ACTOR);
+  store.link(child.id, { parent: parent.id }, ACTOR);
+  const forest = store.ticketForest('main', 'FOR');
+  assert.equal(forest.project, project.id);
+  assert.equal(forest.nodes.length, 1);
+  assert.equal(forest.nodes[0].id, parent.id);
+  assert.equal(forest.nodes[0].children[0].id, child.id);
+  store.update(project.id, { key: 'TRE' }, ACTOR);
+  assert.equal(store.ident(store.get(parent.id)), 'TRE-1');
+  assert.equal(store.ident(store.get(child.id)), 'TRE-2');
+  store.link(child.id, { parent: '' }, ACTOR);
+  const flat = store.ticketForest('main', project.id);
+  assert.deepEqual(flat.nodes.map((n) => n.id), [parent.id, child.id]);
+  assert.equal(flat.nodes.every((n) => n.children.length === 0), true);
+
+  store.sessionStart({ id: 'agent-a', kind: 'agent' }, ACTOR);
+  const claim = store.claim(parent.id, { session: 'agent-a', ttl: 30 }, ACTOR);
+  assert.equal(claim.live, true);
+  assert.equal(claim.sessionLive, true);
+  const listed = store.claimsList({ session: 'agent-a', board: 'main' });
+  assert.equal(listed.items.length, 1);
+  assert.equal(listed.items[0].ticket, parent.id);
+  assert.equal(listed.items[0].live, true);
+  assert.equal(listed.items[0].sessionLive, true);
+  assert.ok(listed.items[0].expiresAt > listed.now);
+  store.releaseClaim(parent.id, { session: 'agent-a', reason: 'done-here' }, ACTOR);
+  assert.equal(store.claimsList({ board: 'main' }).items.length, 0);
+  assert.equal(store.claimOf(parent.id), null);
+  finish(store);
+}
+
 migration();
 sessions();
 claims();
@@ -533,4 +568,5 @@ exportImport();
 await contextPagesKeepNewest();
 runContextExport();
 runContextExportComplete();
+forests();
 console.log('PASS coordination store checks');
