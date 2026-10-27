@@ -95,7 +95,9 @@ snapshot, or with the newest backup when this process did not recover one (`POST
 ## Items
 Common fields: `id`, `type`, `board` (default `main`), `title`, `group`, `x`, `y`, `w`, `h` (board pixels),
 `meta` (free-form object for your own bookkeeping). Dashboard surfaces are fixed **1600 × 900**. Geometry is clamped
-to those bounds. Auto layout is on by default; omit coordinates and let hud place and size visual cards.
+to those bounds. The window letterboxes that surface: one scale for both axes, centered, with bars on the longer
+side. Card coordinates stay in the 1600 × 900 space when the window changes — do not reflow a board to match the
+window. Auto layout is on by default; omit coordinates and let hud place and size visual cards.
 
 **Tickets are list objects, not canvas cards.** Use **Tickets** (or `l`) to search and manage them; clicking a row opens
 the inspector. Done and canceled tickets are hidden by default; **completed** reveals them, and an explicit status
@@ -148,9 +150,10 @@ deleted. The UI exposes these as separate actions. CLI is `hud board clear <id>`
 - After a batch, call `hud_organize {board, auto:true}`. With only a few cards, the default centered layout is
   sufficient. For a custom sparse composition, disable auto, then place the summary prominently with related
   charts beside it, using nonoverlapping rectangles inside `0..1600` × `0..900`.
-- Keep overview cards readable. If the board gets crowded, create separate boards per run or experiment;
-  use Fit board (`.`) to see the whole surface and zoom in for details. Zoom-out stops at Fit, zoom-in at 300%
-  (or Fit on an unusually large display), and panning cannot lose the board.
+- Keep overview cards readable. If the board gets crowded, create separate boards per run or experiment.
+  The board opens letterboxed into the window. Fit (`.`) returns to that view; zoom-out stops at Fit, zoom-in
+  at 300% (or Fit on an unusually large display), and panning cannot lose the board. A remembered zoom from a
+  larger window is discarded on open so the whole surface stays visible.
 
 Existing boards are backed up before migration to this layout. Their cards and relationships are retained,
 and auto layout is enabled once during migration.

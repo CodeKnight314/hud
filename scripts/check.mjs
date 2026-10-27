@@ -11,6 +11,7 @@ const webFiles = readdirSync(resolve(root, 'web'))
 const syntaxFiles = [...webFiles, resolve(root, 'electron', 'render.mjs'), resolve(root, 'electron', 'settings-preload.cjs')];
 const suites = [
   'scripts/check-layout.ts',
+  'scripts/check-board-scale.mjs',
   'scripts/check-coordination.ts',
   'scripts/check-context-timeline.mjs',
   'scripts/check-claim-widget.mjs',

@@ -6,6 +6,7 @@ import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeli
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
 import * as RichUtils from './utils.js';
 import './table-controls.js';
+import { letterboxBoard, restingView, shouldRefit } from './board-scale.js';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const GRID = 20;
@@ -438,12 +439,11 @@ document.addEventListener('click', (e) => {
 
 // ---------------------------------------------------------------- view
 function loadView() {
-  if (CAPTURE_READONLY) return fittedView();
-  try {
-    const v = JSON.parse(localStorage.getItem('hud.bounded-view.' + S.board));
-    if (v && [v.x, v.y, v.z].every(Number.isFinite)) return v;
-  } catch {}
-  return fittedView();
+  const fit = fittedView();
+  if (CAPTURE_READONLY) return fit;
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('hud.bounded-view.' + S.board)); } catch {}
+  return restingView(saved, fit);
 }
 const saveView = debounce(() => {
   if (CAPTURE_READONLY) return;
@@ -459,12 +459,27 @@ function boardSize() {
 function drawerPixels() { return S.drawerWide ? Math.min(900, innerWidth) : (S.drawerWidth || 420); }
 function viewport() {
   const r = canvas.getBoundingClientRect();
-  return { w: Math.max(1, r.width - (S.drawer ? Math.min(drawerPixels(), r.width) : 0)), h: Math.max(1, r.height) };
+  let cover = 0;
+  if (S.drawer) {
+    const dr = $('#drawer')?.getBoundingClientRect();
+    // The drawer overlays the canvas. Measure the overlap so the letterbox matches the visible area.
+    if (dr && dr.width > 0) cover = Math.max(0, Math.min(r.right, dr.right) - Math.max(r.left, dr.left));
+    else cover = Math.min(drawerPixels(), r.width);
+  }
+  return { w: Math.max(1, r.width - Math.min(cover, r.width)), h: Math.max(1, r.height) };
 }
 function fittedView() {
   const b = boardSize(), r = viewport();
-  const z = Math.max(0.01, Math.min(Math.max(1, r.w - 24) / b.w, Math.max(1, r.h - 24) / b.h));
-  return { x: (r.w - b.w * z) / 2, y: (r.h - b.h * z) / 2, z };
+  return letterboxBoard(b.w, b.h, r.w, r.h);
+}
+function refitIfLetterboxed() {
+  const wasFit = shouldRefit(S.view, fittedView());
+  return () => {
+    const next = viewport();
+    // A full-width drawer leaves no canvas; collapsing the board to a pixel would hide it on close.
+    if (wasFit && next.w >= 48) S.view = fittedView();
+    applyView();
+  };
 }
 
 function applyView() {
@@ -2615,6 +2630,7 @@ async function cycleDisplay() {
 }
 
 function openDrawer(id, focusTitle = false) {
+  const refit = refitIfLetterboxed();
   const changed = S.drawer !== id;
   S.drawer = id;
   S.pendingKind = null;
@@ -2626,21 +2642,23 @@ function openDrawer(id, focusTitle = false) {
   document.body.classList.add('drawer-open');
   renderDrawer();
   if (changed) $('#drawer').scrollTop = 0;
-  applyView();
+  refit();
   if (focusTitle) setTimeout(() => { $('#drawer [data-k="title"]')?.focus(); $('#drawer [data-section="settings"]')?.scrollIntoView({ block: 'start' }); }, 0);
 }
 function closeDrawer() {
+  const refit = refitIfLetterboxed();
   S.drawer = null;
   S.pendingKind = null;
   S.drawerWide = false;
   $('#drawer').classList.remove('open');
   document.body.classList.remove('drawer-open');
   document.body.classList.remove('drawer-wide');
-  applyView();
+  refit();
 }
 
 const DRAWER_MIN = 360;
 function setDrawerWidth(width, persist = true) {
+  const refit = S.drawer ? refitIfLetterboxed() : null;
   const max = Math.min(900, innerWidth);
   const min = Math.min(DRAWER_MIN, max);
   S.drawerWidth = clamp(Number(width) || 420, min, max);
@@ -2648,7 +2666,7 @@ function setDrawerWidth(width, persist = true) {
   const grip = $('#drawer-grip');
   if (grip) { grip.setAttribute('aria-valuemin', String(min)); grip.setAttribute('aria-valuemax', String(max)); grip.setAttribute('aria-valuenow', String(Math.round(S.drawerWidth))); }
   if (persist && !CAPTURE_READONLY) try { localStorage.setItem(localKey('drawer-width'), String(S.drawerWidth)); } catch {}
-  if (S.drawer) applyView();
+  if (refit) refit();
 }
 try { setDrawerWidth(Number(localStorage.getItem(localKey('drawer-width'))) || 420, false); } catch { setDrawerWidth(420, false); }
 let drawerResize = null;
@@ -3683,7 +3701,7 @@ function renderWho() {
 const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
 
 <b>canvas</b>
-  fixed 1600 × 900 board · fit is the zoom-out limit · 300% zoom-in limit
+  fixed 1600 × 900 board, letterboxed to the window · fit is the zoom-out limit · 300% zoom-in limit
   layout: auto fills the board · switch to manual for deliberate placement
   drag empty space        pan          scroll / two-finger    pan
   ⌘/ctrl + scroll, pinch  zoom         + / - / 0              zoom in / out / 100%
