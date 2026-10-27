@@ -9,6 +9,8 @@ import { HudError } from './store.ts';
 
 export const VIEW_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const VIEW_MAX_BYTES = 256 * 1024;
+/** hud_view tool results stop at this many characters. A review that does not fit is not approvable. */
+export const VIEW_REVIEW_MAX_CHARS = 60_000;
 
 /** tests redirect module storage here; the server always uses config().viewsDir */
 let dirOverride: string | null = null;
@@ -246,6 +248,18 @@ export interface ViewReview {
   truncated: boolean;
   validation: ViewValidation;
   expiresAt: number;
+  approvable: true;
+}
+
+/** staged source whose review does not fit in the caller's result budget. Nothing was kept to approve. */
+export interface ViewReviewRefusal {
+  installed: false;
+  trust: 'untrusted';
+  approvable: false;
+  name: string;
+  limit: number;
+  reviewChars: number;
+  text: string;
 }
 
 /** the module that landed after its review was approved. */
@@ -296,6 +310,11 @@ export function formatViewReview(review: ViewReview): string {
   ].join('\n');
 }
 
+/** the hud_view write result: the approve recipe and the full diff, or nothing that can be approved */
+export function formatAgentViewReview(review: ViewReview): string {
+  return `hud_view {action:"approve", name:"${review.name}", proposalId:"${review.id}", sha256:"${review.sha256}"}\n${formatViewReview(review)}`;
+}
+
 /**
  * Stage caller-supplied renderer source, or install a previously staged review.
  * `approve` without a live proposal id never writes: the diff has to be surfaced first,
@@ -310,7 +329,9 @@ export function installUntrustedView(name: string, body: {
   sha256?: string;
   now?: number;
   ttlMs?: number;
-} = {}): ViewReview | ViewInstall {
+  /** when set, a review that does not fit in this many characters is dropped instead of returned */
+  maxChars?: number;
+} = {}): ViewReview | ViewInstall | ViewReviewRefusal {
   const now = body.now ?? Date.now();
   if (body.approve === true) {
     if (!body.proposalId || !body.sha256) throw new HudError(409, 'untrusted modules cannot land without approval of a staged review', { code: 'approval-required' });
@@ -318,7 +339,22 @@ export function installUntrustedView(name: string, body: {
     return approveReviewedView(name, body.proposalId, body.sha256, now);
   }
   if (typeof body.code !== 'string') throw new HudError(400, 'code is required');
-  return stageViewReview(name, body.code, { overwrite: body.overwrite, expectedSha256: body.expectedSha256, now, ttlMs: body.ttlMs });
+  if (body.maxChars !== undefined && (!Number.isInteger(body.maxChars) || body.maxChars < 1)) throw new HudError(400, 'maxChars must be a positive integer');
+  const review = stageViewReview(name, body.code, { overwrite: body.overwrite, expectedSha256: body.expectedSha256, now, ttlMs: body.ttlMs });
+  if (body.maxChars === undefined) return review;
+  const text = formatAgentViewReview(review);
+  if (text.length <= body.maxChars) return review;
+  // The caller cannot show the whole diff, so the proposal must not remain approvable.
+  reviews.delete(review.id);
+  return {
+    installed: false,
+    trust: 'untrusted',
+    approvable: false,
+    name: review.name,
+    limit: body.maxChars,
+    reviewChars: text.length,
+    text: `NOT INSTALLED — untrusted view ${review.name} was not shown in full (${text.length} characters exceeds the ${body.maxChars} character review limit). The proposal was dropped and cannot be approved. Shorten the module and submit it again.`,
+  };
 }
 
 function stageViewReview(name: string, code: string, opts: { overwrite?: boolean; expectedSha256?: string; now: number; ttlMs?: number }): ViewReview {
@@ -342,6 +378,7 @@ function stageViewReview(name: string, code: string, opts: { overwrite?: boolean
     truncated: diff.truncated,
     validation,
     expiresAt: opts.now + (opts.ttlMs ?? VIEW_REVIEW_TTL_MS),
+    approvable: true,
   };
   pruneReviews(opts.now);
   reviews.set(review.id, { ...review, code });

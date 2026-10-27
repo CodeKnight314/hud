@@ -12,7 +12,7 @@ import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
 import { line } from './summary.ts';
 import type { Item, QueueResult } from './types.ts';
-import { formatViewReview } from './views.ts';
+import { formatAgentViewReview, VIEW_REVIEW_MAX_CHARS } from './views.ts';
 
 const VERSION = JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version;
 
@@ -553,7 +553,7 @@ const TOOLS = [
   {
     name: 'hud_view',
     description:
-      'Create, inspect or validate a chart renderer module for display:"view:<name>". generate turns a small declarative spec into a module and may install that generated source. write stages caller-supplied source and returns a review diff; it does not install. approve installs only that reviewed proposal. These modules run unsandboxed in the board page. Prefer hud_graph/hud_canvas for sandboxed custom programs.',
+      'Create, inspect or validate a chart renderer module for display:"view:<name>". generate turns a small declarative spec into a module and may install that generated source. write stages caller-supplied source and returns a review diff; it does not install. approve installs only that reviewed proposal, and only when the full diff fit in the tool result. These modules run unsandboxed in the board page. Prefer hud_graph/hud_canvas for sandboxed custom programs.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -604,7 +604,7 @@ function validate(name: string, args: any) {
   }
 }
 
-const MAX_OUT = 60_000;
+const MAX_OUT = VIEW_REVIEW_MAX_CHARS;
 function cap(text: string) {
   return text.length > MAX_OUT ? `${text.slice(0, MAX_OUT)}\n… truncated (${text.length} chars); narrow it with filters (board, status, limit, hud_search)` : text;
 }
@@ -1017,8 +1017,9 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       }
       if (action === 'write') {
         if (typeof args.code !== 'string') throw new Error('code is required');
-        const r = await hud.viewWrite(args.name, { code: args.code, overwrite: !!args.overwrite, expectedSha256: args.expectedSha256 });
-        return cap(`hud_view {action:"approve", name:"${r.name}", proposalId:"${r.id}", sha256:"${r.sha256}"}\n${formatViewReview(r)}`);
+        const r = await hud.viewWrite(args.name, { code: args.code, overwrite: !!args.overwrite, expectedSha256: args.expectedSha256, maxChars: MAX_OUT });
+        if (r.approvable === false) return r.text;
+        return formatAgentViewReview(r);
       }
       if (action === 'approve') {
         if (typeof args.proposalId !== 'string' || typeof args.sha256 !== 'string') throw new Error('approve requires proposalId and sha256 from the review');

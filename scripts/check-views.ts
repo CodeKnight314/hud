@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
-import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, writeViewFile } from '../src/views.ts';
+import { deleteViewFile, formatViewReview, generateViewCode, installUntrustedView, listViewInfos, readViewFile, setViewsDir, validateViewCode, VIEW_KINDS, VIEW_MAX_BYTES, VIEW_REVIEW_MAX_CHARS, writeViewFile } from '../src/views.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'hud-views-'));
 setViewsDir(dir);
@@ -139,5 +139,28 @@ assert.throws(() => installUntrustedView('remote-mod', { code: remote, now: 4_00
 assert.equal(readViewFile('remote-mod'), other);
 
 deleteViewFile('remote-mod');
+
+// hud_view results are capped at 60_000 chars while a module may be up to VIEW_MAX_BYTES.
+// A review that does not fit must not stay approvable: the agent would otherwise approve unseen bytes.
+const agentResultMax = VIEW_REVIEW_MAX_CHARS;
+const marker = 'UNSEEN_TAIL';
+const bulky = `export function render() { return '<div>' + esc('${'a'.repeat(agentResultMax)}${marker}') + '</div>'; }\n`;
+assert.ok(bulky.length > agentResultMax && bulky.length < VIEW_MAX_BYTES, 'fixture sits between the tool cap and the module limit');
+const hidden = installUntrustedView('capped-mod', { code: bulky, maxChars: agentResultMax, now: 5_000, ttlMs: 60_000 });
+assert.equal(hidden.installed, false);
+assert.equal(hidden.approvable, false);
+assert.equal('id' in hidden, false);
+assert.equal(JSON.stringify(hidden).includes(marker), false, 'the unseen tail is not part of the review result');
+assert.equal(absent('capped-mod'), false, 'an oversized review does not write the module');
+if ('id' in hidden && hidden.id && hidden.sha256) installUntrustedView('capped-mod', { approve: true, proposalId: hidden.id, sha256: hidden.sha256, now: 5_000 });
+assert.equal(absent('capped-mod'), false, 'bytes past the tool cap cannot be approved');
+
+const visible = installUntrustedView('shown-mod', { code: remote, maxChars: agentResultMax, now: 5_000, ttlMs: 60_000 });
+assert.equal(visible.approvable, true);
+assert.match(visible.diff, /esc\('remote'\)/);
+const shownInstall = installUntrustedView('shown-mod', { approve: true, proposalId: visible.id, sha256: visible.sha256, now: 5_000 });
+assert.equal(shownInstall.installed, true);
+assert.equal(readViewFile('shown-mod'), remote);
+deleteViewFile('shown-mod');
 
 console.log('PASS generated view modules: templates, static validation, writes and deletes');

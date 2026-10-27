@@ -420,6 +420,7 @@ route('GET', '/api/views/:name', (_req, _res, [name]) => {
 route('PUT', '/api/views/:name', async (req, _res, [name]) => {
   const b = await readObj(req);
   // Clock and ttl stay server-side. A client cannot approve a module that was never staged.
+  if (b.maxChars !== undefined && (!Number.isInteger(b.maxChars) || b.maxChars < 1)) throw new HudError(400, 'maxChars must be a positive integer');
   return installUntrustedView(dec(name).replace(/\.js$/i, ''), {
     code: typeof b.code === 'string' ? b.code : undefined,
     overwrite: b.overwrite === true,
@@ -427,6 +428,7 @@ route('PUT', '/api/views/:name', async (req, _res, [name]) => {
     approve: b.approve === true,
     proposalId: typeof b.proposalId === 'string' ? b.proposalId : undefined,
     sha256: typeof b.sha256 === 'string' ? b.sha256 : undefined,
+    maxChars: b.maxChars === undefined ? undefined : b.maxChars,
   });
 });
 route('POST', '/api/views', async (req) => {

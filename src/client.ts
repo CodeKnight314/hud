@@ -12,7 +12,7 @@ import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
 import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
-import type { ViewInstall, ViewReview } from './views.ts';
+import type { ViewInstall, ViewReview, ViewReviewRefusal } from './views.ts';
 
 export interface HudOptions {
   url?: string;
@@ -412,7 +412,10 @@ export class Hud {
     return this.request('POST', '/api/views', { name, spec, ...opts });
   }
   /** stage caller-supplied renderer source. Returns the review diff; the module is not installed. */
-  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string }): Promise<ViewReview> {
+  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string }): Promise<ViewReview>;
+  /** stage source that must fit in `maxChars`. A review that does not fit is dropped and cannot be approved. */
+  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string; maxChars: number }): Promise<ViewReview | ViewReviewRefusal>;
+  viewWrite(name: string, input: { code: string; overwrite?: boolean; expectedSha256?: string; maxChars?: number }): Promise<ViewReview | ViewReviewRefusal> {
     return this.request('PUT', `/api/views/${encodeURIComponent(name)}`, input);
   }
   /** install a previously staged review. The sha256 must be the one from that review. */

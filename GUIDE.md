@@ -741,7 +741,8 @@ For a reusable chart that follows one of the standard shapes, generate a view mo
 generated module in the views directory, and `display` to point a monitor at it in one step. `write` (and
 `hud view set`) is for caller-supplied source: it returns a review diff and does not install the file. `approve`
 installs the staged bytes when `proposalId` and `sha256` match that review. A review expires after 15 minutes.
-A write that also sets `approve` does not skip the review.
+A write that also sets `approve` does not skip the review. `hud_view` write drops the proposal when the full diff
+does not fit in the tool result, so a truncated review cannot be approved.
 
 - **Validation is two-stage.** Static checks reject imports, network/storage access, `eval`, script/iframe tags and
   inline handlers, then compile the module without executing it. `validate` also renders it in a headless Electron
