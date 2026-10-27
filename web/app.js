@@ -1,4 +1,5 @@
 // hud — canvas client. No build step; plain ES module.
+import { claimWidgetHTML } from './claim-widget.js';
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
 import { UTIL_KINDS, UTIL_LABEL, renderCard as renderUtilCard, defaultUtil, isLive, timerRemaining, stopwatchElapsed, evaluate, md } from './utils.js';
@@ -75,7 +76,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -1131,6 +1132,7 @@ function updateChrome() {
   $('#pos').textContent = `${counts.ticket} tickets (${open} open) · ${counts.monitor} monitors${bad ? ` (${bad} ▲✕)` : ''} · ${counts.note} notes${utilPart}`;
   $('#btn-view').textContent = S.mode === 'list' ? `board ${canvasItems().filter(i => i.type !== 'frame').length}` : `tickets ${counts.ticket}`;
   renderMonitorAttentionStrip();
+  renderClaimWidget();
   renderProgramInspector();
   setModeHint();
   if (S.mode === 'list') scheduleList();
@@ -1160,6 +1162,16 @@ function renderMonitorAttentionStrip() {
   document.body.classList.toggle('monitor-attention', !host.hidden);
   if (wasHidden !== host.hidden && S.mode === 'canvas') requestAnimationFrame(applyView);
   const html = rows.length ? `<span class="strip-label">attention ${rows.length}</span>${rows.map((r) => `<button class="strip-${esc(r.kind)}" data-strip-focus="${esc(r.id)}" title="${esc(r.text)}">${esc(r.text)}</button>`).join('')}` : '';
+  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
+}
+
+function renderClaimWidget(now = Date.now()) {
+  const host = $('#claim-widget');
+  if (!host) return;
+  const current = S.page === 'board' && S.queue && S.queue.board === S.board;
+  const html = current ? claimWidgetHTML({ queue: S.queue, sessions: S.sessions, now }) : '';
+  host.hidden = !html;
+  document.body.classList.toggle('claim-widget', !!html);
   if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
 }
 
@@ -1412,6 +1424,7 @@ function setPage(page, opts = {}) {
     renderAll();
     if (S.mode === 'list') renderList();
     else requestAnimationFrame(() => fit());
+    if (!CAPTURE_READONLY) loadQueue();
   }
   updateChrome();
 }
@@ -1571,6 +1584,7 @@ async function loadSessions() {
   if (!data) return;
   S.sessions = { items: Array.isArray(data.items) ? data.items : [], now: data.now || Date.now() };
   renderSessions();
+  renderClaimWidget();
 }
 function renderSessions() {
   const live = S.sessions.items.filter((s) => s.live);
@@ -1586,18 +1600,22 @@ function renderSessions() {
 async function heartbeatSelf() {
   try { await api('POST', '/api/sessions/user/heartbeat'); } catch {}
 }
+let queueGen = 0;
 async function loadQueue() {
-  if (CAPTURE_READONLY) return;
-  const data = await optionalGET(`/api/queue?board=${encodeURIComponent(S.board)}`);
-  if (!data) return;
+  if (CAPTURE_READONLY || !S.board) return;
+  const board = S.board;
+  const gen = ++queueGen;
+  const data = await optionalGET(`/api/queue?board=${encodeURIComponent(board)}`);
+  if (gen !== queueGen || S.board !== board || !data) return;
   S.queue = data;
+  renderClaimWidget();
   if (S.page === 'runs' && S.runsTab === 'queue') renderRuns();
 }
 function queueHTML() {
   const q = S.queue;
   if (!q) return '<div class="sup-empty">Loading the queue…</div>';
   const rows = q.items.map((t) => {
-    const claimed = t.claim ? `<span class="q-claim">${esc(t.claim.session)}</span>` : '—';
+    const claimed = t.claim ? `<span class="q-claim">${esc(t.session?.name || t.claim.session)}</span>` : '—';
     const sess = t.session ? `<span class="${t.session.live ? 'q-live' : 'dim'}">${t.session.live ? '● live' : '○ ended'}</span>` : '—';
     const action = t.bucket === 'done' ? '' : t.claim && t.claim.session === 'user'
       ? `<button data-release="${esc(t.id)}">release</button>`
@@ -1625,7 +1643,7 @@ async function releaseTicket(id) {
 const refreshAttentionLater = debounce(() => { if (S.page === 'attention') loadAttention(); }, 350);
 const refreshRunsLater = debounce(() => { if (S.page === 'runs' || (S.drawer && runForItem(S.drawer))) loadRuns(); }, 350);
 const refreshChangesLater = debounce(() => { if (S.page === 'attention') loadChanges(); }, 350);
-const refreshQueueLater = debounce(() => { if (S.page === 'runs' && S.runsTab === 'queue') loadQueue(); }, 350);
+const refreshQueueLater = debounce(() => { if (S.page === 'board' || (S.page === 'runs' && S.runsTab === 'queue')) loadQueue(); }, 350);
 function markSinceRead() {
   if (CAPTURE_READONLY) return;
   const now = Date.now();
@@ -1725,6 +1743,11 @@ $('#monitor-attention-strip').addEventListener('click', (e) => {
   if (!button?.dataset.stripFocus || !S.items.has(button.dataset.stripFocus)) return;
   if (boardProgramActive()) openDrawer(button.dataset.stripFocus);
   else focusItem(button.dataset.stripFocus);
+});
+$('#claim-widget').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-claim-focus]');
+  if (!button?.dataset.claimFocus || !S.items.has(button.dataset.claimFocus)) return;
+  openDrawer(button.dataset.claimFocus);
 });
 $('#toast').addEventListener('click', (e) => {
   const link = e.target.closest('[data-created-board-link]');
@@ -1931,7 +1954,7 @@ function onEvent(e) {
   if (e.kind === 'claim') {
     S.claimCache.delete(e.claim.ticket);
     if (S.drawer === e.claim.ticket) fillClaim(itemFor(S.drawer));
-    if (S.page === 'runs' && S.runsTab === 'queue') refreshQueueLater();
+    refreshQueueLater();
     return;
   }
   if (e.kind === 'context') {
@@ -1988,6 +2011,7 @@ function onEvent(e) {
     renderTrash();
     renderFrames();
     updateChrome();
+    refreshQueueLater();
     queueProgramsMount();
   } else if (e.kind === 'board') {
     upsertBoard(e.board);
@@ -4190,9 +4214,11 @@ if (!CAPTURE_READONLY) setInterval(() => {
   renderWho();
   renderConnection();
   renderMonitorAttentionStrip();
+  renderClaimWidget();
   renderProgramInspector();
   loadReadout();
   loadSessions();
+  if (S.page === 'board' || (S.page === 'runs' && S.runsTab === 'queue')) loadQueue();
 }, 5000);
 if (!CAPTURE_READONLY) setInterval(heartbeatSelf, 20000);
 if (!CAPTURE_READONLY) setInterval(() => {

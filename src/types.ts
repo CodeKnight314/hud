@@ -502,7 +502,7 @@ export interface QueueRow {
   blockedBy: string[];
   claim: ClaimView | null;
   owner: string | null;
-  session: { id: string; live: boolean; lastSeenAt: number; kind: SessionKind } | null;
+  session: { id: string; name: string; live: boolean; lastSeenAt: number; kind: SessionKind } | null;
   bucket: 'open' | 'claimed' | 'done';
   /** open, unblocked and unclaimed */
   ready: boolean;

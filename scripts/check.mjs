@@ -13,6 +13,7 @@ const suites = [
   'scripts/check-layout.ts',
   'scripts/check-coordination.ts',
   'scripts/check-context-timeline.mjs',
+  'scripts/check-claim-widget.mjs',
   'scripts/check-supervision.ts',
   'scripts/check-monitoring.ts',
   'scripts/check-monitoring-views.mjs',

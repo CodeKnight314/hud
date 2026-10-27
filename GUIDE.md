@@ -69,6 +69,12 @@ show their item counts and double-click to rename, and `+` creates one. Attentio
 work, warnings, errors and stale reporters by board and run; review keeps an issue active, it only records human
 review. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
 **queue** tab lists open, claimed and done work with owner, live session, blockers and a claim/release action.
+The board canvas keeps the same glance in a compact corner widget: the ready count, and each current claim's
+session name, ticket and remaining lease, soonest lease first. ● is a live holder with time left on the lease;
+○ is an ended session or an expired lease. The holder's name and presence come from the newer snapshot:
+the session list only when its time is later than the queue snapshot, and the queue row otherwise.
+The corner scrolls instead of dropping claims. Choosing a claim opens that ticket in the inspector and stays on the canvas.
+A quiet board with nothing ready and nothing claimed leaves the corner empty.
 Completed runs are hidden until **show completed** is selected.
 
 The top bar holds **search** (`⌘/Ctrl+K`), the live actor count, the session popover and the connection pill. Search is
@@ -220,7 +226,8 @@ the agents decide the work.
   Reopening a finished ticket does not restore it. Assigning the ticket to someone else releases it too.
 - **The queue is the read model.** `hud_queue` returns `open`, `claimed` and `done` rows with owner, live session state,
   blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
-  `hud_queue {includeDone: true}` includes finished tickets.
+  `hud_queue {includeDone: true}` includes finished tickets. Each claimed row names the holding session. The board
+  canvas shows that ready count and each claim's session name, ticket and lease time without opening Runs.
 
 Two coordination policies use the same primitives. Each has a copy-paste playbook — claim, publish a FACT, wait,
 finish — plus what to do on an expired lease, a blocked ticket, and an assignee conflict. Fetch that playbook on its

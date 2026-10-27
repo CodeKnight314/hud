@@ -169,6 +169,7 @@ function queues() {
   const b = ticket(store, 'blocked work', { blockedBy: [a.id] });
   const c = ticket(store, 'claimed work');
   ticket(store, 'finished work', { status: 'done' });
+  store.sessionStart({ id: 'agent-a', name: 'Alice', kind: 'agent' }, 'claude');
   store.claim(c.id, { session: 'agent-a' }, 'claude');
 
   const q = store.queue('main');
@@ -181,6 +182,7 @@ function queues() {
   assert.equal(q.items.find((r) => r.id === b.id)?.ready, false);
   assert.equal(q.items.find((r) => r.id === c.id)?.owner, 'claude');
   assert.equal(q.items.find((r) => r.id === c.id)?.session?.live, true);
+  assert.equal(q.items.find((r) => r.id === c.id)?.session?.name, 'Alice', 'queue names the holding session');
 
   const all = store.queue('main', { includeDone: true });
   assert.equal(all.counts.done, 1);
