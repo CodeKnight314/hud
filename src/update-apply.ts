@@ -1,9 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, readFileSync, realpathSync } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, posix, win32 } from 'node:path';
+import { compareVersions } from './updates.ts';
 
 /** Installers larger than this are rejected before they can fill the disk. */
 export const MAX_RELEASE_ASSET_BYTES = 512 * 1024 * 1024;
@@ -25,7 +26,7 @@ export type UpdatePlan = {
   version: string;
   sha256: string;
 };
-export type PackagedTarget = { platform: string; execPath: string; appImage?: string };
+export type PackagedTarget = { platform: string; execPath: string; appImage?: string; commandExe?: string };
 export type ApprovedUpdate = {
   status: string;
   currentVersion: string;
@@ -37,8 +38,8 @@ export type ApprovedUpdate = {
 const POSIX_UPDATE_HELPER = `#!/bin/sh
 # Replaces a verified HUD install after the owning process exits. Every path is a separate argument.
 set -eu
-if [ "$#" -ne 6 ]; then
-  echo "usage: update-helper.sh pid kind asset dest relaunch log" >&2
+if [ "$#" -ne 8 ]; then
+  echo "usage: update-helper.sh pid kind asset dest relaunch log sha256 serverpid" >&2
   exit 2
 fi
 pid=$1
@@ -47,6 +48,8 @@ asset=$3
 dest=$4
 relaunch=$5
 log=$6
+sha=$7
+server=$8
 case "$pid" in
   ''|*[!0-9]*) printf '%s\\n' "bad pid" >> "$log"; exit 2 ;;
 esac
@@ -69,6 +72,33 @@ while kill -0 "$pid" 2>/dev/null; do
   sleep 0.2
 done
 sleep 0.2
+case "$server" in
+  ''|*[!0-9]*) log_fail "bad server pid"; exit 2 ;;
+esac
+if [ "$server" -gt 0 ]; then
+  i=0
+  while kill -0 "$server" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -gt 600 ]; then
+      log_fail "timed out waiting for the old server"
+      exit 1
+    fi
+    sleep 0.2
+  done
+fi
+printf '%s' "$sha" | grep -Eq '^[0-9a-f]{64}$' || { log_fail "bad sha256"; exit 2; }
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum -- "$asset" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual=$(shasum -a 256 -- "$asset" | awk '{print $1}')
+else
+  log_fail "sha256 tool missing"
+  exit 1
+fi
+if [ "$actual" != "$sha" ]; then
+  log_fail "installer sha256 changed"
+  exit 1
+fi
 if [ "$asset" = "$dest" ]; then
   log_fail "refusing to use the installed app as the downloaded asset"
   exit 1
@@ -122,6 +152,8 @@ case "$kind" in
       exit 1
     fi
     rm -rf "$backup"
+    # The copy inherits the download's quarantine attribute, which blocks relaunch.
+    # Clearing it is not a notarization or developer-signature check.
     xattr -dr com.apple.quarantine "$dest" || true
     hdiutil detach "$mount"
     mount=""
@@ -154,7 +186,9 @@ param(
   [Parameter(Mandatory = $true)][string]$Asset,
   [Parameter(Mandatory = $true)][string]$Directory,
   [Parameter(Mandatory = $true)][string]$Relaunch,
-  [Parameter(Mandatory = $true)][string]$Log
+  [Parameter(Mandatory = $true)][string]$Log,
+  [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+  [int]$ServerPid = 0
 )
 $ErrorActionPreference = 'Stop'
 function Write-Log([string]$message) { Add-Content -LiteralPath $Log -Value $message }
@@ -171,7 +205,20 @@ while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
   Start-Sleep -Milliseconds 200
 }
 Start-Sleep -Milliseconds 200
-Unblock-File -LiteralPath $Asset -ErrorAction SilentlyContinue
+if ($ServerPid -gt 0) {
+  $serverDeadline = (Get-Date).AddMinutes(2)
+  while (Get-Process -Id $ServerPid -ErrorAction SilentlyContinue) {
+    if ((Get-Date) -gt $serverDeadline) { Write-Log 'timed out waiting for the old server'; exit 1 }
+    Start-Sleep -Milliseconds 200
+  }
+}
+if ($ExpectedSha256 -notmatch '^[0-9a-f]{64}$') { Write-Log 'bad sha256'; exit 2 }
+$hash = (Get-FileHash -LiteralPath $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hash -ne $ExpectedSha256) { Write-Log 'installer sha256 changed'; exit 1 }
+# Windows marks downloaded files. Other hosts have no quarantine stream; a failure here must not block install.
+if ($env:OS -eq 'Windows_NT') {
+  try { Unblock-File -LiteralPath $Asset -ErrorAction SilentlyContinue } catch {}
+}
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Asset
 $psi.Arguments = "/S /D=$Directory"
@@ -182,7 +229,8 @@ if ($process.ExitCode -ne 0) { Write-Log "installer exited $($process.ExitCode)"
 Start-Process -FilePath $Relaunch
 Remove-Item -LiteralPath $Asset -Force
 $dir = Split-Path -Parent $Asset
-if ($dir) { Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue }
+# The download directory is empty after the installer is removed. A leftover file must not fail an install that already finished.
+if ($dir) { try { Remove-Item -LiteralPath $dir -Force -ErrorAction SilentlyContinue } catch {} }
 Write-Log 'installed'
 `;
 
@@ -451,6 +499,7 @@ export function planPackagedUpdate(target: PackagedTarget, asset: { name: string
   if (kind === 'appimage') {
     if (target.platform !== 'linux') throw new Error('An AppImage can only update the running AppImage.');
     plan.destination = appImagePath(target.appImage);
+    assertAppImageCommand(plan.destination, target.commandExe);
     plan.relaunch = plan.destination;
     return plan;
   }
@@ -484,7 +533,29 @@ function appImagePath(value: string | undefined): string {
   if (!value) throw new Error('In-app update only replaces the running AppImage.');
   rejectControl(value, 'an AppImage path');
   if (!posix.isAbsolute(value) || value.split('/').includes('..') || !value.endsWith('.AppImage')) throw new Error('In-app update only replaces the running AppImage.');
-  return value;
+  let resolved: string;
+  try { resolved = realpathSync(value); } catch { throw new Error('In-app update only replaces the running AppImage.'); }
+  if (!posix.isAbsolute(resolved) || resolved.split('/').includes('..') || !resolved.endsWith('.AppImage')) throw new Error('In-app update only replaces the running AppImage.');
+  return resolved;
+}
+
+/** The #17 shim execs the `.AppImage` path recorded in cli.json. Replacing a different file would leave that command on the old bytes. */
+function assertAppImageCommand(destination: string, commandExe: string | undefined): void {
+  if (!commandExe || !commandExe.endsWith('.AppImage')) return;
+  rejectControl(commandExe, 'an AppImage path');
+  let recorded: string;
+  try { recorded = realpathSync(commandExe); } catch { throw new Error('Refusing to update because the hud command points at a different AppImage.'); }
+  if (recorded !== destination) throw new Error('Refusing to update because the hud command points at a different AppImage.');
+}
+
+/** `exe` from `<data>/cli.json`, when a command shim has been recorded. */
+export function recordedInstallExe(dataDir: string): string | undefined {
+  try {
+    const exe = JSON.parse(readFileSync(join(dataDir, 'cli.json'), 'utf8')).exe;
+    return typeof exe === 'string' && exe ? exe : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function assertRegular(path: string, kind: 'file' | 'dir', label: string): Promise<void> {
@@ -519,32 +590,34 @@ export async function assertInstalledTarget(plan: UpdatePlan): Promise<void> {
   await access(plan.destination, constants.W_OK).catch(() => { throw new Error('HUD cannot replace this copy of the app in place. Download the installer and replace it yourself.'); });
 }
 
-export function helperLaunchSpec(plan: UpdatePlan, parentPid: number, logPath: string, scriptPath: string): { command: string; args: string[]; script: string } {
+export function helperLaunchSpec(plan: UpdatePlan, parentPid: number, logPath: string, scriptPath: string, serverPid = 0): { command: string; args: string[]; script: string } {
   if (!Number.isSafeInteger(parentPid) || parentPid < 1) throw new Error('Refusing to update without the running app process.');
+  if (!Number.isSafeInteger(serverPid) || serverPid < 0) throw new Error('Refusing to update without a valid server process id.');
   for (const path of [plan.assetPath, plan.destination, plan.relaunch, logPath, scriptPath]) rejectControl(path, 'an update path');
   if (![plan.assetPath, plan.destination, plan.relaunch, logPath, scriptPath].every((path) => isAbsolute(path) || (plan.kind === 'nsis' && win32.isAbsolute(path)))) {
     throw new Error('Refusing a relative update path.');
   }
+  if (!/^[a-f0-9]{64}$/.test(plan.sha256)) throw new Error('Refusing to update without a SHA256 to re-check.');
   if (plan.kind === 'nsis') {
     return {
       command: 'powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ParentPid', String(parentPid), '-Asset', plan.assetPath, '-Directory', plan.destination, '-Relaunch', plan.relaunch, '-Log', logPath],
+      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ParentPid', String(parentPid), '-Asset', plan.assetPath, '-Directory', plan.destination, '-Relaunch', plan.relaunch, '-Log', logPath, '-ExpectedSha256', plan.sha256, '-ServerPid', String(serverPid)],
       script: WINDOWS_UPDATE_HELPER,
     };
   }
   if (!['dmg', 'appimage', 'deb'].includes(plan.kind)) throw new Error('Unsupported update kind.');
   return {
     command: '/bin/sh',
-    args: [scriptPath, String(parentPid), plan.kind, plan.assetPath, plan.destination, plan.relaunch, logPath],
+    args: [scriptPath, String(parentPid), plan.kind, plan.assetPath, plan.destination, plan.relaunch, logPath, plan.sha256, String(serverPid)],
     script: POSIX_UPDATE_HELPER,
   };
 }
 
-export async function spawnUpdateHelper(plan: UpdatePlan, parentPid: number, logPath: string): Promise<ChildProcess> {
+export async function spawnUpdateHelper(plan: UpdatePlan, parentPid: number, logPath: string, serverPid = 0): Promise<ChildProcess> {
   await mkdir(dirname(logPath), { recursive: true });
   const workDir = await mkdtemp(join(tmpdir(), 'hud-update-helper-'));
   const scriptPath = join(workDir, plan.kind === 'nsis' ? 'apply.ps1' : 'apply.sh');
-  const spec = helperLaunchSpec(plan, parentPid, logPath, scriptPath);
+  const spec = helperLaunchSpec(plan, parentPid, logPath, scriptPath, serverPid);
   await writeFile(scriptPath, spec.script, { mode: 0o700 });
   return new Promise((resolve, reject) => {
     const child = spawn(spec.command, spec.args, { detached: true, stdio: 'ignore', windowsHide: true });
@@ -558,6 +631,38 @@ async function discard(asset: VerifiedAsset | null): Promise<void> {
   await rm(asset.directory, { recursive: true, force: true }).catch(() => {});
 }
 
+function assertUpgrade(current: string, latest: string): void {
+  let order: number;
+  try { order = compareVersions(latest, current); } catch {
+    throw new Error('Check for a newer release with a matching installer first.');
+  }
+  if (order <= 0) throw new Error('Refusing to install a release that is not newer than this app.');
+}
+
+/** While this is true, heal and connect must not start the old server. */
+export function rejectServerRestartDuringUpdate(updating: boolean): void {
+  if (updating) throw new Error('HUD is installing an update and will not restart the old server.');
+}
+
+/**
+ * Spawn the helper, stop the backend, then quit. A failed stop kills the helper
+ * so it cannot replace the app under a server that is still running.
+ */
+export async function runVerifiedUpdateHandoff(options: {
+  spawnHelper: () => Promise<ChildProcess>;
+  stopBackend: () => Promise<void>;
+  quit: () => void;
+}): Promise<void> {
+  const child = await options.spawnHelper();
+  try {
+    await options.stopBackend();
+  } catch (error) {
+    try { if (!child.killed) child.kill(); } catch { /* the helper already exited */ }
+    throw error;
+  }
+  options.quit();
+}
+
 /**
  * Download and verify, then apply only when confirm returns true.
  * Checking for updates never calls this. A declined prompt deletes the download.
@@ -567,7 +672,7 @@ export async function installApprovedUpdate(options: {
   update: ApprovedUpdate;
   target: PackagedTarget;
   directory: string;
-  confirm: (summary: { version: string; name: string; sha256: string }) => Promise<boolean> | boolean;
+  confirm: (summary: { version: string; name: string; sha256: string; path: string }) => Promise<boolean> | boolean;
   apply: (plan: UpdatePlan) => Promise<void>;
   fetcher?: typeof fetch;
   maxBytes?: number;
@@ -576,6 +681,7 @@ export async function installApprovedUpdate(options: {
   if (options.update.status !== 'available' || !options.update.downloadUrl || !options.update.downloadName || !options.update.latestVersion) {
     throw new Error('Check for a newer release with a matching installer first.');
   }
+  assertUpgrade(options.update.currentVersion, options.update.latestVersion);
   // Refuse an unpackaged or unwritable install before downloading anything.
   await assertInstalledTarget(planPackagedUpdate(options.target, {
     name: options.update.downloadName,
@@ -597,7 +703,12 @@ export async function installApprovedUpdate(options: {
     });
     const plan = planPackagedUpdate(options.target, asset);
     await assertInstalledTarget(plan);
-    if (await options.confirm({ version: asset.version, name: asset.name, sha256: asset.sha256 }) !== true) return 'cancelled';
+    if (await options.confirm({ version: asset.version, name: asset.name, sha256: asset.sha256, path: asset.path }) !== true) return 'cancelled';
+    const maxBytes = options.maxBytes ?? MAX_RELEASE_ASSET_BYTES;
+    const again = await hashFile(asset.path, maxBytes);
+    if (!hashesEqual(again, asset.sha256) || !hashesEqual(again, plan.sha256)) {
+      throw new Error('The installer changed after it was checked. It was deleted and will not be installed.');
+    }
     await options.apply(plan);
     started = true;
     return 'started';

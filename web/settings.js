@@ -272,7 +272,7 @@
   $('copy-config').addEventListener('click', () => external('copyConfig', 'Copying MCP configuration…', 'MCP configuration copied.'));
   $('check-updates').addEventListener('click', () => mutate('checkUpdates', [], 'Checking for updates…', (s) => s.updates?.status === 'error' ? { text: s.updates.message || 'The update check failed.', kind: 'bad' } : s.updates?.message || 'Update status refreshed.'));
   $('install-update').addEventListener('click', () => mutate('installUpdate', [], 'Downloading the installer and checking SHA256…', (s) => {
-    if (s.updateApply === 'started') return 'SHA256 matched. HUD is quitting to install and relaunch.';
+    if (s.updateApply === 'started') return 'Release checksum matched. HUD is quitting to install and relaunch.';
     if (s.updateApply === 'cancelled') return 'Update left uninstalled.';
     return { text: 'HUD did not confirm the update.', kind: 'bad' };
   }));

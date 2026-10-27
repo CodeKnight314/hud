@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { armReconnectNotice, readReconnectNotice } from '../src/reconnect.ts';
 import { backendUpdateAction, compareVersions, installerName, prepareBackendUpdate, releaseInfo, stopBackendForUpdate, UpdateChecker } from '../src/updates.ts';
-import { checksumFileUrl, downloadVerifiedAsset, helperLaunchSpec, installApprovedUpdate, parseSha256Sums, planPackagedUpdate, posixUpdateHelper, releaseDownloadTarget, windowsUpdateHelper } from '../src/update-apply.ts';
+import { checksumFileUrl, downloadVerifiedAsset, helperLaunchSpec, installApprovedUpdate, parseSha256Sums, planPackagedUpdate, posixUpdateHelper, recordedInstallExe, rejectServerRestartDuringUpdate, releaseDownloadTarget, runVerifiedUpdateHandoff, windowsUpdateHelper } from '../src/update-apply.ts';
 import type { HealthInfo } from '../src/client.ts';
 
 const release = (version = '0.1.2', platform = 'darwin', arch = 'arm64', appImage = false) => {
@@ -186,13 +187,21 @@ assert.equal(windowsUpdateHelper().includes('Invoke-Expression'), false);
 const spec = helperLaunchSpec(macPlan, 1, join(root, 'apply.log'), helper);
 assert.equal(spec.command, '/bin/sh');
 assert.deepEqual(spec.args.slice(0, 3), [helper, '1', 'dmg']);
+assert.equal(spec.args.at(-2), macPlan.sha256);
+assert.equal(spec.args.at(-1), '0');
 assert.equal(spec.args.includes(macPlan.assetPath), true);
-const winSpec = helperLaunchSpec(winPlan, 42, join(root, 'apply.log'), join(root, 'apply.ps1'));
+const winSpec = helperLaunchSpec(winPlan, 42, join(root, 'apply.log'), join(root, 'apply.ps1'), 7);
 assert.equal(winSpec.command, 'powershell.exe');
 assert.equal(winSpec.args.includes('-File'), true);
+assert.equal(winSpec.args.includes('-ExpectedSha256'), true);
+assert.equal(winSpec.args.includes(winPlan.sha256), true);
+assert.equal(winSpec.args.includes('-ServerPid'), true);
+assert.equal(winSpec.args.at(-1), '7');
 assert.equal(winSpec.args.includes(winPlan.destination), true);
+assert.equal(winSpec.script.includes('/S /D=$Directory'), true);
 assert.equal(winSpec.args.join(' ').includes('sh -c'), false);
 assert.throws(() => helperLaunchSpec(macPlan, 0, join(root, 'apply.log'), helper));
+assert.throws(() => helperLaunchSpec(macPlan, 1, join(root, 'apply.log'), helper, -1));
 
 const bin = join(root, 'bin');
 mkdirSync(bin);
@@ -226,28 +235,28 @@ async function runHelper(args: string[], timeoutMs = 8000): Promise<number> {
 const dead = spawn(process.execPath, ['-e', 'process.exit(0)']);
 await new Promise((resolve) => dead.once('exit', resolve));
 const dmgLog = join(root, 'dmg.log');
-assert.equal(await runHelper([String(dead.pid), 'dmg', verified.path, appBundle, relaunch, dmgLog]), 0);
+assert.equal(await runHelper([String(dead.pid), 'dmg', verified.path, appBundle, relaunch, dmgLog, installerSha, '0']), 0);
 assert.equal(readFileSync(join(appBundle, 'Contents', 'MacOS', 'hud'), 'utf8'), '#!/bin/sh\nprintf new-app\\n\n');
 assert.equal(readFileSync(marker, 'utf8').trim(), relaunch);
 assert.match(readFileSync(record, 'utf8'), /xattr -dr com\.apple\.quarantine/);
 assert.match(readFileSync(dmgLog, 'utf8'), /installed/);
 assert.equal(existsSync(verified.path), false, 'helper removes the verified download after install');
-assert.equal(await runHelper([String(dead.pid), 'dmg', imageAsset.path, join(root, 'not-hud'), relaunch, join(root, 'bad-dmg.log')]), 1);
+assert.equal(await runHelper([String(dead.pid), 'dmg', imageAsset.path, join(root, 'not-hud'), relaunch, join(root, 'bad-dmg.log'), installerSha, '0']), 1);
 
 const nextImage = Buffer.from('new appimage bytes');
 const nextImagePath = join(root, 'next-image');
 writeFileSync(nextImagePath, nextImage);
 rmSync(record);
-assert.equal(await runHelper([String(dead.pid), 'appimage', nextImagePath, image, relaunch, join(root, 'image.log')]), 0);
+assert.equal(await runHelper([String(dead.pid), 'appimage', nextImagePath, image, relaunch, join(root, 'image.log'), sha(nextImage), '0']), 0);
 assert.equal(readFileSync(image).equals(nextImage), true);
 assert.equal((lstatSync(image).mode & 0o111) !== 0, true);
 const debPackage = join(root, 'hud.deb');
 writeFileSync(debPackage, 'deb-bytes\n');
 rmSync(record);
-assert.equal(await runHelper([String(dead.pid), 'deb', debPackage, '/opt/hud', '/opt/hud/hud', join(root, 'deb.log')]), 0);
+assert.equal(await runHelper([String(dead.pid), 'deb', debPackage, '/opt/hud', '/opt/hud/hud', join(root, 'deb.log'), sha('deb-bytes\n'), '0']), 0);
 assert.match(readFileSync(record, 'utf8'), new RegExp(`pkexec dpkg -i -- ${debPackage}`));
 assert.match(readFileSync(record, 'utf8'), /\/opt\/hud\/hud/);
-assert.equal(await runHelper([String(dead.pid), 'deb', debPackage, '/opt/hud', join(root, 'elsewhere'), join(root, 'deb-bad.log')]), 1);
+assert.equal(await runHelper([String(dead.pid), 'deb', debPackage, '/opt/hud', join(root, 'elsewhere'), join(root, 'deb-bad.log'), sha('deb-bytes\n'), '0']), 1);
 
 const update = { status: 'available', currentVersion: '0.1.1', latestVersion: '0.1.2', downloadName: assetName, downloadUrl: assetUrl };
 const target = { platform: 'darwin' as const, execPath: join(appBundle, 'Contents', 'MacOS', 'hud') };
@@ -306,5 +315,172 @@ try {
 } finally { chmodSync(locked, 0o700); }
 assert.equal(blockedConfirm, false);
 assert.equal(applies, 1);
+
+for (const latest of ['0.1.1', '0.1.0']) {
+  await assert.rejects(installApprovedUpdate({
+    packaged: true,
+    update: { ...update, currentVersion: '0.1.1', latestVersion: latest },
+    target, directory: downloads,
+    fetcher: (async () => { throw new Error('should not download a downgrade'); }) as typeof fetch,
+    confirm: () => { blockedConfirm = true; return true; },
+    apply: async () => { applies++; },
+  }), /not newer/);
+}
+await assert.rejects(installApprovedUpdate({
+  packaged: true,
+  update: { ...update, latestVersion: '0.1.2-beta' },
+  target, directory: downloads,
+  fetcher: (async () => { throw new Error('should not download'); }) as typeof fetch,
+  confirm: () => { blockedConfirm = true; return true; },
+  apply: async () => { applies++; },
+}), /matching installer/);
+assert.equal(blockedConfirm, false);
+assert.equal(applies, 1);
+
+let tamperApplies = 0;
+await assert.rejects(installApprovedUpdate({
+  packaged: true, update, target, directory: downloads, fetcher,
+  confirm: (summary) => { writeFileSync(summary.path, 'tampered after confirm'); return true; },
+  apply: async () => { tamperApplies++; },
+}), /changed after it was checked/);
+assert.equal(tamperApplies, 0);
+
+const noticeDir = join(root, 'reconnect-board');
+mkdirSync(noticeDir);
+const armed = armReconnectNotice(noticeDir, {
+  reason: 'quit-for-update', fromVersion: '0.1.1', at: 10,
+  clients: [{ id: 'claude', name: 'Claude Code', actor: 'claude', kind: 'agent', version: '0.1.1', live: true }, { id: '', name: 'drop', actor: 'x', kind: 'agent', live: true }],
+});
+assert.equal(armed.clients.length, 1);
+assert.deepEqual(readReconnectNotice(noticeDir), armed);
+writeFileSync(join(noticeDir, 'reconnect.json'), JSON.stringify({ reason: 'other', fromVersion: '0.1.1', at: 1, clients: [] }));
+assert.equal(readReconnectNotice(noticeDir), null);
+
+rejectServerRestartDuringUpdate(false);
+assert.throws(() => rejectServerRestartDuringUpdate(true), /will not restart the old server/);
+const handoffChild = spawn('sleep', ['30'], { stdio: 'ignore' });
+let handoffQuit = false;
+await assert.rejects(runVerifiedUpdateHandoff({
+  spawnHelper: async () => handoffChild,
+  stopBackend: async () => { throw new Error('server changed'); },
+  quit: () => { handoffQuit = true; },
+}), /server changed/);
+await new Promise((resolve) => handoffChild.once('exit', resolve));
+assert.equal(handoffQuit, false);
+assert.equal(handoffChild.killed, true);
+const keptChild = spawn('sleep', ['30'], { stdio: 'ignore' });
+await runVerifiedUpdateHandoff({
+  spawnHelper: async () => keptChild,
+  stopBackend: async () => {},
+  quit: () => { handoffQuit = true; },
+});
+assert.equal(handoffQuit, true);
+assert.equal(keptChild.killed, false);
+keptChild.kill();
+await new Promise((resolve) => keptChild.once('exit', resolve));
+
+const realImage = join(root, 'Real.AppImage');
+writeFileSync(realImage, 'old-image\n');
+chmodSync(realImage, 0o755);
+const linkImage = join(root, 'Link.AppImage');
+symlinkSync(realImage, linkImage);
+const otherImage = join(root, 'Other.AppImage');
+writeFileSync(otherImage, 'other-image\n');
+chmodSync(otherImage, 0o755);
+const linkedPlan = planPackagedUpdate({ platform: 'linux', execPath: '/tmp/.mount_hud/hud', appImage: linkImage, commandExe: linkImage }, imageAsset);
+assert.equal(linkedPlan.destination, realpathSync(realImage));
+assert.equal(linkedPlan.relaunch, linkedPlan.destination);
+assert.throws(() => planPackagedUpdate({ platform: 'linux', execPath: '/tmp/.mount_hud/hud', appImage: realImage, commandExe: otherImage }, imageAsset), /different AppImage/);
+const board = join(root, 'appimage-board');
+mkdirSync(board);
+const shim = join(root, 'hud-shim');
+writeFileSync(join(board, 'cli.json'), JSON.stringify({ path: shim, entry: join(board, 'appimage-boot.mjs'), exe: realImage }));
+assert.equal(recordedInstallExe(board), realImage);
+const shimPlan = planPackagedUpdate({ platform: 'linux', execPath: '/tmp/.mount_hud/hud', appImage: linkImage, commandExe: recordedInstallExe(board) }, imageAsset);
+assert.equal(shimPlan.destination, realImage, 'in-place replace keeps the shim exe path');
+writeFileSync(shim, `#!/bin/sh\n# hud — generated by the hud app.\nunset HUD_CLI_ENTRY\nexec ${JSON.stringify(realImage)} shim-ok\n`, { mode: 0o755 });
+chmodSync(shim, 0o755);
+const shimMarker = join(root, 'shim-marker');
+const replacement = `#!/bin/sh\nprintf '%s\\n' "\${1:-relaunch}" > ${JSON.stringify(shimMarker)}\n`;
+const replacementPath = join(root, 'replacement.AppImage');
+writeFileSync(replacementPath, replacement, { mode: 0o755 });
+const replacementSha = sha(replacement);
+writeFileSync(realImage, 'old-image\n');
+assert.equal(await runHelper([String(dead.pid), 'appimage', replacementPath, realImage, realImage, join(root, 'bad-sha.log'), 'ab'.repeat(32), '0']), 1);
+assert.equal(readFileSync(realImage, 'utf8'), 'old-image\n', 'a failed re-hash does not replace the AppImage');
+const keeper = spawn('sleep', ['30'], { stdio: 'ignore' });
+let imageDone = false;
+const imagePending = runHelper([String(dead.pid), 'appimage', replacementPath, realImage, realImage, join(root, 'keep-server.log'), replacementSha, String(keeper.pid)]).then((code) => { imageDone = true; return code; });
+await new Promise((resolve) => setTimeout(resolve, 700));
+assert.equal(imageDone, false, 'helper waits until the keep-server child exits');
+assert.equal(readFileSync(realImage, 'utf8'), 'old-image\n');
+keeper.kill('SIGKILL');
+assert.equal(await imagePending, 0);
+assert.equal(readFileSync(shim, 'utf8').includes(realImage), true);
+assert.equal(readFileSync(shimMarker, 'utf8').trim(), 'relaunch');
+execFileSync(shim, [], { timeout: 5000 });
+assert.equal(readFileSync(shimMarker, 'utf8').trim(), 'shim-ok');
+
+function powershellHost(): string | null {
+  const names = process.platform === 'win32' ? ['powershell.exe', 'pwsh.exe', 'pwsh'] : ['pwsh', 'powershell'];
+  for (const name of names) {
+    const probe = spawnSync(name, ['-NoProfile', '-Command', 'Write-Output ok'], { encoding: 'utf8', timeout: 20000 });
+    if (probe.status === 0 && probe.stdout.includes('ok')) return name;
+  }
+  return null;
+}
+const pwsh = powershellHost();
+if (pwsh) {
+  const winDir = join(root, 'win-install');
+  mkdirSync(winDir);
+  const argFile = join(root, 'nsis-args.txt');
+  const relaunchMarker = join(root, 'win-relaunched.txt');
+  const assetDir = join(root, 'win-asset');
+  mkdirSync(assetDir);
+  const installerExe = join(assetDir, 'hud-setup.exe');
+  const installerBody = `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argFile)}\nexit 0\n`;
+  writeFileSync(installerExe, installerBody, { mode: 0o755 });
+  chmodSync(installerExe, 0o755);
+  const relaunchExe = join(winDir, 'hud.exe');
+  writeFileSync(relaunchExe, `#!/bin/sh\nprintf relaunch > ${JSON.stringify(relaunchMarker)}\n`, { mode: 0o755 });
+  chmodSync(relaunchExe, 0o755);
+  const winRun = {
+    kind: 'nsis' as const,
+    assetPath: installerExe,
+    destination: winDir,
+    relaunch: relaunchExe,
+    version: '0.1.2',
+    sha256: sha(installerBody),
+  };
+  const winScript = join(root, 'apply.ps1');
+  const winLaunch = helperLaunchSpec(winRun, dead.pid ?? 1, join(root, 'win-apply.log'), winScript, 0);
+  writeFileSync(winScript, winLaunch.script);
+  const runPwsh = (args: string[]) => spawnSync(pwsh, args, { encoding: 'utf8', timeout: 20000 });
+  const mismatch = runPwsh(winLaunch.args.map((arg) => arg === winRun.sha256 ? 'aa'.repeat(32) : arg));
+  assert.notEqual(mismatch.status, 0);
+  assert.equal(existsSync(argFile), false, 'Windows helper does not run the installer when the hash changed');
+  assert.match(winLaunch.script, /\$psi\.Arguments = "\/S \/D=\$Directory"/);
+  // The fixture installer is a POSIX script. Windows PowerShell still executes the hash refusal above.
+  if (process.platform !== 'win32') {
+    const installed = runPwsh(winLaunch.args);
+    assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+    assert.equal(readFileSync(argFile, 'utf8'), `/S\n/D=${winDir}\n`);
+    assert.equal(readFileSync(argFile, 'utf8').includes('"'), false, 'NSIS /D path is not quoted');
+    assert.equal(readFileSync(relaunchMarker, 'utf8').trim(), 'relaunch');
+    const blocked = spawn('sleep', ['30'], { stdio: 'ignore' });
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(installerExe, installerBody, { mode: 0o755 });
+    chmodSync(installerExe, 0o755);
+    const waiting = helperLaunchSpec(winRun, dead.pid ?? 1, join(root, 'win-wait.log'), winScript, blocked.pid ?? 1);
+    const waitingRun = spawn(pwsh, waiting.args, { stdio: 'ignore' });
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    assert.equal(waitingRun.exitCode, null, 'Windows helper waits for the old server pid');
+    blocked.kill('SIGKILL');
+    const waitingCode = await new Promise<number>((resolve) => waitingRun.once('exit', (status) => resolve(status ?? 1)));
+    assert.equal(waitingCode, 0);
+  }
+} else {
+  console.log('SKIP windows helper execution (PowerShell is not installed)');
+}
 
 console.log('PASS update selection, release validation, verified download, approval gate and owned-backend handoff');

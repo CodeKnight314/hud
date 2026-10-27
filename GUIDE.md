@@ -1105,21 +1105,26 @@ returns machine-readable status. Config backups are retained beside the config f
 ### Updates
 
 Settings → **Updates** shows the installed version and can check GitHub for the latest stable release. It offers the
-matching installer for the app's OS and architecture when that asset exists. **Install update** downloads it, checks it
-against `SHA256SUMS` from the same release, and asks before replacing this app and reopening it. **Not now** leaves the
-installed app unchanged and deletes the download. **Download in browser** and **Quit HUD for update** remain for a manual
-replace. HUD never installs an update by itself: **Check when HUD opens** only looks for a release. Either path backs up
-the board, records the MCP clients that were live at quit, and stops the background server even when Keep server running
-after quit is enabled; an in-app install then replaces a packaged `hud.app`, `hud.exe`, the running AppImage, or
-`/opt/hud` and opens the new version.
+matching installer for the app's OS and architecture when that asset exists. **Install update** downloads that installer
+and checks its SHA256 against `SHA256SUMS` from the same GitHub release over HTTPS. That is a checksum check, not a
+developer signature or notarization. HUD asks before replacing this app and reopening it. **Not now** leaves the
+installed app unchanged and deletes the download. HUD never downloads or installs an update by itself: **Check when
+HUD opens** only looks for a release. **Download in browser** and **Quit HUD for update** remain for a manual replace.
+Quitting for an update backs up the board and stops the background server even when Keep server running after quit is
+enabled. An in-app install does the same backup, writes `reconnect.json` beside the board (the running version and the
+clients connected at that moment), stops the server, and keeps it stopped until this process quits. It then replaces a
+packaged `hud.app`, `hud.exe`, the running AppImage file, or `/opt/hud` and opens the new version. An AppImage is
+replaced in place, so a command shim that execs that same file keeps working, and the child that kept the server running
+is stopped before the file is replaced. On macOS the replaced `hud.app` has the download's quarantine attribute removed
+so it can launch; that removal is not a Gatekeeper or notarization check.
 The next hud build compares its version with those clients and with any later `x-hud-client-version`. A missing version
 or `0.0.0` is not a different build.
 When the server is newer, the app shows a one-shot reconnect checklist and `hud status` prints it. Dismiss it in
 Settings → Updates, or run `hud mcp reconnect` (add `--dry-run` to print it without clearing the reminder).
 In Claude Code the step is `/mcp`, then reconnect hud. Restart Codex and OpenCode so they respawn the MCP process. A client
 already running this server's version drops off the list. Reopening the same build does not show the checklist again.
-The optional **Check when HUD opens** preference enables launch-time checks. The update checker has existed since 0.1.1;
-version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual installer download.
+The 0.1.1 build adds the checker; version 0.1.0 has none, so upgrading from it the first time requires downloading the
+installer manually.
 
 The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
 OS runners and upload seven-day workflow artifacts. When the signing secrets in AGENTS.md are configured, the macOS

@@ -10,8 +10,10 @@ import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.
 import type { ClientId } from '../src/mcpinstall.ts';
 import { acknowledgeReconnect, armReconnectNotice, loadReconnectChecklist, readReconnectNotice } from '../src/reconnect.ts';
 import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
-import { installApprovedUpdate } from '../src/update-apply.ts';
+import { recordedInstallExe, installApprovedUpdate } from '../src/update-apply.ts';
 import type { UpdatePlan } from '../src/update-apply.ts';
+import { armReconnectNotice } from '../src/reconnect.ts';
+import type { ReconnectClient } from '../src/reconnect.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
 export function desktopSettings(options: {
@@ -21,11 +23,12 @@ export function desktopSettings(options: {
   connectedClients?: () => Promise<ReconnectClient[]>;
   reconnectSource?: () => Promise<ReconnectChecklist | null>;
   ackReconnect?: () => Promise<unknown>;
-  confirmVerifiedUpdate?: (summary: { version: string; name: string; sha256: string }) => Promise<boolean> | boolean;
+  confirmVerifiedUpdate?: (summary: { version: string; name: string; sha256: string; path: string }) => Promise<boolean> | boolean;
   applyVerifiedUpdate?: (plan: UpdatePlan) => Promise<void>;
+  connectedClients?: () => Promise<ReconnectClient[]>;
   downloadFetcher?: typeof fetch;
   downloadDirectory?: string;
-  updateTarget?: () => { platform: string; execPath: string; appImage?: string };
+  updateTarget?: () => { platform: string; execPath: string; appImage?: string; commandExe?: string };
   connectionService?: ConnectionService; updateChecker?: UpdateChecker;
   openExternal?: (url: string) => Promise<unknown>; copyText?: (text: string) => void; visible?: boolean;
 }) {
@@ -54,6 +57,10 @@ export function desktopSettings(options: {
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('URL is not allowed');
     if (options.openExternal) return options.openExternal(url);
     return shell.openExternal(url);
+  };
+  const armUpdateNotice = async () => {
+    const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
+    armReconnectNotice(options.dataDir, { reason: 'quit-for-update', fromVersion: options.version, clients });
   };
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
   const reconnectState = async () => {
@@ -126,7 +133,6 @@ export function desktopSettings(options: {
         const outcome = await installApprovedUpdate({
           packaged: options.packaged,
           update: updates.state(options.checkOnLaunch()),
-          target: options.updateTarget?.() ?? { platform: process.platform, execPath: process.execPath, appImage: process.env.APPIMAGE },
           directory: options.downloadDirectory ?? tmpdir(),
           fetcher: options.downloadFetcher,
           confirm: options.confirmVerifiedUpdate ?? (async (summary) => {
@@ -138,14 +144,21 @@ export function desktopSettings(options: {
               noLink: true,
               title: 'Update HUD',
               message: `Install HUD v${summary.version}?`,
-              detail: `SHA256 ${summary.sha256} matches the published ${summary.name}. HUD will quit, replace this app, and open the new version. Saved boards stay in the data folder. HUD will not install this update unless you choose Install and relaunch.`,
+              detail: `The file ${summary.name} matches the SHA256 in this GitHub release's SHA256SUMS, downloaded over HTTPS. That is a checksum check, not a developer signature or notarization. HUD will quit, replace this app, and open the new version. Saved boards stay in the data folder. HUD will not install this update unless you choose Install and relaunch.`,
             };
             const choice = window && !window.isDestroyed() ? await dialog.showMessageBox(window, prompt) : await dialog.showMessageBox(prompt);
             return choice.response === 1;
           }),
           apply: async (plan) => {
             if (!options.applyVerifiedUpdate) throw new Error('In-app update is only available in the packaged app.');
+            await armUpdateNotice();
             await options.applyVerifiedUpdate(plan);
+          },
+          target: options.updateTarget?.() ?? {
+            platform: process.platform,
+            execPath: process.execPath,
+            appImage: process.env.APPIMAGE,
+            commandExe: recordedInstallExe(options.dataDir),
           },
         });
         if (outcome === 'started') installing = true;
@@ -157,9 +170,8 @@ export function desktopSettings(options: {
       if (changing) throw new Error('Wait for the current Settings change to finish before quitting.');
       changing = true;
       try {
-        const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
         const previous = readReconnectNotice(options.dataDir);
-        armReconnectNotice(options.dataDir, { reason: 'quit-for-update', fromVersion: options.version, clients });
+        await armUpdateNotice();
         try {
           await options.quitForUpdate();
         } catch (error) {

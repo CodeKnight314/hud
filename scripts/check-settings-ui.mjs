@@ -411,6 +411,7 @@ async function run() {
   assert.equal(await pageEval(primaryWindow, `document.getElementById('install-update')?.textContent`), 'Install update');
   await click(primaryWindow, '#install-update');
   await waitText(primaryWindow, '#action-status', 'Update left uninstalled.');
+  assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'declining Install update does not arm reconnect.json');
   assert.equal(applied.length, 0, 'declining the prompt does not replace the app');
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0].sha256, installerSha);
@@ -421,8 +422,12 @@ async function run() {
   assert.equal(downloadCalls, callsAfterCancel, 'launch check does not download or install');
   confirmInstall = true;
   await click(primaryWindow, '#install-update');
-  await waitText(primaryWindow, '#action-status', 'SHA256 matched. HUD is quitting to install and relaunch.');
+  await waitText(primaryWindow, '#action-status', 'Release checksum matched. HUD is quitting to install and relaunch.');
   assert.equal(applied.length, 1, 'approval replaces the app once');
+  const installNotice = JSON.parse(readFileSync(join(dataDir, 'reconnect.json'), 'utf8'));
+  assert.equal(installNotice.reason, 'quit-for-update');
+  assert.equal(installNotice.fromVersion, '0.1.1');
+  assert.equal(installNotice.clients[0].name, 'Claude Code');
   assert.equal(applied[0].kind, 'dmg');
   assert.equal(applied[0].destination, appRoot);
   assert.equal(applied[0].sha256, installerSha);

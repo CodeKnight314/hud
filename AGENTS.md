@@ -287,7 +287,7 @@ runs `npm test`, builds installers, checks the signature and the packaged runtim
 seven-day artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. Only after all four jobs pass, CI gathers
 exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
 release. A person must review and publish that draft; Settings ignores drafts and prereleases. Settings can then
-download the matching installer, verify `SHA256SUMS`, and replace the packaged app only after the person confirms.
+download the matching installer, verify its SHA256 against `SHA256SUMS` over HTTPS (not a signature or notarization check), and replace the packaged app only after the person confirms.
 Launch-time checks never download or install.
 
 The package version is 0.2.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.

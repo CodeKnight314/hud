@@ -73,7 +73,7 @@
             <pre id="reconnect-text" class="reconnect-text"></pre>
             <div class="update-actions"><button id="reconnect-dismiss" class="button" type="button" disabled>Dismiss checklist</button></div>
           </section>
-          <p class="footnote">Install update downloads the matching installer, checks it against the release SHA256SUMS, and asks before replacing this app and reopening it; HUD never installs an update by itself. Download in browser and Quit HUD for update stay for replacing the app yourself. Saved boards stay in the data folder. After an update, reconnect Claude Code with /mcp and restart Codex or OpenCode; a one-shot checklist for clients still on the previous version appears here.</p>
+          <p class="footnote">Install update downloads the matching installer, checks its SHA256 against the SHA256SUMS file from that GitHub release over HTTPS, and asks before replacing this app and reopening it. That check is not a developer signature or notarization. HUD does not download or install an update by itself. Download in browser and Quit HUD for update remain available when you want to replace the app yourself. Saved boards stay in the data folder. After an update, reconnect Claude Code with /mcp and restart Codex or OpenCode; a one-shot checklist for clients still on the previous version appears here.</p>
         </section>
 
         <section id="panel-templates" role="tabpanel" aria-labelledby="tab-templates" tabindex="0" hidden>
