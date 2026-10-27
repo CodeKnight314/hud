@@ -32,11 +32,17 @@ async function seed() {
   const run = await jsonRequest('/api/items', { method: 'POST', body: {
     id: `ui-${nonce}-run`, type: 'ticket', board: board.id, title: `Queue run ${nonce}`, status: 'todo', tags: ['run'], body: 'Coordination fixture.',
   } });
+  const project = await jsonRequest('/api/items', { method: 'POST', body: {
+    id: `ui-${nonce}-project`, type: 'project', board: board.id, title: `Context project ${nonce}`, key: 'UIP',
+  } });
   const open = await jsonRequest('/api/items', { method: 'POST', body: {
     id: `ui-${nonce}-open`, type: 'ticket', board: board.id, title: `Open task ${nonce}`, status: 'todo', body: 'Claim me.',
   } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FACT', text: 'the parser drops trailing commas', session: 'peer' } });
-  return { board, run, open, nonce };
+  await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FAIL', text: 'retrying the printer path failed on empty input', session: 'peer' } });
+  await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'SUMMARY', text: 'handoff: parser fix is in', session: 'peer' } });
+  await jsonRequest('/api/context', { method: 'POST', body: { scope: `project:${project.id}`, kind: 'SUMMARY', text: 'project handoff is ready for review', session: 'peer' } });
+  return { board, run, project, open, nonce };
 }
 
 async function browserEval(win, expression) { return win.webContents.executeJavaScript(expression); }
@@ -87,11 +93,22 @@ async function runUI(seedData) {
     // inspector: one scroll, claim and context blocks
     await win.loadURL(`${base.href}#item=${encodeURIComponent(seedData.run.id)}`);
     await waitForDOM(win, `(() => document.querySelector('#drawer.open') && document.querySelector('#context-box')?.textContent.includes('the parser drops trailing commas'))()`, 'context in inspector');
+    const timeline = await browserEval(win, `document.querySelector('#context-box')?.textContent || ''`);
+    assert.match(timeline, /finding/, 'FACT reads as a finding');
+    assert.match(timeline, /dead end/, 'FAIL reads as a dead end');
+    assert.match(timeline, /copy for handoff/, 'handoff copy is offered');
+    assert.match(timeline, /retrying the printer path failed on empty input/);
+    await click(win, '#context-box [data-chips="context-kind"] [data-v="FACT"]');
+    await waitForDOM(win, `(() => { const box = document.querySelector('#context-box'); const on = box?.querySelector('[data-v="FACT"]')?.classList.contains('on'); return on && box.textContent.includes('the parser drops trailing commas') && !box.textContent.includes('retrying the printer path failed'); })()`, 'FACT filter hides other kinds');
+    await click(win, '#context-box [data-chips="context-kind"] [data-v="all"]');
+    await waitForDOM(win, `(() => document.querySelector('#context-box')?.textContent.includes('retrying the printer path failed on empty input'))()`, 'all filter restores the timeline');
     const sections = await browserEval(win, `[...document.querySelectorAll('#drawer [data-section]')].map(el => el.dataset.section)`);
     assert.deepEqual(sections, ['overview', 'activity', 'settings'], 'one inspector with three sections');
     assert.equal(await browserEval(win, `document.querySelectorAll('#drawer [data-dtab]').length`), 0, 'no tab UI');
     assert.ok(await browserEval(win, `document.querySelector('#claim-box')?.textContent.includes('unclaimed')`), 'claim box present');
     assert.ok(await browserEval(win, `document.querySelectorAll('#drawer [data-jump]').length >= 3`), 'jump links present');
+    await win.loadURL(`${base.href}#item=${encodeURIComponent(seedData.project.id)}`);
+    await waitForDOM(win, `(() => { const box = document.querySelector('#context-box'); return box && box.textContent.includes('project handoff is ready for review') && box.textContent.includes('this project') && box.textContent.includes('copy for handoff'); })()`, 'project inspector timeline');
     assert.equal(errors.length, 0, `no console errors: ${errors.join(' | ')}`);
     if (artifactDir) {
       await mkdir(artifactDir, { recursive: true });
