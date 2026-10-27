@@ -602,8 +602,9 @@ export class Hud {
   claims(q: { session?: string; board?: string } = {}): Promise<{ items: ClaimView[]; now: number }> {
     return this.request('GET', '/api/claims' + qs(q));
   }
-  claims(board?: string): Promise<{ items: ClaimView[] }> {
-    return this.request('GET', '/api/claims' + qs({ board }));
+  /** active leases, with expiry and whether the lease and its session are still live */
+  claims(q: { session?: string; board?: string } = {}): Promise<{ items: ClaimView[]; now: number }> {
+    return this.request('GET', '/api/claims' + qs(q));
   }
   queue(q: { board?: string; status?: string; project?: string; assignee?: string; owner?: string; includeDone?: boolean; limit?: number } = {}): Promise<QueueResult> {
     return this.request('GET', '/api/queue' + qs({ ...q, includeDone: q.includeDone ? 1 : undefined }));

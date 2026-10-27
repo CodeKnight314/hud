@@ -79,6 +79,7 @@ scripts/check-views.ts           generated view templates, static validation, wr
 scripts/check-coordination-api.mjs HTTP/MCP/CLI coordination parity check against an existing scratch server
 scripts/check-mcp-surface.mjs MCP/CLI/HTTP smoke for projects, ticket trees, claims, context and status (boots a scratch server)
 scripts/check-coordination-ui.mjs headless sessions, queue, claim and inspector checks
+scripts/check-tickets-ui.mjs  headless project chips, list/tree/board shapes, and assignee/claimer checks
 scripts/check-supervision-api.mjs HTTP/CLI/MCP supervision API check against an existing scratch server
 scripts/check-supervision-ui.mjs headless browser supervision landing, navigation, report and sidebar checks
 scripts/check-settings-ui.mjs    Electron Settings UI check with disposable board/client fixtures and screenshots
@@ -228,6 +229,7 @@ directory; this harness does not start or stop a server:
 ```sh
 ./node_modules/.bin/electron scripts/check-monitoring-ui.mjs http://127.0.0.1:7411 /tmp/hud-monitoring-ui-check
 ./node_modules/.bin/electron scripts/check-coordination-ui.mjs http://127.0.0.1:7411 /tmp/hud-coordination-ui-check
+./node_modules/.bin/electron scripts/check-tickets-ui.mjs http://127.0.0.1:7411 /tmp/hud-tickets-ui-check
 ```
 For the native Settings UI, the Electron harness uses disposable board and client-configuration fixtures and writes
 screenshots to the optional artifact directory. It does not install or modify the live app or connect to the user's

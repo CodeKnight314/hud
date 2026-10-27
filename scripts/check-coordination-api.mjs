@@ -164,7 +164,11 @@ try {
   assert.match(tree, new RegExp(`Beta ${nonce} →— ⊕api-coordination-check`));
   assert.doesNotMatch(tree, new RegExp(`Gamma ${nonce}`));
   const claims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}`);
+  assert.equal(typeof claims.now, 'number', 'claims list shares the { items, now } shape');
   assert.ok(claims.items.some((c) => c.ticket === beta.id && c.actor === 'api-coordination-check'), 'claims list names the claimer');
+  const sessionClaims = await ok(`/api/claims?board=${encodeURIComponent(boardId)}&session=${encodeURIComponent(`owner-${nonce}`)}`);
+  assert.ok(sessionClaims.items.some((c) => c.ticket === beta.id), 'session filter keeps that holder');
+  assert.ok(sessionClaims.items.every((c) => c.session === `owner-${nonce}`), 'session filter drops other holders');
   const queued = await ok(`/api/queue?board=${encodeURIComponent(boardId)}&project=HUD&owner=alice&includeDone=1`);
   assert.deepEqual(queued.items.map((t) => t.id), [gamma.id], 'queue filters by project and owner');
   const cliTree = await cli(['tickets', boardId, '--project', 'ENG', '--owner', 'alice']);
@@ -193,6 +197,29 @@ try {
   const aliceBody = mcpAlice.content.map((c) => c.text).join('\n');
   assert.match(aliceBody, new RegExp(`Gamma ${nonce} →alice ⊕—`));
   assert.doesNotMatch(aliceBody, new RegExp(`Alpha ${nonce}|Beta ${nonce}`));
+  const mcpSearch = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_search', arguments: { board: boardId, type: 'ticket', project: 'HUD', owner: 'alice' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  assert.equal(mcpSearch.isError, undefined, JSON.stringify(mcpSearch));
+  const searchBody = mcpSearch.content.map((c) => c.text).join('\n');
+  assert.match(searchBody, new RegExp(`Gamma ${nonce}`));
+  assert.doesNotMatch(searchBody, new RegExp(`Alpha ${nonce}|Beta ${nonce}`));
+  const mcpQueue = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_queue', arguments: { board: boardId, project: 'ENG', owner: 'alice' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  assert.equal(mcpQueue.isError, undefined, JSON.stringify(mcpQueue));
+  const queueBody = mcpQueue.content.map((c) => c.text).join('\n');
+  assert.match(queueBody, new RegExp(`Alpha ${nonce}`));
+  assert.match(queueBody, /\| alice \|/);
+  assert.doesNotMatch(queueBody, new RegExp(`Beta ${nonce}|Gamma ${nonce}`));
+  const mcpNone = await mcpRpc([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_search', arguments: { board: boardId, type: 'ticket', project: 'ENG', owner: 'none' } } },
+  ], (msg) => (msg.id === 3 ? msg.result : undefined));
+  const noneBody = mcpNone.content.map((c) => c.text).join('\n');
+  assert.match(noneBody, /no matches/);
 
   // shared context: publish, delta, correction
   const fact = await ok('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FACT', text: 'first finding', session: s.id } }, s.id);

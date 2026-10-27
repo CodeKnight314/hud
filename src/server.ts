@@ -618,7 +618,6 @@ route('POST', '/api/items/:id/claim', async (req, _res, [id], q) => {
   }, actorOf(req, b, q));
 });
 route('DELETE', '/api/items/:id/claim', (req, _res, [id], q) => store.releaseClaim(rid(id, q), { session: sessionOf(req, undefined, q), reason: q.get('reason') ?? undefined }, actorOf(req, undefined, q)));
-route('GET', '/api/claims', (_req, _res, _m, q) => ({ items: store.listClaims(q.get('board') || undefined) }));
 route('GET', '/api/queue', (_req, _res, _m, q) => store.queue(q.get('board') || 'main', {
   status: q.get('status') || undefined,
   project: q.get('project') || undefined,

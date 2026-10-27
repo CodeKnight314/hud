@@ -118,13 +118,29 @@ export function ticketsView(store: Store, board = 'main', q?: SearchQuery): stri
     if (!g.tickets.length && !g.project) continue;
     const inGroup = new Set(g.tickets.map((t) => t.id));
     const printed = new Set<string>();
+    const finished = (t: Item) => t.status === 'done' || t.status === 'canceled';
+    const groupRoll = (id: string, path: Set<string>): { total: number; done: number } => {
+      if (path.has(id)) return { total: 0, done: 0 };
+      path.add(id);
+      let total = 0;
+      let done = 0;
+      for (const c of store.childrenOf(id)) {
+        if (!inGroup.has(c.id)) continue;
+        const subRoll = groupRoll(c.id, path);
+        total += 1 + subRoll.total;
+        done += (finished(c) ? 1 : 0) + subRoll.done;
+      }
+      path.delete(id);
+      return { total, done };
+    };
     // children print under their parent (when it is in this list); everything else is a root of its status section
     const sub = (t: Item, depth: number): void => {
       if (printed.has(t.id)) return;
       printed.add(t.id);
       const flag = t.blockedBy?.length ? ` ⊘ ${t.blockedBy.map((b) => store.identOf(b)).join(',')}` : '';
       const br = t.branch ? ` ⎇ ${clean(t.branch)}` : '';
-      const roll = depth === 0 ? store.rollup(t.id) : { total: 0, done: 0 };
+      // roots print at depth 1, under the status heading. Count only children this group will print.
+      const roll = depth === 1 ? groupRoll(t.id, new Set()) : { total: 0, done: 0 };
       const kids = roll.total ? ` [${roll.done}/${roll.total} sub]` : '';
       const own = store.ownership(t);
       const who = ` →${own.assignee ? clean(own.assignee) : '—'} ⊕${own.claimer ? clean(own.claimer) : '—'}`;

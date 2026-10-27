@@ -1279,7 +1279,7 @@ export class Store extends EventEmitter {
       const blocked = it.status === 'blocked' || !!it.autoBlocked || blockedBy.length > 0;
       const c = this.claims.get(it.id);
       const claim = c ? this.claimView(c) : null;
-      const owner = claim?.actor ?? it.assignee ?? null;
+      const owner = this.ownership(it).owner;
       if (filter.owner) {
         const want = String(filter.owner).trim().toLowerCase();
         const none = want === '-' || want === 'none' || want === '—';
