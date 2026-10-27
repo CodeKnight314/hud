@@ -17,6 +17,7 @@ import { zipEntry } from './context-export.ts';
 import { unifiedDiff } from './diff.ts';
 import { capturePage } from './render.ts';
 import { MonitorTemplateError, applyMonitorTemplate, listMonitorTemplates } from './monitor-templates.ts';
+import { revealDirectory } from './reveal.ts';
 import { deleteViewFile, generateViewCode, installUntrustedView, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
@@ -879,6 +880,15 @@ route('GET', '/api/backups', () => store.listBackups());
 route('POST', '/api/backups', async (req) => {
   const b = await readObj(req);
   return { name: store.backup(b.reason === undefined ? undefined : String(b.reason)) };
+});
+route('POST', '/api/backups/:name/restore', (req, _s, [name], q) => store.restoreBackup(dec(name), actorOf(req, undefined, q)));
+route('POST', '/api/data/reveal', async () => {
+  try {
+    await revealDirectory(dataDir);
+  } catch (e) {
+    throw new HudError(503, `could not open the data directory: ${(e as Error).message}`);
+  }
+  return { ok: true, dataDir };
 });
 route('GET', '/api/export', () => store.exportState());
 route('POST', '/api/import', async (req) => {

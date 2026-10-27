@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import type { Activity, Alert, AttentionItem, AttentionRecord, RunOverview, RunContextExport, RunContextExportFile, TextFormat, Board, Comment, DecisionOption, HudEvent, Item, ItemType, MonState, MonitorResult, MonitorSource, SearchQuery, State, TrashEntry, DashboardSpec, CanvasProgram, ProgramSpec, ComparisonRule, PipelineSpec, SessionKind, SessionView, ClaimView, QueueRow, QueueResult, ContextEntry, ContextKind, AttachmentRecord } from './types.ts';
 import { CONTEXT_KINDS, TICKET_PRIORITIES, TICKET_STATUSES } from './types.ts';
 import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layout.ts';
@@ -766,6 +766,32 @@ export class Store extends EventEmitter {
   /** snapshot the live state into backups/ (newest 30 kept); returns the file name */
   backup(reason?: string): string {
     return this.backupRaw(JSON.stringify(this.state), reason);
+  }
+
+  /** a snapshot file name, confined to this store's backups directory */
+  backupPath(name: string): string {
+    if (typeof name !== 'string' || !/^state-[\w.-]+\.json$/.test(name) || name.includes('..'))
+      throw new HudError(400, 'backup name must be a hud snapshot file');
+    const root = resolve(this.backupDir);
+    const target = resolve(root, name);
+    if (target !== join(root, name)) throw new HudError(400, 'backup name must be a hud snapshot file');
+    return target;
+  }
+
+  /**
+   * Replace the live board with one snapshot. The current state is backed up first.
+   * recoveredFrom is the boot-time recovery and stays set, so the banner keeps reporting it.
+   */
+  restoreBackup(name: string, actor: string): { name: string; items: number; boards: number; backup: string } {
+    const file = this.backupPath(name);
+    if (!existsSync(file)) throw new HudError(404, `no backup ${name}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(file, 'utf8'));
+    } catch (e) {
+      throw new HudError(400, `backup ${name} is not valid JSON: ${(e as Error).message}`);
+    }
+    return { name, ...this.importState(parsed, 'replace', actor) };
   }
 
   /** take an hourly backup while the process runs; call once from the server */

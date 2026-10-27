@@ -27,6 +27,8 @@ const suites = [
   'scripts/check-connections.ts',
   'scripts/check-cliinstall.ts',
   'scripts/check-updates.ts',
+  'scripts/check-persistence.ts',
+  'scripts/check-persistence-banner.mjs',
 ];
 
 function run(args, label) {

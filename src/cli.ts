@@ -45,7 +45,8 @@ const HELP = `hud — live canvas of tickets & monitors for humans and agents
 usage:
   hud serve                          run the server in the foreground
   hud start | stop | open            background server / stop it / open the canvas in a browser
-  hud status                         server health: pid, port, data dir, mode, last save error (never autostarts)
+  hud status                         server health: pid, port, data dir, mode, save error, recovered backup (never autostarts)
+  hud reveal                         open the data directory in the file manager
   hud ls [board]                     text overview (all boards, or one)
   hud ls tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n]
                                      Linear-style ticket list, grouped by project and status (filtered)
@@ -123,7 +124,8 @@ usage:
   hud run <id>                       run an automatic monitor now
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)
-  hud backup [--list] [--reason r]   snapshot the state (or list snapshots)
+  hud backup [--list] [--reason r] | hud backup restore <name>
+                                     snapshot the state, list snapshots, or replace the board from one
   hud export [file]                  full state as JSON (stdout, or a file)
   hud import <file> [--merge]        replace (default; a backup is taken first) or merge the state
   hud ping <id> [start|fail|<code>]  heartbeat for a cron-style monitor
@@ -215,6 +217,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   start: { u: 'hud start', max: 0, f: [] },
   stop: { u: 'hud stop', max: 0, f: [] },
   status: { u: 'hud status [--json]', max: 0, f: ['json'] },
+  reveal: { u: 'hud reveal', max: 0, f: ['json'] },
   open: { u: 'hud open', max: 0, f: [] },
   ls: { u: 'hud ls [board] | hud ls tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 2, f: ['board', 'json', ...FILTERS] },
   tickets: { u: 'hud tickets [board] [--status s,s] [--assignee a] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 1, f: ['board', 'json', ...FILTERS] },
@@ -256,7 +259,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   trash: { u: 'hud trash [--board b] [--json]', max: 0, f: ['board', 'json'] },
   restore: { u: 'hud restore <id>', min: 1, max: 1, f: ['json'] },
   purge: { u: 'hud purge <id> | hud purge --all   (permanent)', max: 1, f: ['all', 'json'] },
-  backup: { u: 'hud backup [--list] [--reason text]', max: 0, f: ['list', 'reason', 'json'] },
+  backup: { u: 'hud backup [--list] [--reason text] | hud backup restore <name>', max: 2, f: ['list', 'reason', 'json'] },
   export: { u: 'hud export [file]', max: 1, f: [] },
   import: { u: 'hud import <file> [--merge]', min: 1, max: 1, f: ['merge', 'json'] },
   ping: { u: 'hud ping <id> [start|fail|<code>]', min: 1, max: 2, f: ['json'] },
@@ -376,7 +379,7 @@ async function main() {
         process.exitCode = 1;
         return emit({ running: false, url: hud.url }, `hud is not running at ${hud.url}`);
       }
-      return emit(info, [`hud running at ${hud.url}`, `  pid ${info.pid}  port ${info.port}  mode ${info.mode}  version ${info.version ?? '?'}`, `  data ${info.dataDir ?? '?'}  items ${info.items ?? '?'}`, info.saveError ? `  SAVE ERROR: ${info.saveError}` : '  saves ok'].join('\n'));
+      return emit(info, [`hud running at ${hud.url}`, `  pid ${info.pid}  port ${info.port}  mode ${info.mode}  version ${info.version ?? '?'}`, `  data ${info.dataDir ?? '?'}  items ${info.items ?? '?'}`, info.recoveredFrom ? `  RECOVERED FROM: ${info.recoveredFrom}` : '', info.saveError ? `  SAVE ERROR: ${info.saveError}` : '  saves ok'].filter(Boolean).join('\n'));
     }
     case 'open':
       await hud.ensureServer();
@@ -867,7 +870,17 @@ async function main() {
       const r = await hud.purge(flags.all ? 'all' : rest[0]);
       return emit(r, `purged ${r.purged} item(s)`);
     }
+    case 'reveal': {
+      const r = await hud.revealData();
+      return emit(r, `opened ${r.dataDir}`);
+    }
     case 'backup': {
+      if (rest[0] === 'restore') {
+        if (!rest[1]) throw new UsageError('usage: hud backup restore <name>');
+        const r = await hud.restoreBackup(rest[1]);
+        return emit(r, `restored ${r.name}: ${r.items} items, ${r.boards} boards; previous state backed up as ${r.backup}`);
+      }
+      if (rest.length) throw new UsageError('usage: hud backup [--list] [--reason text] | hud backup restore <name>');
       if (flags.list) {
         const list = await hud.backups();
         return emit(list, list.length ? list.map((b: any) => (typeof b === 'string' ? b : `${b.name}${b.bytes != null ? `  ${b.bytes}b` : ''}${b.t ? `  ${new Date(b.t).toLocaleString()}` : ''}`)).join('\n') : 'no backups');

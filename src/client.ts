@@ -516,6 +516,13 @@ export class Hud {
   backup(reason?: string): Promise<{ name: string }> {
     return this.request('POST', '/api/backups', { reason });
   }
+  restoreBackup(name: string): Promise<{ name: string; items: number; boards: number; backup: string }> {
+    return this.request('POST', `/api/backups/${enc(name)}/restore`);
+  }
+  /** open the running server's data directory in the system file manager */
+  revealData(): Promise<{ ok: boolean; dataDir: string }> {
+    return this.request('POST', '/api/data/reveal');
+  }
   exportState(): Promise<any> {
     return this.request('GET', '/api/export');
   }

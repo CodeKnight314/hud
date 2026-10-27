@@ -138,8 +138,13 @@ const TOOLS = [
   },
   {
     name: 'hud_backup',
-    description: 'action: create (snapshot of all state, optional reason) | list.',
-    inputSchema: { type: 'object', required: ['action'], properties: { action: { type: 'string', enum: ['create', 'list'] }, reason: { type: 'string' } } },
+    description: 'action: create (snapshot of all state, optional reason) | list | restore (name; replaces the live board after backing up the current state).',
+    inputSchema: { type: 'object', required: ['action'], properties: { action: { type: 'string', enum: ['create', 'list', 'restore'] }, reason: { type: 'string' }, name: { type: 'string', description: 'snapshot file name for restore' } } },
+  },
+  {
+    name: 'hud_reveal',
+    description: 'Open the hud data directory in the system file manager. Does not change the board. The desktop banner uses the same action while a save error or backup recovery is active.',
+    inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'hud_overview',
@@ -879,9 +884,18 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_backup': {
       if (args.action === 'create') return `backup ${(await hud.request('POST', '/api/backups', { reason: args.reason })).name}`;
-      if (args.action !== 'list') throw new Error('action must be create|list');
+      if (args.action === 'restore') {
+        if (typeof args.name !== 'string' || !args.name) throw new Error('missing required argument "name" for restore');
+        const r = await hud.request('POST', `/api/backups/${encodeURIComponent(args.name)}/restore`);
+        return `restored ${r.name}: ${r.items} items, ${r.boards} boards; previous state backed up as ${r.backup}`;
+      }
+      if (args.action !== 'list') throw new Error('action must be create|list|restore');
       const list: any[] = await hud.request('GET', '/api/backups');
       return list.length ? list.map((b) => `${b.name}  ${localTime(b.t)}  ${b.bytes}b`).join('\n') : 'no backups';
+    }
+    case 'hud_reveal': {
+      const r = await hud.request('POST', '/api/data/reveal');
+      return `opened ${r.dataDir}`;
     }
     case 'hud_clear_canvas': {
       await needBoard(args.board, hud);
