@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('hudSettings', Object.freeze({
   checkUpdates: () => call('check-updates'),
   setCheckOnLaunch: (value) => call('check-on-launch', value),
   openRelease: () => call('open-release'),
+  openTemplateDocs: (id) => call('open-template-docs', id),
   downloadUpdate: () => call('download-update'),
   quitForUpdate: () => call('quit-for-update'),
 }));

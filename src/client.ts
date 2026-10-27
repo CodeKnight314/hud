@@ -11,6 +11,7 @@ import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
+import type { MonitorTemplate } from './monitor-templates.ts';
 import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunContextExport, RunContextExportFile, RunOverview, SessionKind, SessionView, TextFormat } from './types.ts';
 import type { ViewInstall, ViewReview, ViewReviewRefusal } from './views.ts';
 
@@ -407,6 +408,10 @@ export class Hud {
   views(): Promise<{ dir: string; views: { name: string; mtime: number; bytes: number; sha256?: string; valid?: boolean; errors?: string[] }[] }> {
     return this.request('GET', '/api/views');
   }
+  /** Built-in monitor templates (disk, tls, http, cron-heartbeat) with safe defaults and docs links. */
+  monitorTemplates(): Promise<MonitorTemplate[]> {
+    return this.request('GET', '/api/monitor-templates');
+  }
   viewGet(name: string): Promise<{ name: string; code: string; sha256: string; validation: { ok: boolean; errors: string[]; warnings: string[]; sha256: string } }> {
     return this.request('GET', `/api/views/${encodeURIComponent(name)}`);
   }
@@ -449,7 +454,7 @@ export class Hud {
   get(id: string): Promise<Item> {
     return this.request('GET', `/api/items/${encodeURIComponent(id)}`);
   }
-  create(item: Partial<Item> & { type: Item['type']; frame?: string }): Promise<Item> {
+  create(item: Partial<Item> & { type: Item['type']; frame?: string; template?: string; host?: string }): Promise<Item> {
     return this.request('POST', '/api/items', item);
   }
   update(id: string, patch: Partial<Item>): Promise<Item> {

@@ -1,7 +1,8 @@
 import { BrowserWindow, clipboard, ipcMain, shell } from 'electron';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { SOURCE_ROOT } from '../src/assets.ts';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { SOURCE_ROOT, hasAsset } from '../src/assets.ts';
+import { listMonitorTemplates } from '../src/monitor-templates.ts';
 import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
@@ -22,7 +23,16 @@ export function desktopSettings(options: {
   const file = join(SOURCE_ROOT, 'web', 'settings.html');
   const settingsUrl = pathToFileURL(file).href;
   const updates = options.updateChecker ?? new UpdateChecker({ version: options.version });
-  const openExternal = options.openExternal ?? shell.openExternal;
+  // file: links are the local guide. shell.openExternal refuses those, so open the file itself.
+  const openExternal = options.openExternal ?? (async (url: string) => {
+    if (url.startsWith('file:')) {
+      const path = fileURLToPath(url.split('#')[0] || url);
+      const error = await shell.openPath(path);
+      if (error) throw new Error(error);
+      return;
+    }
+    return shell.openExternal(url);
+  });
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
   const state = async (refresh = false) => {
     if (refresh || !cachedConnections) cachedConnections = await (await connections()).list();
@@ -34,6 +44,7 @@ export function desktopSettings(options: {
     command: cliInfo(),
     connections: cachedConnections,
     updates: updates.state(options.checkOnLaunch()),
+    templates: listMonitorTemplates(),
     };
   };
 
@@ -59,6 +70,16 @@ export function desktopSettings(options: {
       return state();
     }
     if (action === 'open-release') { await openExternal(updates.state(options.checkOnLaunch()).releaseUrl); return; }
+    if (action === 'open-template-docs') {
+      if (typeof value !== 'string' || !/^[a-z0-9-]+$/.test(value)) throw new Error('Unknown monitor template');
+      const template = listMonitorTemplates().find((item) => item.id === value);
+      if (!template || !/^GUIDE\.md#[a-z0-9-]+$/.test(template.docs)) throw new Error('Unknown monitor template');
+      if (!hasAsset('GUIDE.md')) throw new Error('GUIDE.md is not available in this build');
+      const url = new URL(pathToFileURL(join(SOURCE_ROOT, 'GUIDE.md')).href);
+      url.hash = template.docs.slice(template.docs.indexOf('#'));
+      await openExternal(url.href);
+      return;
+    }
     if (action === 'download-update') {
       const update = updates.state(options.checkOnLaunch());
       if (update.status !== 'available' || !update.downloadUrl) throw new Error('Check for a newer release with a matching installer first.');

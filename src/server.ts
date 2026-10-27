@@ -16,6 +16,7 @@ import { hashBytes, readAttachmentBytes, removeAttachmentBytes, sanitizeName, te
 import { zipEntry } from './context-export.ts';
 import { unifiedDiff } from './diff.ts';
 import { capturePage } from './render.ts';
+import { MonitorTemplateError, applyMonitorTemplate, listMonitorTemplates } from './monitor-templates.ts';
 import { deleteViewFile, generateViewCode, installUntrustedView, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
@@ -406,6 +407,7 @@ route('GET', '/api/guide', (_req, res, _m, q) => {
     throw e;
   }
 });
+route('GET', '/api/monitor-templates', () => listMonitorTemplates());
 route('GET', '/api/views', () => ({
   dir: viewsDir,
   views: listViewInfos(viewsDir).map(({ name, mtime, bytes, sha256, validation }) => ({ name: `${name}.js`, mtime, bytes, sha256, valid: validation.ok, errors: validation.errors })),
@@ -708,15 +710,23 @@ route('POST', '/api/attachments/:id/applied', async (req, _res, [id]) => {
 });
 
 route('GET', '/api/items', (_r, _s, _m, q) => store.items(queryOf(q)).map(Store.lite));
+function materializeItem(body: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return applyMonitorTemplate(body);
+  } catch (e) {
+    if (e instanceof MonitorTemplateError) throw new HudError(400, e.message);
+    throw e;
+  }
+}
 route('POST', '/api/items', async (req) => {
   const b = await readBody(req);
   const actor = actorOf(req, b);
   if (Array.isArray(b)) {
     if (b.some((x) => !isObj(x))) throw new HudError(400, 'expected an array of item objects');
-    return b.map((x) => withGraph(store.create(x, actor)));
+    return b.map((x) => withGraph(store.create(materializeItem(x), actor)));
   }
   if (!isObj(b)) throw new HudError(400, 'body must be a JSON object');
-  return withGraph(store.create(b, actor));
+  return withGraph(store.create(materializeItem(b), actor));
 });
 route('PATCH', '/api/items', async (req, _s, _m, q) => {
   const b = await readBody(req);

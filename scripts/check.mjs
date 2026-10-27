@@ -16,6 +16,7 @@ const suites = [
   'scripts/check-claim-widget.mjs',
   'scripts/check-supervision.ts',
   'scripts/check-monitoring.ts',
+  'scripts/check-monitor-templates.ts',
   'scripts/check-monitoring-views.mjs',
   'scripts/check-views.ts',
   'scripts/check-markdown.mjs',

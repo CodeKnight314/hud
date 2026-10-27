@@ -17,7 +17,7 @@
       tab.setAttribute('aria-selected', String(selected)); tab.tabIndex = selected ? 0 : -1;
       tab.classList.toggle('selected', selected); $(`panel-${tab.dataset.tab}`).hidden = !selected;
     }
-    $('settings-context').textContent = name === 'updates' ? 'Updates' : 'Connections';
+    $('settings-context').textContent = name === 'updates' ? 'Updates' : name === 'templates' ? 'Templates' : 'Connections';
     if (focus) tabs.find((tab) => tab.dataset.tab === name)?.focus();
     if (changed && name === 'updates' && bridgeAvailable && !mutationBusy) void refreshState('getState', 'Refreshing update status…');
   }
@@ -95,11 +95,11 @@
     }
   }
 
-  async function external(name, progress, done) {
+  async function external(name, progress, done, args = []) {
     const run = method(name);
     if (!run || mutationBusy || externalBusy) { if (!run) feedback('This action is unavailable in the current desktop app.', 'bad'); return; }
     externalBusy = name; feedback(progress); render();
-    try { await run(); feedback(done); }
+    try { await run(...args); feedback(done); }
     catch (error) { feedback(messageOf(error, `Could not complete ${name}.`), 'bad'); }
     finally { externalBusy = ''; render(); }
   }
@@ -191,7 +191,41 @@
     $('check-on-launch').checked = pendingCheck === null ? Boolean(u.checkOnLaunch) : pendingCheck;
   }
 
-  function render() { renderConnections(); renderCommand(); renderUpdates(); }
+  function renderTemplates() {
+    const root = $('template-list');
+    const empty = $('templates-empty');
+    if (!root || !empty) return;
+    const templates = Array.isArray(appState?.templates) ? appState.templates : [];
+    root.replaceChildren();
+    empty.hidden = templates.length > 0;
+    const busy = Boolean(mutationBusy || externalBusy) || !bridgeAvailable || !method('openTemplateDocs');
+    for (const template of templates) {
+      if (!template || typeof template !== 'object') continue;
+      const card = el('article', 'template-card');
+      card.setAttribute('role', 'listitem');
+      card.dataset.template = String(template.id || '');
+      const title = el('div', 'template-title');
+      title.append(el('strong', '', String(template.id || 'template')), el('span', '', String(template.title || '')));
+      card.append(title);
+      if (template.summary) card.append(el('p', 'template-summary', String(template.summary)));
+      const defaults = el('pre', 'template-defaults');
+      defaults.textContent = String(template.defaultsText || '');
+      card.append(defaults);
+      if (Array.isArray(template.required) && template.required.length) card.append(el('p', 'template-required', `required: ${template.required.join(', ')}`));
+      if (template.command) card.append(el('p', 'template-command', String(template.command)));
+      if (typeof template.docs === 'string' && template.docs) {
+        const link = el('button', 'text-button template-docs', template.docs);
+        link.type = 'button';
+        link.dataset.templateDocs = String(template.id || '');
+        link.setAttribute('aria-label', `Open ${template.docs}`);
+        link.disabled = busy;
+        card.append(link);
+      }
+      root.append(card);
+    }
+  }
+
+  function render() { renderConnections(); renderCommand(); renderUpdates(); renderTemplates(); }
 
   async function refreshState(name, progress) {
     const run = method(name);
@@ -232,6 +266,11 @@
   $('download-update').addEventListener('click', () => external('downloadUpdate', 'Opening installer download…', 'Opened the installer download in your browser.'));
   $('quit-for-update').addEventListener('click', () => external('quitForUpdate', 'Saving boards and quitting HUD…', 'HUD is quitting for the update.'));
   $('open-release').addEventListener('click', () => external('openRelease', 'Opening release information…', 'Opened release information in your browser.'));
+  $('template-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-template-docs]');
+    if (!button) return;
+    external('openTemplateDocs', 'Opening the guide…', `Opened ${button.textContent}.`, [button.dataset.templateDocs]);
+  });
   $('check-on-launch').addEventListener('change', savePreference);
   function syncTabOrientation() { $('settings-tabs').setAttribute('aria-orientation', matchMedia('(max-width: 760px)').matches ? 'horizontal' : 'vertical'); }
   window.addEventListener('resize', syncTabOrientation, { passive: true });
