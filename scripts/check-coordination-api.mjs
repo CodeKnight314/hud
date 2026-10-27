@@ -186,12 +186,12 @@ try {
     assert.ok(tool?.inputSchema?.properties?.project, `${name} filters by project`);
     assert.ok(tool?.inputSchema?.properties?.owner, `${name} filters by owner`);
   }
-  const mcpText = await mcpRpc([
+  const mcpTickets = await mcpRpc([
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
     { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hud_tickets', arguments: { board: boardId, project: 'ENG', owner: 'claude' } } },
   ], (msg) => (msg.id === 3 ? msg.result : undefined));
-  assert.equal(mcpText.isError, undefined, JSON.stringify(mcpText));
-  const mcpBody = mcpText.content.map((c) => c.text).join('\n');
+  assert.equal(mcpTickets.isError, undefined, JSON.stringify(mcpTickets));
+  const mcpBody = mcpTickets.content.map((c) => c.text).join('\n');
   assert.match(mcpBody, /no matching tickets/, 'MCP owner filter does not treat the claimer as someone else');
   const mcpAlice = await mcpRpc([
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'coordination-api-check' } } },
