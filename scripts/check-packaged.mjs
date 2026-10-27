@@ -385,7 +385,7 @@ async function runSmoke(outputDir, requestedArch) {
 
   try {
     const assetsRoot = path.dirname(path.dirname(packaged.entry));
-    for (const name of ['web/settings.html', 'web/settings.js', 'web/settings.css', 'electron/settings-preload.cjs']) {
+    for (const name of ['web/settings.html', 'web/settings.js', 'web/settings.css', 'electron/settings-preload.cjs', 'GUIDE.md', 'QUICKSTART.md', 'STYLE.md', 'PLAYBOOKS.md']) {
       assert.ok((await readFile(path.join(assetsRoot, name), 'utf8')).length > 0, `packaged Settings asset missing: ${name}`);
     }
     const startServer = () => {

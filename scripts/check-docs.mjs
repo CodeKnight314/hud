@@ -1,7 +1,8 @@
-// Keeps the user-facing README short, the human quickstart linked, and each doc's TOC matched to its sections.
+// Keeps the user-facing README short, the human quickstart linked and shipped, and each doc's TOC matched to its sections.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { guideText, quickstartText } from '../src/docs.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 let failures = 0;
@@ -82,6 +83,26 @@ const quickSlugs = new Set(headingSlugs(quickstart, /^#{2,3} [^#]/));
 for (const m of readme.matchAll(/GUIDE\.md#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `README anchor GUIDE.md#${m[1]} resolves`);
 for (const m of readme.matchAll(/QUICKSTART\.md#([\w-]+)/g)) ok(quickSlugs.has(m[1]), `README anchor QUICKSTART.md#${m[1]} resolves`);
 for (const m of quickstart.matchAll(/GUIDE\.md#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `QUICKSTART anchor GUIDE.md#${m[1]} resolves`);
+for (const m of guide.matchAll(/QUICKSTART\.md#([\w-]+)/g)) ok(quickSlugs.has(m[1]), `GUIDE anchor QUICKSTART.md#${m[1]} resolves`);
+ok(existsSync(join(root, 'QUICKSTART.md')), 'QUICKSTART.md exists');
+ok(guide.includes('](QUICKSTART.md'), 'GUIDE links the quickstart with a relative path for the repo');
+
+const servedGuide = guideText(7317);
+const servedQuick = quickstartText(7317);
+ok(!/\]\((?:\.\/)?QUICKSTART\.md/.test(servedGuide), 'served guide rewrites relative QUICKSTART links');
+ok(!/\]\((?:\.\/)?GUIDE\.md/.test(servedQuick), 'served quickstart rewrites relative GUIDE links');
+ok(servedGuide.includes('http://localhost:7317/api/quickstart'), 'served guide points at GET /api/quickstart');
+ok(servedQuick.includes('http://localhost:7317/api/guide'), 'served quickstart points at GET /api/guide');
+for (const m of servedGuide.matchAll(/\/api\/quickstart#([\w-]+)/g)) ok(quickSlugs.has(m[1]), `served guide anchor /api/quickstart#${m[1]} resolves`);
+for (const m of servedQuick.matchAll(/\/api\/guide#([\w-]+)/g)) ok(guideSlugs.has(m[1]), `served quickstart anchor /api/guide#${m[1]} resolves`);
+
+const builder = readFileSync(join(root, 'electron-builder.yml'), 'utf8');
+ok(/from:\s*QUICKSTART\.md\s*\n\s*to:\s*hud\/QUICKSTART\.md/.test(builder), 'electron-builder ships QUICKSTART.md to hud/QUICKSTART.md');
+ok(/from:\s*GUIDE\.md\s*\n\s*to:\s*hud\/GUIDE\.md/.test(builder), 'electron-builder ships GUIDE.md to hud/GUIDE.md');
+const serverSrc = readFileSync(join(root, 'src/server.ts'), 'utf8');
+ok(serverSrc.includes("'/api/quickstart'"), 'server registers GET /api/quickstart');
+const cliSrc = readFileSync(join(root, 'src/cli.ts'), 'utf8');
+ok(cliSrc.includes('guideText(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
 
 const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
 const store = readFileSync(join(root, 'src/store.ts'), 'utf8');
@@ -157,4 +178,4 @@ if (failures) {
   console.error(`FAIL ${failures} docs check(s)`);
   process.exit(1);
 }
-console.log('PASS docs: README shape, human quickstart, PRODUCT.md link, latest stable links, version gates, GUIDE anchors, change surfaces match comments');
+console.log('PASS docs: README shape, human quickstart, shipped quickstart, PRODUCT.md link, latest stable links, version gates, GUIDE anchors, change surfaces match comments');

@@ -228,7 +228,7 @@ const TOOLS = [
   {
     name: 'hud_guide',
     description:
-      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide. Humans install and use the app from QUICKSTART.md.',
+      'Agent contract for hud (data model, monitor sources, probe modules, layout conventions, HTTP API). Pass playbook "decentralized" or "lead" to get only that coordination runbook (claim, publish a FACT, wait, finish, and the failure modes) without the rest of the guide. Quickstart links in this text point at GET /api/quickstart. Humans install and use the app from QUICKSTART.md.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -244,6 +244,11 @@ const TOOLS = [
     name: 'hud_monitor_templates',
     description:
       'List built-in monitor templates (disk, tls, http, cron-heartbeat) with safe defaults and docs links. Defaults do not run a shell command. disk reads the local filesystem, http GETs 127.0.0.1, cron-heartbeat only listens for /ping/<id>, and tls connects only after source.config.host (or host) is set. Create one with hud_create {type:"monitor", template:"disk"}.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'hud_quickstart',
+    description: 'Human quickstart: install, Settings, Attention and Tickets. Guide links in this text point at GET /api/guide.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -640,7 +645,7 @@ const TOOLS = [
   },
 ];
 
-const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_get', 'hud_views', 'hud_monitor_templates', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint', 'hud_queue']);
+const RO = new Set(['hud_overview', 'hud_tickets', 'hud_search', 'hud_guide', 'hud_quickstart', 'hud_get', 'hud_views', 'hud_monitor_templates', 'hud_runs', 'hud_changes', 'hud_readout', 'hud_snapshot', 'hud_lint', 'hud_queue']);
 const DESTRUCTIVE = new Set(['hud_delete', 'hud_finish', 'hud_trash', 'hud_board', 'hud_clear_canvas']);
 const OPEN_WORLD = new Set(['hud_create', 'hud_update', 'hud_run']); // can start shell-command / http monitors
 const listed = TOOLS.map((t) => ({
@@ -870,6 +875,8 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     }
     case 'hud_guide':
       return hud.guide(args.playbook);
+    case 'hud_quickstart':
+      return hud.quickstart();
     case 'hud_search': {
       await needBoard(args.board, hud);
       const q = filters(args);
@@ -1579,7 +1586,8 @@ async function handleOne(msg: any): Promise<void> {
       case 'resources/list':
         return void reply({
           resources: [
-            { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide, metric fields, dashboard schemas, and rendering conventions.', mimeType: 'text/markdown' },
+            { uri: 'hud://guide', name: 'Hud guide', description: 'Agent contract: metric fields, dashboard schemas, and rendering conventions. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
+            { uri: 'hud://quickstart', name: 'Hud quickstart', description: 'Human quickstart: install, Settings, Attention and Tickets.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/decentralized', name: 'Decentralized coordination playbook', description: 'Copy-paste runbook: claim, publish a FACT, wait, finish. No lead. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/lead', name: 'Lead coordination playbook', description: 'Copy-paste runbook for a lead who links and assigns work, and for workers who pull. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
           ],
@@ -1589,6 +1597,10 @@ async function handleOne(msg: any): Promise<void> {
         const play = /^hud:\/\/playbook\/([A-Za-z0-9_-]+)$/.exec(uri);
         if (uri === 'hud://guide') {
           const text = await baseHud.guide();
+          return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
+        }
+        if (uri === 'hud://quickstart') {
+          const text = await baseHud.quickstart();
           return void reply({ contents: [{ uri, mimeType: 'text/markdown', text }] });
         }
         if (play) {

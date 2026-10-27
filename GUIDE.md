@@ -24,14 +24,14 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
   `hud_arrange`, `hud_run`, `hud_views`, `hud_watch`, `hud_alerts`, `hud_attention`, `hud_runs`, `hud_changes`,
   `hud_readout`, `hud_snapshot`, `hud_dashboard`, `hud_annotate`, `hud_compare`, `hud_lint`, `hud_graph`,
   `hud_canvas`, `hud_clear_canvas`, `hud_ask`, `hud_decide`, `hud_finish`, `hud_session`, `hud_claim`, `hud_queue`,
-  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_approve_command`, `hud_guide`. MCP also exposes the
-  `hud://guide` resource.
+  `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_approve_command`, `hud_guide`, `hud_quickstart`. MCP also exposes the
+  `hud://guide` and `hud://quickstart` resources. Served guide text rewrites quickstart links to `GET /api/quickstart`.
   Times in tool output are in the machine's local time zone. `source.kind: "command"` does not run until the human
   approves that command and cwd in Attention. Do not set your actor to `user` and do not approve it yourself.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud project`, `hud tree`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
-  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud approve`, … (`hud help`;
+  `hud comment`, `hud ask`, `hud decide`, `hud finish`, `hud approve`, `hud guide [decentralized|lead]`, `hud quickstart`, … (`hud help`;
   every command takes `--help`, and `--json` prints machine-readable output). If `hud` is not on PATH use
   `node <repo>/bin/hud.js`. Set `HUD_ACTOR=<your-name>` (or `--as`) so changes are attributed to you.
 - **HTTP** (JSON, localhost only; send header `x-hud-actor: <name>`). Malformed input is a 400, an unknown id or board
@@ -40,7 +40,7 @@ re-read state (`hud ls` / `hud_overview`) before assuming positions or statuses.
     `POST /api/snapshot {board?,format?}` · `GET /api/state` · `GET /api/events` SSE · `GET /api/projects` ·
     `GET /api/tickets[?format=text]` · `GET /api/claims[?session=&board=]` live leases (omit `session` for every lease on the board) · `GET /api/items` · `GET /api/items/:id` (includes `trend` and `uptime`) ·
     `GET /api/items/:id/activity[?limit=]` · `GET /api/activity[?limit=&board=]` · `GET /api/attention` · `GET /api/runs` ·
-    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]`
+    `GET /api/changes?since=<epoch-ms>` · `GET /api/views` · `GET /api/guide[?playbook=decentralized|lead]` · `GET /api/quickstart`
   - search filters, on `GET /api/items` and `GET /api/tickets`: `board type status` (comma list) `priority assignee
     owner project tag q overdue=1 parent limit`. `owner` is the claimer while a lease is held, otherwise the
     assignee; `owner=none` (or `-`) matches tickets with neither. An unknown board is a 404.
@@ -1069,7 +1069,9 @@ dir (`hud.lock`); a second one refuses to start.
 ## Install and connect
 
 Humans install the desktop app and use Settings, Attention and Tickets from [QUICKSTART.md](QUICKSTART.md). This
-file is the agent contract.
+file is the agent contract. The app ships the quickstart next to this guide and serves it at `GET /api/quickstart`
+(`hud quickstart`, `hud_quickstart`). `GET /api/guide` and `hud guide` rewrite the relative links in this file to
+that URL, so a reader of the served contract is not sent to a missing file.
 
 The packaged app runs the same local server the CLI and MCP use. It keeps data in the per-user directory
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example

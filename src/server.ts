@@ -10,6 +10,7 @@ import { summarize, ticketsView } from './summary.ts';
 import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
 import { asset, assetKeys, isPackaged } from './assets.ts';
+import { quickstartText } from './docs.ts';
 import { coordinationDoc, GuideError } from './guide.ts';
 import { ROOT, config } from './config.ts';
 import { publicState, registerMonitoring } from './monitoring-server.ts';
@@ -427,6 +428,7 @@ route('GET', '/api/guide', (_req, res, _m, q) => {
   }
 });
 route('GET', '/api/monitor-templates', () => listMonitorTemplates());
+route('GET', '/api/quickstart', (_req, res) => send(res, 200, quickstartText(PORT), 'text/markdown; charset=utf-8'));
 route('GET', '/api/views', () => ({
   dir: viewsDir,
   views: listViewInfos(viewsDir).map(({ name, mtime, bytes, sha256, validation }) => ({ name: `${name}.js`, mtime, bytes, sha256, valid: validation.ok, errors: validation.errors })),

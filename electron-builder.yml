@@ -1,7 +1,7 @@
 # electron-builder packaging for hud.
 #
 # The app shell (appdir/main.mjs) goes into resources/app (asar is off); everything the node-mode server reads at runtime
-# (the CLI bundle, web/ UI, guide, probes, package.json) is copied loose under resources/hud/ so
+# (the CLI bundle, web/ UI, guide, quickstart, probes, package.json) is copied loose under resources/hud/ so
 # there is no asar in the server's file paths.
 appId: local.hud.dashboard
 productName: hud
@@ -45,6 +45,8 @@ extraResources:
     to: hud/PLAYBOOKS.md
   - from: PRODUCT.md
     to: hud/PRODUCT.md
+  - from: QUICKSTART.md
+    to: hud/QUICKSTART.md
   - from: STYLE.md
     to: hud/STYLE.md
   - from: package.json
