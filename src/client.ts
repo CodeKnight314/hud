@@ -9,9 +9,12 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { asset } from './assets.ts';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
 import type { MonitorTemplate } from './monitor-templates.ts';
+import { stableVersion } from './reconnect.ts';
+import type { ReconnectChecklist } from './reconnect.ts';
 import type { Activity, Annotation, AttachmentRecord, AttentionItem, AttentionRecord, Board, CanvasProgram, ClaimView, ComparisonRule, ContextEntry, DashboardSpec, DecisionOption, Item, MetricSpec, MonitorResult, Observation, ProgramDraft, ProgramSpec, QueueResult, RunContextExport, RunContextExportFile, RunOverview, SessionKind, SessionView, TextFormat, TicketForest } from './types.ts';
 import type { ViewInstall, ViewReview, ViewReviewRefusal } from './views.ts';
 
@@ -212,6 +215,7 @@ const qs = (q: Record<string, unknown>) => {
   return s ? '?' + s : '';
 };
 const enc = encodeURIComponent;
+const CLIENT_VERSION = stableVersion(JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version);
 
 function isConnError(e: unknown): boolean {
   const err = e as { name?: string; cause?: { code?: string } };
@@ -323,7 +327,7 @@ export class Hud {
     const send = () =>
       fetch(this.url + path, {
         method,
-        headers: { 'content-type': 'application/json', 'x-hud-actor': enc(this.actor), ...(this.session ? { 'x-hud-session': enc(this.session) } : {}) },
+        headers: this.headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(this.timeout),
       });
@@ -367,6 +371,15 @@ export class Hud {
     } catch {
       return text as T;
     }
+  }
+
+  private headers(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      'x-hud-actor': enc(this.actor),
+      ...(this.session ? { 'x-hud-session': enc(this.session) } : {}),
+      ...(CLIENT_VERSION ? { 'x-hud-client-version': CLIENT_VERSION } : {}),
+    };
   }
 
   /** Make an invocation-specific client so concurrent calls cannot change each other's actor header. */
@@ -569,8 +582,15 @@ export class Hud {
   sessions(): Promise<{ items: SessionView[]; now: number }> {
     return this.request('GET', '/api/sessions');
   }
-  sessionStart(name: string, opts: { actor?: string; kind?: SessionKind; run?: string; pid?: number } = {}): Promise<SessionView> {
-    return this.request('POST', '/api/sessions', { id: name, name, ...opts });
+  sessionStart(name: string, opts: { actor?: string; kind?: SessionKind; run?: string; pid?: number; clientVersion?: string } = {}): Promise<SessionView> {
+    return this.request('POST', '/api/sessions', { id: name, name, ...opts, clientVersion: opts.clientVersion ?? CLIENT_VERSION ?? undefined });
+  }
+  /** Post-update MCP reconnect checklist. Pending until this server build is acknowledged. */
+  reconnect(): Promise<ReconnectChecklist> {
+    return this.request('GET', '/api/reconnect');
+  }
+  reconnectAck(): Promise<ReconnectChecklist> {
+    return this.request('POST', '/api/reconnect/ack');
   }
   sessionHeartbeat(name = this.session): Promise<{ session: SessionView; renewed: ClaimView[] }> {
     if (!name) throw new HudRequestError(0, 'this client has no session; pass a name or set HUD_SESSION');
@@ -605,7 +625,7 @@ export class Hud {
     const seconds = Math.max(1, Math.min(25, Number(input.timeoutSeconds) || 20));
     const res = await fetch(this.url + '/api/wait', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-hud-actor': enc(this.actor), ...(this.session ? { 'x-hud-session': enc(this.session) } : {}) },
+      headers: this.headers(),
       body: JSON.stringify({ ...input, session: input.session ?? this.session, timeoutSeconds: seconds }),
       signal: AbortSignal.timeout(seconds * 1000 + 5000),
     });

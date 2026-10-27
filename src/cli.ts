@@ -150,6 +150,7 @@ usage:
   hud mcp install [clients...] [--dry-run]   wire hud into claude / codex / opencode / all
   hud mcp uninstall [clients...]     remove the hud MCP entry again
   hud mcp status                     show where hud is configured and which command is used
+  hud mcp reconnect [--dry-run]      print the one-shot post-update client reconnect checklist
   hud mcp print [client]             print the command / config snippet to paste in by hand
   hud cli [install|uninstall|status] put the 'hud' command on PATH (desktop app, .deb, or AppImage)
 
@@ -276,7 +277,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   guide: { u: 'hud guide [decentralized|lead|playbooks]', max: 1, f: [] },
   views: { u: 'hud views [--json]', max: 0, f: ['json'] },
   view: { u: 'hud view list | show <name> | generate <name> --spec \'<json>\' [--write] [--display monitor] | set <name> --code-file path [--overwrite] | approve <name> --proposal id --sha sha256 | validate <name> | rm <name>', max: 2, f: '*' },
-  mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print [clients...] [--dry-run]', f: '*' },
+  mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print|reconnect [clients...] [--dry-run]', f: '*' },
   cli: { u: 'hud cli [install|uninstall|status]', max: 1, f: [] },
 };
 const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', update: 'set', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment', trees: 'tree' };
@@ -381,12 +382,16 @@ async function main() {
       return emit({ message: msg }, msg);
     }
     case 'status': {
-      const info = await new Hud({ actor, autostart: false }).healthInfo();
+      const client = new Hud({ actor, autostart: false });
+      const info = await client.healthInfo();
       if (!info) {
         process.exitCode = 1;
         return emit({ running: false, url: hud.url }, `hud is not running at ${hud.url}`);
       }
-      return emit(info, [`hud running at ${hud.url}`, `  pid ${info.pid}  port ${info.port}  mode ${info.mode}  version ${info.version ?? '?'}`, `  data ${info.dataDir ?? '?'}  items ${info.items ?? '?'}`, info.recoveredFrom ? `  RECOVERED FROM: ${info.recoveredFrom}` : '', info.saveError ? `  SAVE ERROR: ${info.saveError}` : '  saves ok'].filter(Boolean).join('\n'));
+      const offer = await client.reconnect().catch(() => null);
+      const lines = [`hud running at ${hud.url}`, `  pid ${info.pid}  port ${info.port}  mode ${info.mode}  version ${info.version ?? '?'}`, `  data ${info.dataDir ?? '?'}  items ${info.items ?? '?'}`, info.recoveredFrom ? `  RECOVERED FROM: ${info.recoveredFrom}` : '', info.saveError ? `  SAVE ERROR: ${info.saveError}` : '  saves ok'].filter(Boolean);
+      if (offer?.pending || offer?.skewed) lines.push('', offer.text);
+      return emit(offer ? { ...info, reconnect: offer } : info, lines.join('\n'));
     }
     case 'open':
       await hud.ensureServer();
@@ -1053,6 +1058,13 @@ async function main() {
     }
     case 'mcp': {
       const sub = rest[0];
+      if (sub === 'reconnect') {
+        if (rest.length > 1) throw new UsageError('too many arguments for "hud mcp reconnect"');
+        const before = await hud.reconnect();
+        const offer = flags['dry-run'] ? before : await hud.reconnectAck();
+        const note = !before.pending ? '' : flags['dry-run'] ? '\n(dry run — reminder kept)' : '\nReminder cleared.';
+        return emit(offer, `${offer.text}${note}`);
+      }
       if (sub) {
         const { mcpCommand } = await import('./mcpinstall.ts');
         process.exitCode = await mcpCommand(sub, rest.slice(1), flags);

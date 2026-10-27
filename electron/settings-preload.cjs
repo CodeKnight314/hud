@@ -14,4 +14,5 @@ contextBridge.exposeInMainWorld('hudSettings', Object.freeze({
   openTemplateDocs: (id) => call('open-template-docs', id),
   downloadUpdate: () => call('download-update'),
   quitForUpdate: () => call('quit-for-update'),
+  ackReconnect: () => call('reconnect-ack'),
 }));

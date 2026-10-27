@@ -8,6 +8,7 @@ import { BOARD_WIDTH, BOARD_HEIGHT, bounded, layout, canvasItems } from './layou
 import { validateMonitorFields, expiry, staleAt, observationTime, readout, lintBoard, comparisonResults } from './monitoring.ts';
 import { hashBytes, readAttachmentBytes } from './attachments.ts';
 import { buildZip, parseContextExportName, renderRunMarkdown, uniqueZipNames, zipSegment } from './context-export.ts';
+import { stableVersion } from './reconnect.ts';
 
 export class HudError extends Error {
   status: number;
@@ -98,6 +99,7 @@ interface SessionRecord {
   kind: SessionKind;
   pid?: number;
   run?: string;
+  clientVersion?: string;
   startedAt: number;
   lastSeenAt: number;
   endedAt?: number;
@@ -987,6 +989,7 @@ export class Store extends EventEmitter {
     return {
       id: s.id, name: s.name, actor: s.actor, kind: s.kind,
       ...(s.pid === undefined ? {} : { pid: s.pid }), ...(s.run === undefined ? {} : { run: s.run }),
+      ...(s.clientVersion ? { clientVersion: s.clientVersion } : {}),
       startedAt: s.startedAt, lastSeenAt: s.lastSeenAt, ...(s.endedAt === undefined ? {} : { endedAt: s.endedAt }),
       live: this.sessionLive(s, at), claims,
     };
@@ -1020,7 +1023,7 @@ export class Store extends EventEmitter {
     return view;
   }
 
-  sessionStart(input: { id: string; name?: string; actor?: string; kind?: SessionKind; pid?: number; run?: string }, actor: string): SessionView {
+  sessionStart(input: { id: string; name?: string; actor?: string; kind?: SessionKind; pid?: number; run?: string; clientVersion?: string }, actor: string): SessionView {
     const id = this.sessionId(input.id);
     const t = now();
     const kind: SessionKind = input.kind && ['agent', 'cli', 'human', 'unknown'].includes(input.kind) ? input.kind : 'unknown';
@@ -1040,6 +1043,8 @@ export class Store extends EventEmitter {
     }
     if (input.pid !== undefined && Number.isFinite(input.pid)) s.pid = Math.floor(input.pid);
     if (input.run !== undefined) s.run = String(input.run).slice(0, 64);
+    const reported = stableVersion(input.clientVersion);
+    if (reported) s.clientVersion = reported;
     const view = this.sessionView(s);
     this.emitEvent({ kind: 'session', action: started ? 'started' : 'updated', session: view });
     if (started) {
@@ -1047,6 +1052,17 @@ export class Store extends EventEmitter {
       this.save();
     }
     return view;
+  }
+
+  /** Record the hud build a live session is running. Invalid or ended sessions are ignored. */
+  noteClientVersion(id: string, version: string): void {
+    const reported = stableVersion(version);
+    if (!reported) return;
+    let sid: string;
+    try { sid = this.sessionId(id); } catch { return; }
+    const s = this.liveSessions.get(sid);
+    if (!s || s.endedAt) return;
+    s.clientVersion = reported;
   }
 
   sessionHeartbeat(id: string): { session: SessionView; renewed: ClaimView[] } {

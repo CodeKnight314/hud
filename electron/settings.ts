@@ -7,12 +7,16 @@ import { cliInfo, installCli } from '../src/cliinstall.ts';
 import { primeLoginEnv } from '../src/electron-runtime.ts';
 import { CLIENT_IDS, ConnectionService, configSnippet } from '../src/mcpinstall.ts';
 import type { ClientId } from '../src/mcpinstall.ts';
+import { armReconnectNotice, loadReconnectChecklist, takeReconnectChecklist } from '../src/reconnect.ts';
+import type { ReconnectChecklist, ReconnectClient } from '../src/reconnect.ts';
 import { UpdateChecker } from '../src/updates.ts';
 
 export function desktopSettings(options: {
   version: string; packaged: boolean; dataDir: string;
   checkOnLaunch: () => boolean; setCheckOnLaunch: (enabled: boolean) => void;
   quitForUpdate?: () => Promise<void>;
+  connectedClients?: () => Promise<ReconnectClient[]>;
+  reconnectSource?: () => Promise<ReconnectChecklist | null>;
   connectionService?: ConnectionService; updateChecker?: UpdateChecker;
   openExternal?: (url: string) => Promise<unknown>; copyText?: (text: string) => void; visible?: boolean;
 }) {
@@ -42,6 +46,15 @@ export function desktopSettings(options: {
     return shell.openExternal(url);
   };
   const connections = async () => { await primeLoginEnv(); return service ??= new ConnectionService(); };
+  const reconnectState = async () => {
+    if (options.reconnectSource) {
+      try {
+        const remote = await options.reconnectSource();
+        if (remote) return remote;
+      } catch { /* the sidecar still has the post-update reminder */ }
+    }
+    return loadReconnectChecklist(options.dataDir, options.version);
+  };
   const state = async (refresh = false) => {
     if (refresh || !cachedConnections) cachedConnections = await (await connections()).list();
     return {
@@ -53,6 +66,7 @@ export function desktopSettings(options: {
     connections: cachedConnections,
     updates: updates.state(options.checkOnLaunch()),
     templates: listMonitorTemplates(),
+    reconnect: await reconnectState(),
     };
   };
 
@@ -98,8 +112,17 @@ export function desktopSettings(options: {
       if (!options.packaged || !options.quitForUpdate) throw new Error('Quit for update is only available in the packaged app.');
       if (changing) throw new Error('Wait for the current Settings change to finish before quitting.');
       changing = true;
-      try { await options.quitForUpdate(); } finally { changing = false; }
+      try {
+        const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
+        armReconnectNotice(options.dataDir, { reason: 'quit-for-update', fromVersion: options.version, clients });
+        await options.quitForUpdate();
+      } finally { changing = false; }
       return;
+    }
+    if (action === 'reconnect-ack') {
+      const clients = options.connectedClients ? await options.connectedClients().catch(() => []) : [];
+      takeReconnectChecklist(options.dataDir, options.version, clients);
+      return state();
     }
     if (!['install-command', 'connect', 'disconnect'].includes(action)) throw new Error('Unknown Settings action');
     if (changing) throw new Error('Another Settings change is in progress. Try again when it finishes.');

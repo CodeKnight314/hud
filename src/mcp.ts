@@ -1466,7 +1466,7 @@ let presenceRegistered = false;
 async function registerPresence() {
   if (presenceRegistered) return;
   presenceRegistered = true;
-  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid }); } catch {}
+  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid, clientVersion: VERSION }); } catch {}
   heartbeatTimer = setInterval(() => { baseHud.sessionHeartbeat(sessionName()).catch(() => {}); }, 20_000);
   heartbeatTimer.unref();
 }

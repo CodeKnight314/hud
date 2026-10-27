@@ -32,6 +32,7 @@ const suites = [
   'scripts/check-updates.ts',
   'scripts/check-persistence.ts',
   'scripts/check-persistence-banner.mjs',
+  'scripts/check-reconnect.ts',
 ];
 
 function run(args, label, exec = process.execPath, env = process.env) {

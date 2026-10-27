@@ -19,6 +19,7 @@ import { capturePage } from './render.ts';
 import { MonitorTemplateError, applyMonitorTemplate, listMonitorTemplates } from './monitor-templates.ts';
 import { revealDirectory } from './reveal.ts';
 import { deleteViewFile, generateViewCode, installUntrustedView, listViewInfos, readViewFile, validateViewCode, viewFixture, writeViewFile } from './views.ts';
+import { clientsFromSessions, loadReconnectChecklist, stableVersion, syncServerVersion, takeReconnectChecklist } from './reconnect.ts';
 
 const { port: PORT, dataDir, probesDir, viewsDir } = config();
 const WEB = join(ROOT, 'web');
@@ -47,6 +48,7 @@ try {
   process.exit(1);
 }
 store.startBackups();
+try { syncServerVersion(dataDir, VERSION); } catch (error) { console.error(`[hud] reconnect reminder: ${(error as Error).message}`); }
 const engine = new Engine(store, probesDir);
 
 /** packaged builds carry the default probes/views inside the app; copy any the user doesn't have yet */
@@ -590,8 +592,10 @@ route('POST', '/api/sessions', async (req) => {
   const b = await readObj(req);
   const id = b.id ?? b.name;
   if (typeof id !== 'string' || !id.trim()) throw new HudError(400, 'id (or name) is required');
-  return store.sessionStart({ id, name: typeof b.name === 'string' ? b.name : undefined, actor: typeof b.actor === 'string' ? b.actor : undefined, kind: b.kind, pid: Number.isFinite(b.pid) ? b.pid : undefined, run: typeof b.run === 'string' ? b.run : undefined }, actorOf(req, b));
+  return store.sessionStart({ id, name: typeof b.name === 'string' ? b.name : undefined, actor: typeof b.actor === 'string' ? b.actor : undefined, kind: b.kind, pid: Number.isFinite(b.pid) ? b.pid : undefined, run: typeof b.run === 'string' ? b.run : undefined, clientVersion: typeof b.clientVersion === 'string' ? b.clientVersion : undefined }, actorOf(req, b));
 });
+route('GET', '/api/reconnect', () => loadReconnectChecklist(dataDir, VERSION, clientsFromSessions(store.sessions().items)));
+route('POST', '/api/reconnect/ack', () => takeReconnectChecklist(dataDir, VERSION, clientsFromSessions(store.sessions().items)));
 route('POST', '/api/sessions/:id/heartbeat', (_req, _res, [id]) => store.sessionHeartbeat(dec(id)));
 route('DELETE', '/api/sessions/:id', (req, _res, [id], q) => store.sessionEnd(dec(id), actorOf(req, undefined, q)));
 
@@ -1032,6 +1036,13 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     if (['iframe', 'frame', 'object', 'embed'].includes(String(req.headers['sec-fetch-dest'] ?? '')) && !/^\/api\/program-frame\/[\w-]+$/.test(url.pathname)) return send(res, 403, { error: 'embedded navigation is restricted to program frames' });
     if (url.pathname.startsWith('/api/program-preview/')) res.setHeader('content-security-policy', CSP);
     if (url.pathname.startsWith('/api/')) {
+      const reported = stableVersion(req.headers['x-hud-client-version']);
+      if (reported) {
+        const sid = sessionOf(req);
+        if (sid) store.noteClientVersion(sid, reported);
+        const beat = url.pathname.match(/^\/api\/sessions\/([^/]+)\/heartbeat\/?$/);
+        if (beat) store.noteClientVersion(dec(beat[1]), reported);
+      }
       for (const [m, re, h] of routes) {
         const match = m === lookup && url.pathname.match(re);
         if (!match) continue;

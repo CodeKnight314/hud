@@ -133,6 +133,7 @@ async function makeSettingsBundle() {
     `export { ConnectionService } from ${JSON.stringify(connectionsPath)};`,
     `export { UpdateChecker, installerName } from ${JSON.stringify(updatesPath)};`,
     `export { cliInfo, refreshInstalledCli } from ${JSON.stringify(join(repo, 'src', 'cliinstall.ts'))};`,
+    `export { armReconnectNotice } from ${JSON.stringify(join(repo, 'src', 'reconnect.ts'))};`,
   ].join('\n'));
   await build({
     entryPoints: [entry], bundle: true, platform: 'node', format: 'esm', target: 'node23',
@@ -178,7 +179,7 @@ async function run() {
     contents.on('did-fail-load', (_loadEvent, code, description, url) => loadFailures.push(`${code} ${description} ${url}`));
   });
 
-  const { desktopSettings, ConnectionService, UpdateChecker, installerName, cliInfo, refreshInstalledCli } = await makeSettingsBundle();
+  const { desktopSettings, ConnectionService, UpdateChecker, installerName, cliInfo, refreshInstalledCli, armReconnectNotice } = await makeSettingsBundle();
   const clientEnv = { PATH: fakeClients };
   const claudeConfig = join(clientHome, '.claude.json');
   const originalClaudeBytes = writeJson(claudeConfig, {
@@ -309,8 +310,21 @@ async function run() {
   await pageEval(primaryWindow, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
   const connectionShot = await saveScreenshot(primaryWindow, 'settings-connections.png');
 
+  armReconnectNotice(dataDir, {
+    reason: 'quit-for-update', fromVersion: '0.1.0', at: 1,
+    clients: [{ id: 'claude-1', name: 'claude-1', actor: 'claude', kind: 'agent', version: '0.1.0', live: true }],
+  });
   await click(primaryWindow, '#tab-updates');
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('panel-updates')?.hidden === false`), 'Updates panel');
+  await waitFor(async () => {
+    const text = await pageEval(primaryWindow, `document.getElementById('reconnect-text')?.textContent || ''`);
+    const hidden = await pageEval(primaryWindow, `document.getElementById('reconnect-card')?.hidden === true`);
+    return !hidden && text.includes('/mcp') && text.includes('claude-1') ? text : false;
+  }, 'post-update reconnect checklist');
+  await click(primaryWindow, '#reconnect-dismiss');
+  await waitText(primaryWindow, '#action-status', 'Reconnect checklist dismissed.');
+  await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('reconnect-card')?.hidden === true`), 'dismissed reconnect checklist');
+  assert.equal(existsSync(join(dataDir, 'reconnect.json')), false, 'dismiss clears the one-shot reminder');
   await click(primaryWindow, '#check-updates');
   await waitText(primaryWindow, '#update-status-text', 'Update available');
   await waitFor(async () => await pageEval(primaryWindow, `document.getElementById('download-update')?.disabled === false`), 'matching installer readiness');
@@ -350,6 +364,10 @@ async function run() {
   const updatesShot = await saveScreenshot(primaryWindow, 'settings-updates.png');
   await click(primaryWindow, '#quit-for-update');
   await waitFor(() => quits === 1, 'explicit Quit HUD for update action');
+  const quitNotice = JSON.parse(readFileSync(join(dataDir, 'reconnect.json'), 'utf8'));
+  assert.equal(quitNotice.reason, 'quit-for-update');
+  assert.equal(quitNotice.fromVersion, '0.1.1');
+  assert.deepEqual(quitNotice.clients, []);
 
   // A second page with the same URL and preload cannot use the main Settings window's IPC identity.
   const settingsUrl = pathToFileURL(join(repo, 'web', 'settings.html')).href;
@@ -373,7 +391,7 @@ async function run() {
   assert.deepEqual(consoleFailures, [], `renderer console errors: ${consoleFailures.join(' | ')}`);
   assert.deepEqual(loadFailures, [], `renderer load failures: ${loadFailures.join(' | ')}`);
   assert.equal(readFileSync(cliEntry, 'utf8'), '# inert fixture; the shim is verified, never executed\n');
-  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, IPC identity and no board bridge.`);
+  console.log(`PASS: real Electron Settings connections, Claude repair/disconnect/reconnect, Codex idempotence, fixture command/copy, updates/preferences/external links, monitor templates, post-update reconnect checklist, quit-for-update reminder, IPC identity and no board bridge.`);
   console.log(`Artifacts: ${connectionShot}, ${templateShot}, ${updatesShot}`);
 }
 

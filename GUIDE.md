@@ -1097,6 +1097,7 @@ CLI inside the fresh mount. Move the AppImage and run **Install command** again.
     hud mcp install [clients...] [--json]
     hud mcp repair [clients...] [--json]
     hud mcp uninstall [clients...] [--json]
+    hud mcp reconnect [--dry-run] [--json]
 
 `status` is read-only and checks saved registrations; it does not start or handshake with an MCP server. `--json`
 returns machine-readable status. Config backups are retained beside the config file.
@@ -1106,8 +1107,13 @@ returns machine-readable status. Config backups are retained beside the config f
 Settings → **Updates** shows the installed version and can check GitHub for the latest stable release. It offers the
 matching installer for the app's OS and architecture when that asset exists; **Download update** opens it in the browser,
 and **View release** opens the release page. HUD never installs an update automatically: download the installer, quit
-HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board and stops the
-background server even when Keep server running after quit is enabled. Reconnect existing agent clients after installing.
+HUD using **Quit HUD for update**, then replace the app and reopen it. That action backs up the board, records the
+MCP clients connected at quit, and stops the background server even when Keep server running after quit is enabled.
+The next hud build compares its version with those clients (and with any client that reports `x-hud-client-version`).
+When the server is newer, the app shows a one-shot reconnect checklist and `hud status` prints it. Dismiss it in
+Settings → Updates, or run `hud mcp reconnect` (add `--dry-run` to print it without clearing the reminder). In Claude
+Code the step is `/mcp`, then reconnect hud. Restart Codex and OpenCode so they respawn the MCP process. A client
+already running this server's version drops off the list. Reopening the same build does not show the checklist again.
 The optional **Check when HUD opens** preference enables launch-time checks. The update checker has existed since 0.1.1.
 Version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual installer download.
 
@@ -1133,6 +1139,7 @@ Merging does not create a tag or a GitHub release.
    find 0.2.0 as the latest stable release.
 
 ## Connect your agent
+    hud mcp reconnect               # one-shot checklist after an update; clears the reminder
     hud mcp install                 # claude + codex + opencode (skips any that aren't installed)
     hud mcp install claude          # just one
     hud mcp install all --dry-run   # show exactly what would change
