@@ -1,5 +1,5 @@
 // Keeps the user-facing README short, the human quickstart linked and shipped, and each doc's TOC matched to its sections.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { guideText, quickstartText } from '../src/docs.ts';
@@ -122,6 +122,14 @@ const serverSrc = readFileSync(join(root, 'src/server.ts'), 'utf8');
 ok(serverSrc.includes("'/api/quickstart'"), 'server registers GET /api/quickstart');
 const cliSrc = readFileSync(join(root, 'src/cli.ts'), 'utf8');
 ok(cliSrc.includes('guideText(') && cliSrc.includes('quickstartText('), 'CLI prints the served guide and quickstart');
+const docsSrc = readFileSync(join(root, 'src/docs.ts'), 'utf8');
+ok(docsSrc.includes('export function guideText') && docsSrc.includes('export function quickstartText'), 'src/docs.ts exports the served doc builders');
+for (const name of readdirSync(join(root, 'src'))) {
+  if (!name.endsWith('.ts') || name === 'docs.ts') continue;
+  const text = readFileSync(join(root, 'src', name), 'utf8');
+  ok(!/asset\(\s*['"](?:GUIDE|STYLE|QUICKSTART)\.md['"]/.test(text), `${name} reads a served doc; only src/docs.ts may`);
+  ok(!/\]\((?:\.\/)?(?:GUIDE|STYLE|QUICKSTART|views\/README)\.md/.test(text), `${name} rewrites a doc link; only src/docs.ts may`);
+}
 
 const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
 const store = readFileSync(join(root, 'src/store.ts'), 'utf8');
