@@ -115,12 +115,21 @@ try {
   rmSync(partialDir, { recursive: true, force: true });
 }
 
+function pushBranchEntries(text) {
+  const match = text.match(/^on:\n {2}push:\n {4}branches:\n((?: {6}- .+\n)*)/m);
+  if (!match) return null;
+  return [...match[1].matchAll(/^ {6}- (.+)$/gm)].map((item) => item[1]);
+}
+
 const workflow = readFileSync(join(root, '.github/workflows/build.yml'), 'utf8');
-ok(workflow.includes("branches:\n      - 'release/**'"), 'release-branch pushes build without publishing');
+const branches = pushBranchEntries(workflow);
+ok(Array.isArray(branches), 'on.push.branches is a list');
+ok(branches?.length === 1 && branches[0] === "'release/**'", `native-build branches are only release/** (found ${(branches || []).join(', ')})`);
+ok(!branches?.some((entry) => entry.includes('main') || entry.includes('0.2.0')), 'the branches list does not release on main or 0.2.0');
+const mentioned = workflow.replace(/^on:\n {2}push:\n {4}branches:\n(?: {6}- .+\n)*/m, 'on:\n  push:\n    branches:\n');
+ok(mentioned.includes('0.2.0'), 'a 0.2.0 mention outside the branches list is allowed');
 ok(workflow.includes("tags:\n      - 'v*'"), 'version tags start native builds');
 ok(workflow.includes('workflow_dispatch:'), 'manual dispatch can build artifacts');
-ok(!/(^|\n)\s+-\s+['"]main['"]/.test(workflow), 'native builds do not run on main');
-ok(!workflow.includes('0.2.0'), 'native builds do not publish when the 0.2.0 branch moves');
 const draftAt = workflow.indexOf('\n  draft-release:');
 ok(draftAt > 0, 'draft-release job exists');
 const draft = draftAt > 0 ? workflow.slice(draftAt) : '';
@@ -133,8 +142,13 @@ const guide = readFileSync(join(root, 'GUIDE.md'), 'utf8');
 const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
 ok(guide.includes("This tree's app version is 0.2.0"), 'GUIDE states the app version is 0.2.0');
 ok(guide.includes('`v0.2.0`'), 'GUIDE names the manual tag');
+ok(guide.includes('leave every published stable release unchanged'), 'GUIDE uses the shared release phrase');
+ok(guide.includes('update checker has existed since 0.1.1') && guide.includes('0.1.0 has none'), 'GUIDE keeps the 0.1.0 upgrade note');
 ok(guide.includes('Merging does not create a tag or a GitHub release.'), 'GUIDE keeps publication manual');
+ok(!/releases\/tag\/v\d/.test(guide), 'GUIDE does not pin a download tag');
 ok(agents.includes('The package version is 0.2.0'), 'AGENTS states the package version');
+ok(agents.includes('published stable releases unchanged'), 'AGENTS uses the shared release phrase');
+ok(!/v0\.1\.0/.test(agents), 'AGENTS does not treat v0.1.0 as the standing release');
 ok(agents.includes('tag `v0.2.0`'), 'AGENTS names the manual tag');
 ok(agents.includes('Do not create the tag, publish the release, or run a release on merge'), 'AGENTS forbids automatic publication');
 

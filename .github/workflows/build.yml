@@ -119,8 +119,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # A version tag is the only release trigger. Branch pushes and workflow_dispatch
-  # upload build artifacts and stop. Do not publish from main or from a merge.
+  # A version tag is the only release trigger. Branch pushes, including 0.2.0, and
+  # workflow_dispatch upload build artifacts and stop. Do not publish from a merge.
   draft-release:
     name: Create draft release
     needs: build
