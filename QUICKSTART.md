@@ -1,70 +1,96 @@
 # hud — human quickstart
 
-The desktop app, for people. Agents use the contract in [GUIDE.md](GUIDE.md).
+hud runs as one local server with a browser board. Agents use the contract in [GUIDE.md](GUIDE.md).
 
-- [Install](#install) · [Settings](#settings) · [Attention](#attention) · [Tickets](#tickets)
+- [Install](#install) · [First run](#first-run) · [Settings](#settings) · [Attention](#attention) ·
+  [Tickets](#tickets) · [Updating](#updating) · [Agents](#agents)
 
 ## Install
 
-Download the installer for your platform from the
-[latest release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
-or Linux (x64 AppImage or deb). Builds are not notarized. On macOS, right-click the app and choose **Open** the first
-time, and again after each update. Windows may show a SmartScreen prompt.
+hud is a terminal install. Node.js 18 or newer is the only prerequisite.
 
-Open the app. It keeps one local board on your machine, with a window and a menu-bar or tray icon. Boards, backups
-and the single-server lock live in the per-user data directory:
+```sh
+curl -fsSL https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/install.sh | sh
+```
+
+Windows, in PowerShell: `irm https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/install.ps1 | iex`
+
+The installer fetches the latest [stable release](https://github.com/CodeKnight314/hud/releases/latest), verifies it
+against that release's `SHA256SUMS`, and writes `~/.hud/bin/hud` (Windows: `%USERPROFILE%\.hud\bin\hud.cmd`). It
+prints the `PATH` line to add when the directory is not on yours yet. There is no app bundle, no installer to trust,
+and no Gatekeeper or SmartScreen dialog: nothing is signed, and nothing needs to be.
+
+## First run
+
+```sh
+hud                # start the server if it is not running, then open the board in your browser
+```
+
+That prints the board URL and keeps one server per data directory. Useful neighbours:
+
+```sh
+hud status         # pid, port, mode, data dir, save health
+hud stop           # stop the background server
+hud reveal         # open the data directory
+```
+
+Your board, backups and the single-server lock live in the per-user data directory:
 
 - macOS: `~/Library/Application Support/hud`
 - Windows: `%APPDATA%\hud`
 - Linux: `$XDG_DATA_HOME/hud`, or `~/.local/share/hud` when that variable is unset
 
-From a source checkout, `npm install` then `npm run dev` runs the app against this repo on a scratch port and data
-directory. `node bin/hud.js open` opens the board without the desktop shell.
+The server logs to `<data>/server.log`. Command monitors run with your permissions, so treat anything an agent asks
+hud to execute the way you would treat a pasted shell command.
 
 ## Settings
 
-Open **Settings** from the app menu with ⌘, on macOS, or File → Settings (Ctrl+,) on Windows and Linux. The tray
-menu has the same entry. Settings has two pages, **Connections** and **Updates**.
+There is no settings window: the install directory holds the program, the data directory holds the board. What a
+desktop Settings screen used to do is a command:
 
-**Connections** lists Claude Code, Codex and OpenCode. **Registered** means the hud MCP entry is saved. It does not
-mean an agent session is connected right now. **Connect** or **Repair** writes that entry. From the packaged app it
-also installs the `hud` command. **Disconnect** removes only hud's entry. Configuration files are backed up first.
-Restart or reconnect the client after a change so it reloads. **Copy configuration** is the snippet for any other MCP
-client. **Install command** (or **Repair command**, once it is installed) is packaged-app only. A Linux AppImage
-cannot install the command; use the `.deb` package.
-
-**Updates** shows the installed version. **Check for updates** looks for the latest stable GitHub release. Drafts and
-prereleases are ignored. **Download update** opens the matching installer in the browser. hud does not install it for
-you. Use **Quit HUD for update**, replace the app, then reopen it. Boards stay in the data directory. **Check when
-HUD opens** looks for a release at launch. Reconnect agent clients after an update so they pick up new tools.
+| Want | Run |
+|---|---|
+| Register hud with Claude Code, Codex and OpenCode | `hud mcp install` |
+| See what is registered where | `hud mcp status` |
+| Print a snippet for another MCP client | `hud mcp print generic` |
+| Remove the entries again | `hud mcp uninstall` |
+| Open the data directory | `hud reveal` |
 
 ## Attention
 
-The left rail opens **attention** (`A`). It is the inbox for decisions waiting on you, blocked tickets, and monitors
-that are in warning, error or stale. Rows are grouped by board, then by run.
+The rail's **Attention** page is the human inbox: decisions waiting on you, blocked tickets, monitor warnings and
+errors, stale monitors, and command monitors that an agent created and needs approved. Reviewing an alert in the
+inbox does not acknowledge agent alerts, and reviewing a command item does not approve it: approval is its own button,
+and only the browser at the board can press it.
 
-**Review** records that you have seen an item. The item stays in the inbox. Review does not acknowledge agent alerts
-and does not change the ticket or monitor. **Unreview** puts it back with the unreviewed rows. Snooze hides it for
-15 minutes, one hour, or until tomorrow at 09:00. Opening a row inspects it and acknowledges nothing.
-
-A decision is a ticket an agent paused with a choice. Pick an option in the inspector. The ticket moves to the status
-that option names, and the agent that asked is notified.
-
-**Mark since last visit read** clears the change list under the inbox. Press `?` for the rest of the keys. Runs, on
-the same rail, are the longer jobs agents report.
+A command monitor runs a shell command as you, so it stays pending until you approve the exact command and working
+directory shown. Editing the command later re-opens the approval.
 
 ## Tickets
 
-**Tickets** in the footer (`l`) switches that board between the canvas and the ticket list. The canvas holds
-monitors, notes and frames. Tickets stay in the list. A board that is mostly tickets opens the list, and the choice
-is remembered per board.
+Press `l` for the ticket list, or use the board canvas. A project key (`KEY`) gives its tickets `KEY-n` idents;
+sub-tickets nest under their parent, blocked tickets name what they wait on, and the list tucks finished work away.
+Every row shows the assignee (`→name`) and the live claimer (`⊕name`). `hud ls tickets` prints the same structure in
+the terminal, and `hud queue` is the ready/open/claimed view agents work from.
 
-Each row shows the ident (`KEY-12`), a status glyph, blockers and the branch. Sub-tickets nest under their parent.
-Done and canceled rows stay hidden until **completed** is on. **＋ ticket** adds one inline. **＋ project** adds a
-project, which owns the `KEY` that numbers its tickets.
+## Updating
 
-Click a row to open the inspector: overview, activity and settings in one scroll. Status is `backlog`, `todo`,
-`doing`, `review`, `blocked`, `done` or `canceled`. A ticket with unfinished blockers moves to `blocked` and returns
-to `todo` when they finish. `⌘/Ctrl+K` searches titles, idents and bodies across boards.
+```sh
+hud update --check   # is there a newer stable release?
+hud update           # download, verify SHA256SUMS, swap the install, restart the server if it was running
+```
 
-Agents read and write these same tickets. Their contract is [GUIDE.md](GUIDE.md#projects-tickets-and-links).
+The install is replaced in place at `~/.hud/app`; your board in the data directory is untouched. Agent sessions keep
+their old MCP process, so reconnect them (`/mcp` in Claude Code) to load new tools — `hud mcp reconnect` prints the
+one-shot checklist of clients that are still on the previous version.
+
+## Agents
+
+```sh
+hud mcp install      # Claude Code, Codex and OpenCode entries pointing at ~/.hud/bin/hud
+hud mcp status       # read-only: what is registered
+```
+
+Agents get tickets, monitors, charts, coordination and the guide (`hud guide`, `hud://guide`, `GET /api/guide`).
+When several agents share a board they follow one playbook: `hud guide decentralized` (everyone pulls ready work) or
+`hud guide lead` (one lead links and assigns, the others pull).

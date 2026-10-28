@@ -4,36 +4,38 @@
 
 <p align="center">A local coordination board for you and your agents.</p>
 
-hud is a desktop app backed by one local server. You and your agents share a fixed board of tickets, monitors, notes
-and charts. The board grants exclusive leases, takes work back from an agent that goes silent, and treats a ticket
-tree as the owned decomposition of a job. Agents reach it through MCP, the CLI or HTTP. It runs on your machine, binds
-to loopback only, and keeps your data in a per-user directory. The contract is [PRODUCT.md](PRODUCT.md).
+hud is one local server with a browser board. You and your agents share a fixed board of tickets, monitors, notes and
+charts. The board grants exclusive leases, takes work back from an agent that goes silent, and treats a ticket tree as
+the owned decomposition of a job. Agents reach it through MCP, the CLI or HTTP. It runs on your machine, binds to
+loopback only, and keeps your data in a per-user directory. The contract is [PRODUCT.md](PRODUCT.md).
 
 People start with the [human quickstart](QUICKSTART.md); agents use [GUIDE.md](GUIDE.md).
 
 ## Install
 
-Download the installer for your platform from the [latest stable release](https://github.com/CodeKnight314/hud/releases/latest): macOS (arm64/x64 DMG), Windows (x64 installer)
-or Linux (x64 AppImage or `.deb`). A signed release opens normally: macOS is Developer ID–signed and notarized, and Windows
-is Authenticode-signed. Unsigned builds — a release produced without signing secrets, or a package built on your own
-machine — need a first-launch bypass: on macOS choose **Open Anyway** in **System Settings → Privacy & Security**; Windows
-may show a SmartScreen prompt. Choose Settings → Connections → **Install command** to add the agent command. If you move an
-AppImage, run that action again so the command follows the file.
-
-From a source checkout:
-
 ```sh
-npm install
-npm run dev      # Electron against this repo, scratch port and data dir
-npm run pack     # unpacked app in dist/
+curl -fsSL https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/install.sh | sh
 ```
 
-The app is the primary interface; `node bin/hud.js open` opens the board without the desktop shell.
+Windows (PowerShell): `irm https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/install.ps1 | iex`
+
+The installer downloads the latest stable release from
+[GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest), checks it against the release's `SHA256SUMS`,
+and puts `hud` in `~/.hud/bin` (add that to `PATH` when it says so). It needs Node.js 18 or newer; there is no app
+bundle and no code signing. Then:
+
+```sh
+hud            # start the server if needed and open the board in your browser
+hud status     # pid, port, data dir, save health
+hud update     # install the next release (same checksum check); --check only reports
+```
+
+From a checkout: `npm install`, then `npm run dev` (Electron on a scratch port) or `node bin/hud.js`.
 
 ## What you get
 
-- **Tickets with real structure.** A project key (`KEY`) gives its tickets `KEY-n` idents. A parent owns its
-  decomposition. Dependencies, assignees, decisions and a Linear-style list view. A `run` ticket can summarize a whole job.
+- **Tickets with real structure.** A project key gives its tickets `KEY-n` idents; a parent owns its decomposition.
+  Dependencies, assignees, decisions and a Linear-style list view; a `run` ticket can summarize a whole job.
 - **Monitors that stay honest.** Command, HTTP, probe and cron-heartbeat sources with thresholds, staleness, history,
   24 h uptime and alerts. Readings carry provenance, evidence and freshness.
 - **A live board.** Frames, notes, utilities, annotations, comparisons, and a fixed 1600 × 900 surface that you and
@@ -51,9 +53,7 @@ hud mcp status         # what is configured where
 hud mcp print generic  # a snippet for any other MCP client
 ```
 
-The packaged app installs its own `hud` command first (`hud cli install`, or **Install command** in Settings). A source
-checkout uses `node bin/hud.js` instead. On Linux, the AppImage and the `.deb` both register that command for MCP.
-
+`hud mcp install` registers the installed launcher, so a client never depends on `PATH`.
 Agents get the full surface, documented in the guide (`hud guide`, `hud://guide`, `GET /api/guide`).
 `hud guide --section <anchor>` and `GET /api/guide?section=<anchor>` return one table-of-contents slice; the bare
 commands still return the whole guide. A session keeps its old MCP process after an upgrade — reconnect it (`/mcp`,
@@ -86,7 +86,7 @@ Press `?` for the full key map. The left rail switches Attention, Runs and board
 
 ## Learn more
 
-- [QUICKSTART.md](QUICKSTART.md) — install, Settings, Attention and Tickets.
+- [QUICKSTART.md](QUICKSTART.md) — install, first run, updates, the board, agents.
 - [PRODUCT.md](PRODUCT.md) — the product contract: leases, reclaim, trees, and which issue serves which criterion.
 - [GUIDE.md](GUIDE.md) — the agent and operator guide: tools, schemas, renderers, coordination, install and updates.
 - [STYLE.md](STYLE.md) — the dark desktop visual contract.

@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { SOURCE_ROOT, isElectron } from './assets.ts';
 import { cliInfo, installedShim, installCli } from './cliinstall.ts';
+import { isBundle } from './assets.ts';
+import { launcherPath } from './install.ts';
 import { childEnv } from './electron-runtime.ts';
 
 export const CLIENT_IDS = ['claude', 'codex', 'opencode'] as const;
@@ -22,6 +24,11 @@ let writes = 0;
 
 export function mcpArgv(): string[] {
   if (isElectron()) return [installedShim() || 'hud', 'mcp'];
+  // a curl install registers its own launcher, so the client never depends on PATH
+  if (isBundle()) {
+    const launcher = launcherPath();
+    return existsSync(launcher) ? [launcher, 'mcp'] : [stableNode(), join(SOURCE_ROOT, 'hud.mjs'), 'mcp'];
+  }
   return [stableNode(), join(SOURCE_ROOT, 'bin', 'hud.js'), 'mcp'];
 }
 

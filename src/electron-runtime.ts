@@ -2,7 +2,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { appImageCliInvocation, appImageTarget } from './appimage-cli.ts';
-import { SOURCE_ROOT, isElectron, isPackaged } from './assets.ts';
+import { SOURCE_ROOT, isBundle, isElectron, isPackaged } from './assets.ts';
 
 export { isElectron };
 
@@ -57,6 +57,8 @@ export function packagedCliInvocation(): { cmd: string; prefix: string[]; env: N
 /** how to run the hud CLI here: command, args to prefix, and the env it needs */
 export function cliInvocation(): { cmd: string; prefix: string[]; env: NodeJS.ProcessEnv } {
   if (isElectron()) return packagedCliInvocation();
+  // an installed CLI re-execs its own bundle; a checkout runs the TypeScript entry
+  if (isBundle()) return { cmd: process.execPath, prefix: [join(SOURCE_ROOT, 'hud.mjs')], env: process.env };
   return { cmd: process.execPath, prefix: [join(SOURCE_ROOT, 'src', 'server.ts')], env: process.env };
 }
 

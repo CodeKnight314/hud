@@ -31,10 +31,18 @@ function computeSourceRoot(): string {
   try {
     here = realpathSync(here);
   } catch {}
-  return resolve(dirname(here), '..');
+  const dir = dirname(here);
+  // An installed CLI ships one flat directory (`hud.mjs` beside web/ and the docs). A checkout keeps
+  // sources in src/ (or bundle/), so the repo root is one level up.
+  if (existsSync(join(dir, 'hud.mjs')) && existsSync(join(dir, 'web'))) return dir;
+  return resolve(dir, '..');
 }
 
 export const SOURCE_ROOT = computeSourceRoot();
+
+/** the curl install: a flat bundled directory, not a checkout and not the Electron app */
+export const isBundle = (): boolean =>
+  !isElectron() && existsSync(join(SOURCE_ROOT, 'hud.mjs')) && existsSync(join(SOURCE_ROOT, 'web'));
 
 /** read an asset by its repo-relative path (e.g. "web/app.js") */
 export function asset(name: string, encoding: 'utf8' = 'utf8'): string | undefined {

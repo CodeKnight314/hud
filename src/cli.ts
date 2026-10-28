@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { isElectron } from './assets.ts';
+import { isBundle, isElectron } from './assets.ts';
 import { guideText, quickstartText } from './docs.ts';
 import { coordinationDoc, GuideError, renderGuide } from './guide.ts';
 import { guiLaunchEnv } from './electron-runtime.ts';
@@ -9,6 +10,8 @@ import { Hud } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
+import { appDir, fetchBundle, installedVersion, installRoot, releaseInfo as cliRelease, swapApp, unpackBundle } from './install.ts';
+import { compareVersions } from './updates.ts';
 import { formatMonitorTemplateList, listMonitorTemplates } from './monitor-templates.ts';
 import { line } from './summary.ts';
 import { formatViewReview } from './views.ts';
@@ -44,8 +47,10 @@ function brief(it: any): string {
 const HELP = `hud — live canvas of tickets & monitors for humans and agents
 
 usage:
+  hud                                start the server if needed and open the canvas in your browser
   hud serve                          run the server in the foreground
   hud start | stop | open            background server / stop it / open the canvas in a browser
+  hud update [--check]               replace this curl install with the latest release (verified)
   hud status                         server health: pid, port, data dir, mode, save error, recovered backup (never autostarts)
   hud reveal                         open the data directory in the file manager
   hud ls [board]                     text overview (all boards, or one)
@@ -230,7 +235,9 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   stop: { u: 'hud stop', max: 0, f: [] },
   status: { u: 'hud status [--json]', max: 0, f: ['json'] },
   reveal: { u: 'hud reveal', max: 0, f: ['json'] },
-  open: { u: 'hud open', max: 0, f: [] },
+  open: { u: 'hud [open]', max: 0, f: [] },
+  version: { u: 'hud version [--json]', max: 0, f: ['json'] },
+  update: { u: 'hud update [--check] [--json]', max: 0, f: ['check', 'json'] },
   ls: { u: 'hud ls [board] | hud ls tickets [board] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 2, f: ['board', 'json', ...FILTERS] },
   tickets: { u: 'hud tickets [board] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', max: 1, f: ['board', 'json', ...FILTERS] },
   find: { u: 'hud find <text...> [--board b] [--type t] [--status s,s] [--assignee a] [--owner o] [--project KEY] [--tag t] [--priority p] [--overdue] [--limit n] [--json]', min: 1, f: ['json', ...FILTERS] },
@@ -287,7 +294,8 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   mcp: { u: 'hud mcp | hud mcp install|uninstall|status|print|reconnect [clients...] [--dry-run]', f: '*' },
   cli: { u: 'hud cli [install|uninstall|status]', max: 1, f: [] },
 };
-const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', update: 'set', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment', trees: 'tree' };
+// `update` is the release updater now; editing an item is `hud set`
+const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment', trees: 'tree' };
 
 function detectActor() {
   if (process.env.HUD_ACTOR) return process.env.HUD_ACTOR;
@@ -347,8 +355,10 @@ async function main() {
   const argv = process.argv.slice(2);
   const { pos, flags } = parseArgs(argv);
   const [first, ...rest] = pos;
-  const cmd = first === undefined ? undefined : ALIAS[first] ?? first;
-  if (cmd === undefined || cmd === 'help') {
+  // bare `hud` is the everyday entry point: server up, canvas open in the browser
+  if (first === undefined && flags.help) return void console.log(HELP);
+  const cmd = first === undefined ? 'open' : ALIAS[first] ?? first;
+  if (cmd === 'help') {
     const sub = rest[0] && (ALIAS[rest[0]] ?? rest[0]);
     if (sub && CMDS[sub]) return void console.log(CMDS[sub].u);
     return void console.log(HELP);
@@ -404,6 +414,37 @@ async function main() {
       await hud.ensureServer();
       openApp(hud.url);
       return emit({ url: hud.url }, hud.url);
+    case 'version': {
+      const installed = installedVersion();
+      const info = await new Hud({ actor, autostart: false }).healthInfo().catch(() => null);
+      const lines = [`hud ${installed ?? 'unknown'}${isBundle() ? ' (curl install)' : ''}`, info ? `  server ${info.version ?? '?'} at ${hud.url} (pid ${info.pid})` : '  server not running'];
+      return emit({ version: installed, install: isBundle() ? installRoot() : null, server: info?.version ?? null, running: !!info }, lines.join('\n'));
+    }
+    case 'update': {
+      const release = await cliRelease();
+      const installed = installedVersion();
+      const newer = installed ? compareVersions(release.version, installed) > 0 : true;
+      if (!newer) {
+        const text = installed && compareVersions(release.version, installed) < 0
+          ? `hud ${installed} is newer than the latest release (${release.version})`
+          : `hud ${installed} is up to date (latest ${release.version})`;
+        return emit({ installed, latest: release.version, updated: false }, text);
+      }
+      if (flags.check === true) {
+        return emit({ installed, latest: release.version, available: true, page: release.pageUrl },
+          `hud ${installed ?? '?'} → ${release.version} is available; run \`hud update\` to install it`);
+      }
+      if (!isBundle()) throw new UsageError('this hud runs from a checkout; install the curl build before using hud update');
+      const debounce = mkdtempSync(join(tmpdir(), 'hud-update-'));
+      const { path } = await fetchBundle(release);
+      const root = unpackBundle(path, join(debounce, 'unpacked'));
+      const wasRunning = !!(await new Hud({ actor, autostart: false }).healthInfo().catch(() => null));
+      if (wasRunning) await stopServer(new Hud({ actor, autostart: false }));
+      swapApp(root);
+      if (wasRunning) await new Hud({ actor }).ensureServer();
+      const text = `hud ${installed ?? '?'} → ${release.version} installed at ${appDir()}${wasRunning ? '; server restarted' : ''}`;
+      return emit({ installed, latest: release.version, updated: true, restarted: wasRunning, appDir: appDir() }, text);
+    }
     case 'ls':
     case 'tickets': {
       // `hud ls tickets` reads the Linear list; plain `hud ls` keeps the canvas overview

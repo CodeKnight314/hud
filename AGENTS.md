@@ -10,9 +10,10 @@ hud is a local, live canvas of tickets, monitors, notes and frames, shared by a 
 (MCP, CLI, HTTP). The product contract is [PRODUCT.md](PRODUCT.md): the board enforces leases, reclaims work from
 a silent agent, and treats a ticket tree as owned decomposition. It coordinates; the human and the agents do the work.
 It's a single Node process, with no runtime dependencies in the server and no build step for the source tree.
-Node ≥ 23.6 runs the `.ts` files directly through type stripping. The UI is plain ES modules served as-is. A
-separate Electron shell (`electron/`, `npm run dist`) wraps the same server and UI as a desktop app for macOS,
-Windows and Linux; it bundles the sources with esbuild at build time only.
+Node ≥ 23.6 runs the `.ts` files directly through type stripping. The UI is plain ES modules served as-is.
+Users install it with `curl … | sh`: the release is one esbuild bundle plus `web/`, `views/`, `probes/` and the shipped
+docs, unpacked to `~/.hud/app` with a `~/.hud/bin/hud` launcher (see `scripts/install.sh`). Nothing is code-signed.
+An Electron shell (`electron/`) still wraps the same server for local development (`npm run dev`); it is not released.
 
 ## Layout
 ```
@@ -41,6 +42,7 @@ src/client.ts    the HTTP client (also the public TS API for external processes)
 src/summary.ts   plain-text board overview used by `hud ls` / hud_overview
 src/docs.ts      served guide text (`guideText`): relative links become URLs or in-page anchors
 src/guide.ts     full guide and coordination playbooks served to the CLI, HTTP and MCP; `fullGuide` is `guideText`
+src/install.ts   curl install: install root, release lookup, checksum verify, unpack, swap, and `hud update`
 src/config.ts    ROOT and env config (fixed port + per-user data dir; HUD_PORT/HUD_DATA/HUD_PROBES/HUD_VIEWS/HUD_URL need HUD_SCRATCH=1); packaged builds use per-user dirs
 src/assets.ts    source-vs-packaged file access. `isPackaged()` (Electron), `asset()`, `assetKeys()`,
                  SOURCE_ROOT, isElectron/isElectronDev. The ONLY place that knows where files live
@@ -60,6 +62,9 @@ views/           agent-authored chart renderers (display `view:<name>`), seeded 
                  views/README.md has no HTTP route; the served guide links it to the GitHub blob on 0.2.0
 probes/          built-in probes (tcp tls dns disk file-age) + examples (git process tail) + README
 bin/hud.js       source CLI entry
+scripts/install.sh, scripts/install.ps1  the curl installer (SHA256SUMS-verified, writes ~/.hud/bin/hud)
+scripts/pack-cli.mjs      builds dist-cli/hud-<version>.tar.gz + SHA256SUMS for a release
+scripts/check-install.ts  release lookup, checksum, unpack, swap and launcher-path checks
 scripts/build.mjs  esbuild bundles -> bundle/{hud,main}.mjs (npm run bundle); bundle/ and appdir/main.mjs are generated
 scripts/dev.mjs    dev launcher: Electron against the repo, scratch port + scratch data dir
 scripts/icons.mjs  generates build/icon.svg + icon.png, tray PNGs, web favicons from one geometry
@@ -220,7 +225,8 @@ Comments are the shape to copy. A new verb replaces `comment` in every row befor
 ## Develop & verify
 ```sh
 npm test                            # typecheck, JS syntax checks and pure regression suites
-node scripts/check-packaged.mjs <outputdir> [arch] # smoke-test a prepared package in temporary data/port
+node scripts/pack-cli.mjs           # the release tarball in dist-cli/ (bundle + web/ + docs)
+node scripts/check-packaged.mjs <outputdir> [arch] # dev-only: smoke-test a packaged Electron app
 ```
 Also verify changes against a **scratch instance**, never the user's live one:
 ```sh
@@ -283,70 +289,38 @@ EOF
 MCP can be exercised by piping JSON-RPC lines into `node src/mcp.ts` (initialize → tools/list → tools/call)
 with the same env vars.
 
-### The desktop app
+### The desktop app (development only)
 ```sh
 npm run dev     # Electron against this repo, scratch port 7399 + /tmp/hud-scratch
 npm run pack    # unpacked app in dist/ — the quick "does it still package?" check
-npm run dist    # installers (per-OS; each OS builds its own artifact)
+npm run dist    # installers for this OS (not released)
 ```
-`npm run dev` always uses a scratch port and data dir, so it can never touch the live board.
-To exercise the packaged path without installing, run the built binary with `HUD_BIN_DIR` set and
-`ELECTRON_RUN_AS_NODE=1 <binary> <resources>/hud/bin/hud.mjs <command>`.
+`npm run dev` always uses a scratch port and data dir, so it can never touch the live board. The app is not shipped:
+the release is the CLI tarball. `scripts/signing.mjs` and `scripts/adhoc-sign.mjs` stay for local signed builds, and
+read `CSC_LINK` / `CSC_KEY_PASSWORD` (macOS, plus `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER` or
+`APPLE_ID`/`APPLE_APP_SPECIFIC_PASSWORD`/`APPLE_TEAM_ID`) and `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`; CI signs and
+notarizes nothing.
 
-The native GitHub Actions workflow `.github/workflows/build.yml` runs on pushes to `release/**` branches or manual
-dispatch, and `v*` tag pushes. Branch/manual runs validate that `package.json`, `appdir/package.json` and both version
-fields in `package-lock.json` agree, then run four native jobs for macOS arm64/x64, Windows x64 and Linux x64. Each job
-runs `npm test`, builds installers, checks the signature and the packaged runtime, normalizes names and uploads
-seven-day artifacts. A tag must also be a stable `vX.Y.Z` matching all package versions. Only after all four jobs pass, CI gathers
-exactly five installers, validates their names and file signatures, writes `SHA256SUMS`, and creates a GitHub draft
-release. A person must review and publish that draft; Settings ignores drafts and prereleases. Settings can then
-download the matching installer, verify its SHA256 against `SHA256SUMS` over HTTPS (not a signature or notarization check), and replace the packaged app only after the person confirms.
-Launch-time checks never download or install.
+### Release build (CLI)
+`.github/workflows/build.yml` runs on pushes to `release/**`, manual dispatch, and `v*` tags. It validates that
+`package.json`, `appdir/package.json` and both `package-lock.json` version fields agree, runs `npm test` on Linux,
+macOS and Windows, then builds `dist-cli/hud-<version>.tar.gz` with `SHA256SUMS` and both install scripts, and
+smoke-tests the installer against that tarball. A tag must be a stable `vX.Y.Z` matching all four version fields;
+`scripts/release-assets.mjs` then checks the folder holds exactly `hud-<version>.tar.gz`, `SHA256SUMS`, `install.sh`
+and `install.ps1`, and CI creates a draft release. A person reviews and publishes that draft; `hud update` ignores
+drafts and prereleases.
 
-The package version is 0.2.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
-Settings reads that version. Leave published stable releases unchanged. A person publishes 0.2.0 by pushing
-the tag `v0.2.0`, reviewing the draft CI creates (five installers plus `SHA256SUMS`), and publishing that draft by hand.
-Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual
-workflow dispatch build temporary artifacts but do not create a release.
-
-### Release signing
-Stable macOS releases are Developer ID–signed and notarized, and stable Windows releases are Authenticode-signed, when
-the GitHub Actions secrets below are set on the repository. `scripts/signing.mjs` reads them in the native workflow.
-No certificate or password belongs in the repo. If a platform's secrets are all absent, that job stays unsigned,
-macOS notarization is turned off, and macOS falls back to the ad-hoc signature. If only some of a platform's secrets
-are set, the job fails.
-
-`APPLE_API_KEY` may be the `.p8` PEM or base64 of that file. The script writes it to a private temporary file
-(mode 0600, in a unique 0700 directory) and passes that path: electron-builder 26 forwards `APPLE_API_KEY` to
-`notarytool --key`, which requires a file. The directory is removed when the build step finishes. Prefer the API key. When
-both notarization methods are fully set, the API key is used. `CSC_NAME` is optional and is the identity name without
-the `Developer ID Application:` prefix. Leave `CSC_IDENTITY_AUTO_DISCOVERY` unset when `CSC_LINK` is set; `false`
-makes electron-builder ignore the imported certificate unless `CSC_NAME` is also set.
-
-| Secret | Value |
-|---|---|
-| `CSC_LINK` | base64 of a **Developer ID Application** `.p12` (certificate and private key). Not an Apple Development, Mac App Distribution or Developer ID Installer certificate. |
-| `CSC_KEY_PASSWORD` | Password for that `.p12`. |
-| `APPLE_API_KEY` | App Store Connect API key (`.p8`, **Developer** role): PEM text or base64 of the file. |
-| `APPLE_API_KEY_ID` | Key ID of that API key. |
-| `APPLE_API_ISSUER` | Issuer ID from App Store Connect → Users and Access → Integrations → App Store Connect API. |
-| `APPLE_ID` | Apple ID email. Alternate notarization, instead of the API key trio. |
-| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password from appleid.apple.com. Not the Apple ID password. |
-| `APPLE_TEAM_ID` | 10-character Team ID. Required with `APPLE_ID`. |
-| `WIN_CSC_LINK` | base64 of an exportable Authenticode `.pfx` (certificate and private key). EV hardware tokens do not work on GitHub-hosted runners. Re-export without the full chain if the value exceeds 8192 characters. |
-| `WIN_CSC_KEY_PASSWORD` | Password for that `.pfx`. |
-
-macOS needs `CSC_LINK` and `CSC_KEY_PASSWORD`, plus either `APPLE_API_KEY`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER`,
-or `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID`. Windows needs `WIN_CSC_LINK` and
-`WIN_CSC_KEY_PASSWORD`. Linux is unsigned. Encode with `base64 -i file | tr -d '\n'` on macOS or `base64 -w 0 file`
-on Linux. The workflow runs on `release/**`, manual dispatch and `v*` tags, not on pull requests. Do not create a tag
-or publish a draft just to try signing.
+The package version is 0.3.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+Leave published stable releases unchanged. A person publishes 0.3.0 by pushing the tag `v0.3.0`, reviewing the draft
+CI creates (the tarball, its checksums and the two install scripts), and publishing that draft by hand.
+Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual dispatch build temporary artifacts but do not create a release.
 
 ## Running & deploying
-The runtime the user actually uses is the **packaged desktop app** (`dist/mac-arm64/hud.app` on macOS). It owns the
-board: the app spawns its own bundled server (`…/hud.app/Contents/Resources/hud/bin/hud.mjs serve`, `mode: packaged`)
-on **7317**, with data in the per-user dir (`~/Library/Application Support/hud`). Agents reach that same server on
-7317; their MCP entries launch the source CLI, which is a thin HTTP client, so no second server is created.
+The runtime users have is the **curl install**: `~/.hud/app` (the esbuild bundle, `web/`, `views/`, `probes/` and the
+shipped docs) plus `~/.hud/bin/hud`. Bare `hud` starts the server if it is not running — port **7317**, data in the
+per-user dir, `mode: bundle` — and opens the board in the browser. Agent MCP entries point at that same launcher, which
+is a thin HTTP client, so no second server is created. `hud update` replaces `~/.hud/app` after verifying the
+release's `SHA256SUMS`, then restarts a running server.
 
 **There must be exactly one server per data dir.** `hud.lock` now enforces it: a second server on the same data dir
 prints `hud is already running for <dir> on port N (pid P)` and exits 1 (a dead pid's lock is taken over). Two servers on
@@ -362,13 +336,13 @@ Where the data comes from depends on how it is launched — the same command hit
 
 | launch | port | data |
 |---|---|---|
-| packaged app | 7317 | `~/Library/Application Support/hud` (`%APPDATA%\hud`, `$XDG_DATA_HOME/hud`) |
-| `node bin/hud.js …` from this repo | 7317 | same per-user dir as the app |
-| `npm run dev` (Electron) | 7399 | `/tmp/hud-scratch` |
+| `~/.hud/bin/hud` (curl install) | 7317 | `~/Library/Application Support/hud` (`%APPDATA%\hud`, `$XDG_DATA_HOME/hud`) |
+| `node bin/hud.js …` from this repo | 7317 | same per-user dir as the install |
+| `npm run dev` (Electron, dev only) | 7399 | `/tmp/hud-scratch` |
 
-To ship a source change to the app you must **rebuild** — the bundle (`bundle/hud.mjs`) holds the server code, and
-`web/`, `views/`, `probes/`, `GUIDE.md`, `QUICKSTART.md`, `STYLE.md`, `PLAYBOOKS.md` and `PRODUCT.md` are copied loose into `Resources/hud/`, so an un-rebuilt app serves stale UI and
-stale server code. Use `npm run pack` for a local package check or `npm run dist` for installers, as above.
+To ship a source change to users you **rebuild and release**: `node scripts/pack-cli.mjs` makes the tarball from
+`bundle/hud.mjs` plus the loose `web/`, `views/`, `probes/` and docs, and `hud update` installs it. The Electron app
+still needs its own `npm run pack` to see a change.
 
 Then quit and relaunch the app. Confirm the change landed in the *packaged* copy, not just the working tree:
 
