@@ -174,6 +174,22 @@ if (process.platform !== 'win32') {
   assert.equal(existsSync(join(optOutHome, '.zshrc')), false, 'HUD_NO_PATH_EDIT leaves the rc alone');
   assert.match(optedOut.stdout, /not on PATH yet/);
 
+  // a writable directory that is already on PATH gets a symlink instead of an rc edit
+  const linkedHome = join(root, 'linked-home');
+  const localBin = join(linkedHome, '.local', 'bin');
+  mkdirSync(localBin, { recursive: true });
+  const linked = runInstaller({
+    HOME: linkedHome,
+    HUD_HOME: join(linkedHome, '.hud'),
+    SHELL: '/bin/zsh',
+    PATH: `${localBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+  });
+  assert.equal(linked.status, 0, linked.stderr);
+  assert.match(linked.stdout, /linked .*\.local\/bin\/hud/);
+  assert.equal(existsSync(join(localBin, 'hud')), true, 'the launcher is linked into a PATH directory');
+  assert.equal(existsSync(join(linkedHome, '.zshrc')), false, 'no rc edit when a PATH directory accepts the link');
+  assert.match(linked.stdout, /run it now: hud/, 'the closing message does not point at an unwritten rc');
+
 } else {
   console.log('SKIP installer PATH check on Windows (POSIX install.sh)');
 }
