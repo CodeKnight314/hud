@@ -85,7 +85,7 @@ jobs:
           test -d "$work/web"
           node "$work/hud.mjs" version --json | grep -F "\"version\": \"$version\""
           node "$work/hud.mjs" --help > /dev/null
-          HUD_HOME="$work/home" HUD_ASSET_DIR="$PWD/dist-cli" HUD_NO_PATH_HINT=1 sh dist-cli/install.sh
+          HUD_HOME="$work/home" HUD_ASSET_DIR="$PWD/dist-cli" HUD_NO_PATH_EDIT=1 sh dist-cli/install.sh
           "$work/home/bin/hud" version --json | grep -F "\"version\": \"$version\""
           test -x "$work/home/bin/hud"
       - name: Upload the CLI release assets

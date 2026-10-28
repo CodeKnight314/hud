@@ -14,6 +14,7 @@ set -eu
 REPO="${HUD_REPO:-CodeKnight314/hud}"
 HUD_HOME=${HUD_HOME:-"$HOME/.hud"}
 VERSION=${HUD_VERSION:-}
+rc=""  # set when a shell rc block was written, so the closing message can point at it
 NODE=$(command -v node 2>/dev/null || true)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/hud-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
@@ -88,15 +89,6 @@ ensure_on_path() {
         ;;
     esac
   done
-  case ":$PATH:" in
-    *":/usr/local/bin:"*)
-      if [ -w /usr/local/bin ] && ln -sf "$HUD_HOME/bin/hud" /usr/local/bin/hud 2>/dev/null; then
-        say "linked /usr/local/bin/hud"
-        return 0
-      fi
-      ;;
-  esac
-
   case "$(basename "${SHELL:-sh}")" in
     zsh) rc="$HOME/.zshrc" ;;
     bash)
@@ -124,7 +116,10 @@ say ""
 if ensure_on_path; then
   case ":$PATH:" in
     *":$HUD_HOME/bin:"*) say "run it now: hud" ;;
-    *) say "open a new terminal, then run: hud (or right now: . \"$rc\" && hud)" ;;
+    *)
+      if [ -n "$rc" ]; then say "open a new terminal, then run: hud (or right now: . \"$rc\" && hud)"
+      else say "run it now: hud"; fi
+      ;;
   esac
 else
   say "hud is not on PATH yet. Add it with:"
