@@ -126,51 +126,57 @@ if (savedHome === undefined) delete process.env.HUD_HOME;
 else process.env.HUD_HOME = savedHome;
 
 // ---- installer PATH handling -----------------------------------------------------------------
-const installer = fileURLToPath(new URL('../scripts/install.sh', import.meta.url));
-const home = join(root, 'home');
-const assets = join(root, 'assets');
-mkdirSync(home, { recursive: true });
-mkdirSync(join(assets, 'tree', 'web'), { recursive: true });
-writeFileSync(join(assets, 'tree', 'hud.mjs'), '// bundled CLI\n');
-writeFileSync(join(assets, 'tree', 'web', 'index.html'), 'x');
-spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: assets, encoding: 'utf8' });
-renameSync(join(assets, 'bundle.tar.gz'), join(assets, 'hud-9.9.9.tar.gz'));
-const localSum = createHash('sha256').update(readFileSync(join(assets, 'hud-9.9.9.tar.gz'))).digest('hex');
-writeFileSync(join(assets, 'SHA256SUMS'), `${localSum}  hud-9.9.9.tar.gz\n`);
+// install.sh is POSIX; Windows users run install.ps1, which this suite does not execute.
+if (process.platform !== 'win32') {
+  const installer = fileURLToPath(new URL('../scripts/install.sh', import.meta.url));
+  const home = join(root, 'home');
+  const assets = join(root, 'assets');
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(assets, 'tree', 'web'), { recursive: true });
+  writeFileSync(join(assets, 'tree', 'hud.mjs'), '// bundled CLI\n');
+  writeFileSync(join(assets, 'tree', 'web', 'index.html'), 'x');
+  spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: assets, encoding: 'utf8' });
+  renameSync(join(assets, 'bundle.tar.gz'), join(assets, 'hud-9.9.9.tar.gz'));
+  const localSum = createHash('sha256').update(readFileSync(join(assets, 'hud-9.9.9.tar.gz'))).digest('hex');
+  writeFileSync(join(assets, 'SHA256SUMS'), `${localSum}  hud-9.9.9.tar.gz\n`);
 
-const runInstaller = (env: Record<string, string>) => spawnSync('sh', [installer], {
-  encoding: 'utf8',
-  env: {
-    ...process.env,
-    HOME: home,
-    SHELL: '/bin/zsh',
-    HUD_ASSET_DIR: assets,
-    HUD_HOME: join(home, '.hud'),
-    // no ~/.local/bin, ~/bin or /usr/local/bin, so the rc block is the path taken
-    PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
-    ...env,
-  },
-});
+  const runInstaller = (env: Record<string, string>) => spawnSync('sh', [installer], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      SHELL: '/bin/zsh',
+      HUD_ASSET_DIR: assets,
+      HUD_HOME: join(home, '.hud'),
+      // no ~/.local/bin, ~/bin or /usr/local/bin, so the rc block is the path taken
+      PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+      ...env,
+    },
+  });
 
-const first = runInstaller({});
-assert.equal(first.status, 0, first.stderr);
-assert.equal(existsSync(join(home, '.hud', 'bin', 'hud')), true, 'the launcher is written');
-const rcFile = join(home, '.zshrc');
-const rcText = readFileSync(rcFile, 'utf8');
-assert.equal(rcText.split('# hud: put the hud CLI on PATH').length - 1, 1, 'one marked PATH block');
-assert.match(rcText, /export PATH=".*\.hud\/bin:\$PATH"/);
-assert.match(first.stdout, /added .*\.hud\/bin to PATH in .*\.zshrc/);
+  const first = runInstaller({});
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(existsSync(join(home, '.hud', 'bin', 'hud')), true, 'the launcher is written');
+  const rcFile = join(home, '.zshrc');
+  const rcText = readFileSync(rcFile, 'utf8');
+  assert.equal(rcText.split('# hud: put the hud CLI on PATH').length - 1, 1, 'one marked PATH block');
+  assert.match(rcText, /export PATH=".*\.hud\/bin:\$PATH"/);
+  assert.match(first.stdout, /added .*\.hud\/bin to PATH in .*\.zshrc/);
 
-const secondRun = runInstaller({});
-assert.equal(secondRun.status, 0, secondRun.stderr);
-assert.equal(readFileSync(rcFile, 'utf8').split('# hud: put the hud CLI on PATH').length - 1, 1, 'a second install does not duplicate the block');
+  const secondRun = runInstaller({});
+  assert.equal(secondRun.status, 0, secondRun.stderr);
+  assert.equal(readFileSync(rcFile, 'utf8').split('# hud: put the hud CLI on PATH').length - 1, 1, 'a second install does not duplicate the block');
 
-const optOutHome = join(root, 'opt-out-home');
-mkdirSync(optOutHome, { recursive: true });
-const optedOut = runInstaller({ HOME: optOutHome, HUD_HOME: join(optOutHome, '.hud'), HUD_NO_PATH_EDIT: '1' });
-assert.equal(optedOut.status, 0, optedOut.stderr);
-assert.equal(existsSync(join(optOutHome, '.zshrc')), false, 'HUD_NO_PATH_EDIT leaves the rc alone');
-assert.match(optedOut.stdout, /not on PATH yet/);
+  const optOutHome = join(root, 'opt-out-home');
+  mkdirSync(optOutHome, { recursive: true });
+  const optedOut = runInstaller({ HOME: optOutHome, HUD_HOME: join(optOutHome, '.hud'), HUD_NO_PATH_EDIT: '1' });
+  assert.equal(optedOut.status, 0, optedOut.stderr);
+  assert.equal(existsSync(join(optOutHome, '.zshrc')), false, 'HUD_NO_PATH_EDIT leaves the rc alone');
+  assert.match(optedOut.stdout, /not on PATH yet/);
+
+} else {
+  console.log('SKIP installer PATH check on Windows (POSIX install.sh)');
+}
 
 rmSync(root, { recursive: true, force: true });
 console.log('PASS install: release parsing, checksum verification, unpack, swap and launcher paths');
