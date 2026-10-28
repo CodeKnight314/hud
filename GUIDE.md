@@ -1099,7 +1099,7 @@ The installed bundle runs the same local server the CLI and MCP use. It keeps da
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
 (one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
-directory. This tree's version is 0.3.0 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+directory. This tree's version is 0.3.1 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
 `hud version` prints it.
 
 ### Connections
@@ -1135,13 +1135,13 @@ esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `S
 against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
 `install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
 
-For v0.3.0, leave every published stable release unchanged. The four version fields already agree at 0.3.0.
+For v0.3.1, leave every published stable release unchanged. The four version fields already agree at 0.3.1.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.3.0`. CI verifies the tag against the four version fields, runs the test
+1. A person pushes the stable tag `v0.3.1`. CI verifies the tag against the four version fields, runs the test
    matrix, and builds the tarball.
 2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
-3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.0.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.1.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder
