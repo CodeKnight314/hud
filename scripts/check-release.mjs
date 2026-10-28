@@ -37,9 +37,11 @@ function writeRelease(dir, { omit = [], tamper = false, weakScript = null } = {}
     writeFileSync(path, member === 'package.json' ? JSON.stringify({ version: release }) : `${member}\n`);
   }
   const built = join(dir, tarball);
-  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '.'], { cwd: tree, encoding: 'utf8' });
+  // archive from the parent: the output must not land inside the tree being read, and Windows tar
+  // rejects an absolute C:\ output path
+  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: dir, encoding: 'utf8' });
   if (tar.status !== 0) throw new Error(tar.stderr);
-  renameSync(join(tree, 'bundle.tar.gz'), built);
+  renameSync(join(dir, 'bundle.tar.gz'), built);
   rmSync(tree, { recursive: true, force: true });
   const digest = createHash('sha256').update(readFileSync(built)).digest('hex');
   writeFileSync(join(dir, 'SHA256SUMS'), `${tamper ? 'f'.repeat(64) : digest}  ${tarball}\n`);

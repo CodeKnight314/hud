@@ -27,10 +27,10 @@ for (const entry of ['bundle/hud.mjs', 'web', 'views', 'probes', 'GUIDE.md', 'QU
 }
 
 const tarball = join(OUT, `hud-${version}.tar.gz`);
-const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '.'], { cwd: STAGE, encoding: 'utf8' });
+const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'stage', '.'], { cwd: OUT, encoding: 'utf8' });
 if (tar.error) throw new Error(`could not run tar: ${tar.error.message}`);
 if (tar.status !== 0) throw new Error(`tar failed: ${(tar.stderr || '').trim()}`);
-renameSync(join(STAGE, 'bundle.tar.gz'), tarball);
+renameSync(join(OUT, 'bundle.tar.gz'), tarball);
 
 const name = `hud-${version}.tar.gz`;
 const digest = createHash('sha256').update(readFileSync(tarball)).digest('hex');

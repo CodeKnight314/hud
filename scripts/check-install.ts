@@ -78,9 +78,9 @@ function makeBundle(dir: string, marker: string): string {
   writeFileSync(join(tree, 'web', 'index.html'), marker);
   writeFileSync(join(tree, 'package.json'), JSON.stringify({ version: '0.3.0' }));
   const tarball = join(dir, 'bundle.tar.gz');
-  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '.'], { cwd: tree, encoding: 'utf8' });
+  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: dir, encoding: 'utf8' });
   assert.equal(tar.status, 0, tar.stderr);
-  renameSync(join(tree, 'bundle.tar.gz'), tarball);
+  renameSync(join(dir, 'bundle.tar.gz'), tarball);
   return tarball;
 }
 
