@@ -21,8 +21,8 @@ Windows (PowerShell): `irm https://raw.githubusercontent.com/CodeKnight314/hud/m
 
 The installer downloads the latest stable release from
 [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest), checks it against the release's `SHA256SUMS`,
-and puts `hud` in `~/.hud/bin` (add that to `PATH` when it says so). It needs Node.js 18 or newer; there is no app
-bundle and no code signing. Then:
+and puts `hud` in `~/.hud/bin`, adding it to `PATH` (a symlink into a PATH directory, otherwise a marked block in your
+shell rc; `HUD_NO_PATH_EDIT=1` skips that). It needs Node.js 18 or newer; there is no app bundle and no code signing. Then:
 
 ```sh
 hud            # start the server if needed and open the board in your browser

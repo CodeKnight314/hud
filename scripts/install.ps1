@@ -76,11 +76,19 @@ try {
   Say '  hud mcp install     register hud with Claude Code, Codex and OpenCode'
   Say ''
   $binDir = Join-Path $Home_ 'bin'
-  if (($env:PATH -split ';') -notcontains $binDir) {
-    Say "add it to PATH for new terminals:"
-    Say "  setx PATH `"%PATH%;$binDir`""
-    Say ''
-    Say "or run it by path now: $launcher"
+  if (($env:PATH -split ';') -contains $binDir) {
+    Say 'run it now: hud'
+  } elseif ($env:HUD_NO_PATH_EDIT) {
+    Say "hud is not on PATH yet. Add $binDir to PATH, or run it by path now: $launcher"
+  } else {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) { $userPath = '' }
+    if (($userPath -split ';') -notcontains $binDir) {
+      $joined = (($userPath.TrimEnd(';')) + ';' + $binDir).TrimStart(';')
+      [Environment]::SetEnvironmentVariable('Path', $joined, 'User')
+      Say "added $binDir to your user PATH"
+    }
+    Say 'open a new terminal, then run: hud'
   }
 } finally {
   Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
