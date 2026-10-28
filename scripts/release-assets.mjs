@@ -82,7 +82,7 @@ async function prepareReleaseAssets(folderArgument, tag) {
   const actual = createHash('sha256').update(await readFile(resolve(folder, tarball))).digest('hex');
   if (actual !== listed[1]) throw new Error(`${tarball} does not match SHA256SUMS (expected ${listed[1]}, got ${actual})`);
 
-  const tar = spawnSync('tar', ['-tzf', resolve(folder, tarball)], { encoding: 'utf8' });
+  const tar = spawnSync('tar', ['-tzf', tarball], { cwd: folder, encoding: 'utf8' });
   if (tar.error) throw new Error(`could not run tar: ${tar.error.message}`);
   if (tar.status !== 0) throw new Error(`could not list ${tarball}: ${(tar.stderr || '').trim()}`);
   const members = new Set(tar.stdout.split('\n').map((line) => line.replace(/^\.\//, '').replace(/\/$/, '')).filter(Boolean));
