@@ -383,7 +383,7 @@ const TOOLS = [
   },
   {
     name: 'hud_lint',
-    description: 'Check a board’s dashboard, references, metrics, annotations, and comparisons for issues. Run after editing; use hud_readout for current observations and hud_guide for conventions.',
+    description: 'Check a board’s dashboard, references, metrics, annotations, and comparisons for issues. Run after editing; use hud_readout for current observations and hud_guide for conventions. It also flags wide parents (more than 7 open children) and integration siblings (a ticket waiting on most of its siblings) among tickets; run it after splitting work.',
     inputSchema: { type: 'object', properties: { board: { type: 'string' } } },
   },
   {

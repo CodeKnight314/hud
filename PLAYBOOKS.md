@@ -109,6 +109,22 @@ hud claim EGO-4 --start
 
 Add a ticket only for required implementation, the repair of a demonstrated defect, or a concrete open question.
 
+Nest by deliverable:
+
+- A child is part of its parent's deliverable. Order between tickets is `blockedBy`.
+- Keep at most 7 children per parent. Beyond that, group them under a ticket whose check is a real decision, for example "pick the tracks to advance".
+- A ticket that waits on most of its siblings integrates them. Make it their parent: `hud_link {id: "<sibling>", parent: "<integrator>"}`, `hud link <sibling> parent=<integrator>`.
+- Create later-phase tickets when the earlier phase reports, not up front.
+- Run lint after splitting. It warns `wide-parent` and `integration-sibling`.
+
+```
+hud_lint {board: "main"}
+```
+
+```
+hud lint main
+```
+
 ### 5. Work and share early
 
 Publish a FACT as soon as you have measured something: the inputs, the result, and what is still unverified. Publish a FAIL as soon as an approach is contradicted, with the conditions. Publish a STATUS when you switch hypothesis. Read the scope delta before each new subproblem.
@@ -298,6 +314,22 @@ hud link EGO-3 parent=EGO-1 blockedBy=EGO-2
 ```
 
 Leave a ticket with no fixed owner unassigned so any worker can pull it. The lead keeps the claim on the run ticket and leaves the children in the queue.
+
+Nest by deliverable:
+
+- A child is part of its parent's deliverable. Order between tickets is `blockedBy`.
+- Keep at most 7 children per parent. Beyond that, group them under a ticket whose check is a real decision, for example "pick the tracks to advance".
+- A ticket that waits on most of its siblings integrates them. Make it their parent: `hud_link {id: "<sibling>", parent: "<integrator>"}`, `hud link <sibling> parent=<integrator>`.
+- Create later-phase tickets when the earlier phase reports, not up front.
+- Run lint after splitting. It warns `wide-parent` and `integration-sibling`.
+
+```
+hud_lint {board: "main"}
+```
+
+```
+hud lint main
+```
 
 #### 2. Publish a FACT
 

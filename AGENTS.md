@@ -57,7 +57,8 @@ electron/settings.ts native Settings window, update and connection actions, and 
 electron/settings-preload.cjs the Settings-only, allowlisted context bridge
 electron/render.mjs screenshot helper used by the packaged server
 web/settings.html, settings.js, settings.css native desktop Settings interface (not the board renderer)
-web/             index.html, app.js, views.js, utils.js, style.css, programs.js, program-preview.js, table-controls.js
+web/             index.html, app.js, views.js, utils.js, style.css, programs.js, program-preview.js, table-controls.js,
+                 ticket-tree.js (the animated Tickets tree), tree-demo.html/.js (a scripted run of that tree, no server)
 views/           agent-authored chart renderers (display `view:<name>`), seeded into the data dir when packaged.
                  views/README.md has no HTTP route; the served guide links it to the GitHub blob on 0.2.0
 probes/          built-in probes (tcp tls dns disk file-age) + examples (git process tail) + README

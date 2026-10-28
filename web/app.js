@@ -1,5 +1,6 @@
 // hud — canvas client. No build step; plain ES module.
 import { claimWidgetHTML } from './claim-widget.js';
+import { createTicketTree } from './ticket-tree.js';
 import { persistenceBannerHTML, persistenceNotice, restoreTarget } from './persistence-banner.js';
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
@@ -2141,6 +2142,7 @@ function onEvent(e) {
   }
   if (e.kind === 'context') {
     S.contextCache.delete(e.entry.scope);
+    for (const ref of e.entry.refs || []) for (const tree of trees.values()) tree.pulse(ref, e.entry.kind);
     if (S.drawer) { const it = itemFor(S.drawer); if (it && scopeFor(it) === e.entry.scope) fillContext(it); }
     return;
   }
@@ -2164,6 +2166,8 @@ function onEvent(e) {
       Object.assign(e.item, { x, y, w, h });
     }
     S.items.set(e.item.id, e.item);
+    const finished = (t) => t?.status === 'done' || t?.status === 'canceled';
+    if (e.item.type === 'ticket' && prev && !finished(prev) && finished(e.item)) noteFinished(e.item.id);
     if (e.item.board === S.board) {
       renderItem(e.item);
       refreshDerived();
@@ -4191,8 +4195,9 @@ function renderList() {
     if (!list.length) return head + `<div class="tnone">${active ? 'no matching tickets' : 'no tickets'}</div>`;
     if (shape === 'board') return head + boardHTML(project, list);
     const out = [head];
-    if (shape === 'tree' || f.sort !== 'status') {
-      // tree keeps the parent/child nest and skips status buckets; a non-status sort does the same
+    if (shape === 'tree') return head + `<div class="ttree-host" data-tree-key="${esc(project?.id ?? '')}"></div>`;
+    if (f.sort !== 'status') {
+      // a non-status sort keeps the parent/child nest and skips status buckets
       for (const t of lfSort(list.filter(isRoot), f)) out.push(tree(t, 0));
       return out.join('');
     }
@@ -4218,10 +4223,42 @@ function renderList() {
     <div class="lhead"><span>tickets</span><span class="dim">${tickets.length} shown · ${allTickets.length} total</span><button class="btn sm" data-new="|todo">＋ ticket</button><button class="btn sm" data-new-project="1">＋ project</button></div>
     ${html.join('')}
   </div>`;
-  if (host.dataset.sig === out) return;
-  host.dataset.sig = out;
-  host.innerHTML = out;
-  applyReadonlyControls(host);
+  if (host.dataset.sig !== out) {
+    host.dataset.sig = out;
+    host.innerHTML = out;
+    applyReadonlyControls(host);
+  }
+  syncTrees(host, shape === 'tree' ? [...groups.map((g) => [g.project.id, g.list]), ...(loose.length ? [['', loose]] : [])] : [], allTickets);
+}
+
+/** one animated tree per project group, kept across renders so its nodes move instead of being rebuilt */
+const trees = new Map();
+/** ticket id -> time until a just-finished ticket leaves a tree that hides completed work */
+const justFinished = new Map();
+const FINISHED_LINGER_MS = 5000;
+function syncTrees(host, groups, allTickets) {
+  const now = Date.now();
+  const live = new Set();
+  for (const [key, list] of groups) {
+    const slot = host.querySelector(`.ttree-host[data-tree-key="${CSS.escape(key)}"]`);
+    if (!slot) continue;
+    live.add(key);
+    let tree = trees.get(key);
+    if (!tree) trees.set(key, (tree = createTicketTree({ onOpen: (id) => openDrawer(id) })));
+    if (tree.el.parentNode !== slot) slot.appendChild(tree.el);
+    const shown = new Set(list.map((t) => t.id));
+    const lingering = allTickets.filter((t) => !shown.has(t.id) && (justFinished.get(t.id) ?? 0) > now && (key ? t.project === key : !t.project));
+    const notes = new Map((S.queue?.items || []).map((r) => [r.id, r.note]));
+    tree.update([...list, ...lingering].map((t) => ({
+      id: t.id, ident: identOf(t), title: t.title || '', status: t.status || 'todo', parent: t.parent || null,
+      blockedBy: t.blockedBy || [], assignee: t.assignee || null, claimer: S.claims.get(t.id)?.actor || null, decision: needsDecision(t), note: notes.get(t.id) || null,
+    })));
+  }
+  for (const [key, tree] of trees) if (!live.has(key)) { tree.destroy(); trees.delete(key); }
+}
+function noteFinished(id) {
+  justFinished.set(id, Date.now() + FINISHED_LINGER_MS);
+  setTimeout(() => { justFinished.delete(id); scheduleList(); }, FINISHED_LINGER_MS + 50);
 }
 
 /** inline "new ticket" row — title, ⏎ to create, esc to cancel. No canvas coordinates involved. */

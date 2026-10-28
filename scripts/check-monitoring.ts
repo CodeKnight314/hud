@@ -349,6 +349,52 @@ function clearCanvasAndDeleteBoard() {
   assert.equal(reloaded.board(other.id), undefined, 'delete removes the board itself');
 }
 
+function ticketStructureLint() {
+  const { store } = fresh('ticket-lint');
+  const ticket = (project: string, title: string, patch: Record<string, unknown> = {}) => store.create({ type: 'ticket', board: 'main', project, title, ...patch }, ACTOR);
+  const found = (code: string) => store.lint('main').findings.filter((f) => f.code === code);
+
+  // The live-board shape: GRASP-1 has 8 children, and GRASP-7 waits on 5 of its 7 siblings.
+  const grasp = store.create({ type: 'project', title: 'Grasp', key: 'GRASP' }, ACTOR).id;
+  const root = ticket(grasp, 'grasp');
+  const kids = [2, 3, 4, 5, 6].map((n) => ticket(grasp, `track ${n}`, { parent: root.id }));
+  const integrate = ticket(grasp, 'integrate', { parent: root.id, blockedBy: kids.map((k) => k.id) });
+  const late = [ticket(grasp, 'track 8', { parent: root.id }), ticket(grasp, 'track 9', { parent: root.id })];
+  assert.equal(store.ident(integrate), 'GRASP-7');
+  let wide = found('wide-parent');
+  assert.equal(wide.length, 1, 'eight open children make one wide parent');
+  assert.equal(wide[0]!.id, root.id);
+  assert.equal(wide[0]!.severity, 'warning');
+  assert.equal(wide[0]!.message, 'GRASP-1 has 8 open children; group them under tickets whose check is a real decision, at most 7 per parent.');
+  let sibling = found('integration-sibling');
+  assert.equal(sibling.length, 1, 'only the ticket waiting on most siblings is flagged');
+  assert.equal(sibling[0]!.id, integrate.id);
+  assert.equal(sibling[0]!.severity, 'warning');
+  assert.equal(sibling[0]!.message, 'GRASP-7 waits on 5 of its 7 siblings (GRASP-2, GRASP-3, GRASP-4, GRASP-5, GRASP-6), so it integrates them: make it their parent with hud_link {id: "<blocker>", parent: "GRASP-7"} for each.');
+
+  // Finished tickets do not count: a done child narrows the parent and leaves the sibling denominator.
+  store.update(late[1]!.id, { status: 'done' }, ACTOR);
+  assert.equal(found('wide-parent').length, 0, 'seven open children are within range');
+  sibling = found('integration-sibling');
+  assert.equal(sibling.length, 1);
+  assert.match(sibling[0]!.message, /waits on 5 of its 6 siblings/);
+  for (const k of kids.slice(0, 3)) store.update(k.id, { status: 'canceled' }, ACTOR);
+  assert.equal(found('integration-sibling').length, 0, 'two open blockers are below the three-sibling floor');
+
+  // Five siblings with no blockers: nothing. Three blockers out of seven siblings is under half: still no sibling finding.
+  const neg = store.create({ type: 'project', title: 'Negative', key: 'NEG' }, ACTOR).id;
+  const negRoot = ticket(neg, 'flat');
+  const flat = [1, 2, 3, 4, 5].map((n) => ticket(neg, `part ${n}`, { parent: negRoot.id }));
+  const mine = (f: { id: string }) => [negRoot.id, ...flat.map((t) => t.id)].includes(f.id);
+  assert.equal(store.lint('main').findings.filter(mine).length, 0, 'five unblocked siblings raise no finding');
+  ticket(neg, 'part 6', { parent: negRoot.id });
+  ticket(neg, 'part 7', { parent: negRoot.id });
+  const partial = ticket(neg, 'part 8', { parent: negRoot.id, blockedBy: flat.slice(0, 3).map((t) => t.id) });
+  wide = found('wide-parent');
+  assert.deepEqual(wide.map((f) => f.id), [negRoot.id]);
+  assert(!found('integration-sibling').some((f) => f.id === partial.id), '3 of 7 siblings is under half');
+}
+
 async function main() {
   try {
     await migrationAndStalePersistence();
@@ -357,7 +403,8 @@ async function main() {
     dashboardTransactions();
     annotationsAndComparisonsPersist();
     clearCanvasAndDeleteBoard();
-    console.log('PASS: v8 migration/provenance, observation freshness and gaps, collector evidence, thresholds, null/zero/partial readings, typed table schema, dashboard transactions and bindings, annotations, comparisons, and stale-change persistence');
+    ticketStructureLint();
+    console.log('PASS: v8 migration/provenance, observation freshness and gaps, collector evidence, thresholds, null/zero/partial readings, typed table schema, dashboard transactions and bindings, annotations, comparisons, stale-change persistence, and ticket-structure lint');
   } finally {
     for (const store of stores) close(store);
     for (const root of roots) rmSync(root, { recursive: true, force: true });

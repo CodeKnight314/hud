@@ -54,14 +54,6 @@ async function waitForDOM(win, expression, label, timeout = 15_000) {
 }
 async function click(win, selector) { await browserEval(win, `document.querySelector(${JSON.stringify(selector)})?.click()`); }
 
-function rowPad(title) {
-  return `(() => {
-    const row = [...document.querySelectorAll('.trow')].find((r) => r.textContent.includes(${JSON.stringify(title)}));
-    if (!row) return 0;
-    return Number.parseFloat(getComputedStyle(row).paddingLeft) || 0;
-  })()`;
-}
-
 async function runUI(seedData) {
   const errors = [];
   const win = new BrowserWindow({ show: false, width: 1440, height: 960, backgroundColor: '#000000', webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: `ui-tickets-${Date.now()}` } });
@@ -91,13 +83,21 @@ async function runUI(seedData) {
     }))()`, 'claims request omits session so every lease is loaded');
 
     await click(win, '[data-shape="tree"]');
-    await waitForDOM(win, `document.querySelector('.lwrap.shape-tree') && !document.querySelector('.tstat')`, 'tree drops status groups');
-    const pads = await browserEval(win, `JSON.stringify({ parent: ${rowPad(ship)}, child: ${rowPad(nested)} })`);
-    const { parent, child } = JSON.parse(pads);
-    assert.ok(child > parent, `nested row is indented (${child} > ${parent})`);
-    const treeText = await browserEval(win, `document.querySelector('#list').textContent`);
-    assert.match(treeText, /→bob/);
-    assert.match(treeText, /⊕—/);
+    await waitForDOM(win, `document.querySelector('.lwrap.shape-tree .ttree .tt-node') && !document.querySelector('.tstat') && !document.querySelector('.lwrap.shape-tree .trow')`, 'tree draws nodes, not rows');
+    await new Promise((r) => setTimeout(r, 1200)); // let the springs settle
+    const ys = await browserEval(win, `JSON.stringify((() => {
+      const y = (t) => {
+        const g = [...document.querySelectorAll('.tt-node')].find((n) => n.querySelector('title').textContent.includes(t));
+        const m = g && /translate\\(([-\\d.]+) ([-\\d.]+)\\)/.exec(g.getAttribute('transform'));
+        return m ? Number(m[2]) : null;
+      };
+      return { parent: y(${JSON.stringify(ship)}), child: y(${JSON.stringify(nested)}) };
+    })())`);
+    const { parent, child } = JSON.parse(ys);
+    assert.ok(parent !== null && child !== null && child > parent, `nested node sits below its parent (${child} > ${parent})`);
+    const tips = await browserEval(win, `[...document.querySelectorAll('.tt-node title')].map((t) => t.textContent).join(' | ')`);
+    assert.match(tips, /assignee bob/);
+    assert.match(tips, /claimed by ui-tickets-check/);
 
     await click(win, `[data-proj-switch="${seedData.hud.id}"]`);
     await waitForDOM(win, `(() => {

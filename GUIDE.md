@@ -314,6 +314,10 @@ loose tickets on the board). Rename a project's key with `hud_project {action:"u
 Relationships are validated: a parent or dependency must be a ticket on the same board, and cycles are rejected, so
 the graph stays a DAG. Errors name the tickets involved rather than failing silently.
 
+**Nesting.** A child is part of its parent's deliverable, and order between tickets is `blockedBy`; keep at most 7 children
+per parent, grouped under a ticket whose check is a real decision. A ticket that waits on most of its siblings
+integrates them, so make it their parent, and run `hud_lint` (`hud lint <board>`) after splitting to catch both.
+
 **Keys and deletes.** Project keys are unique per board (409 on a duplicate). Moving a ticket to another project gives it
 the next number there, with a comment recording the old ident. Deleting a project detaches its tickets (renumbered into
 the board's loose sequence); deleting a ticket removes it from other tickets' `parent` (children move up to its parent),
@@ -325,8 +329,10 @@ list comments on it, changes its status or changes its assignee. The alert's `to
 The human reads the same structure in the **Tickets view** (or press `l` on a board). The human walkthrough — chips,
 list/tree/board, the completed filter — is [Tickets](QUICKSTART.md#tickets). Project chips switch
 the view to one project (or all of them); the project filter does the same. **list** groups by status, **tree**
-nests sub-tickets under their parents, and **board** is a column per status. Every task shows its assignee
-(`→name`) and its live claimer (`⊕name`); a dash means that side is unset. `＋` beside a status adds a ticket
+draws the ticket tree live (each node is an ident and a status glyph; elbows are `parent`, arrows are `blockedBy`,
+siblings run left to right in dependency order; a claimed node wears a ring, and context entries ripple from the
+tickets they ref), and **board** is a column per status. In list and board every task shows its assignee
+(`→name`) and its live claimer (`⊕name`); a dash means that side is unset. In the tree they are in the node's tooltip. `＋` beside a status adds a ticket
 inline. `hud ls tickets` prints the same ownership on each line. Filter that list with `project` and `owner`:
 `owner` is the claimer while a lease is held, otherwise the assignee, and `owner=none` (or `-`) matches tickets
 with neither.
@@ -794,7 +800,9 @@ previous read so an intervening board edit is detected. hud tracks which items t
 are moved to trash, matched cards retain their reading history, and unrelated board content is left alone. Use
 `hud_lint` to inspect the board before and after reconciliation. It reports missing units, definitions or sources,
 default freshness windows, unknown provenance, duplicate metric identities, incompatible comparisons, unresolved
-pipeline or program bindings, small or out-of-bounds cards and overlaps. Treat warnings as limits on interpretation;
+pipeline or program bindings, small or out-of-bounds cards and overlaps. Among open tickets it also warns of
+`wide-parent` (more than 7 open children) and `integration-sibling` (blocked by at least 3 of its open siblings, and
+at least half of them, so it should be their parent). Treat warnings as limits on interpretation;
 fix errors such as unresolved bindings before relying on the board.
 
 `hud_annotate` lists, adds or deletes a timestamped note on the board; times are epoch milliseconds. MCP list/add/delete
