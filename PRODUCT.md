@@ -16,13 +16,13 @@ what keeps monitors glanceable and tasks searchable.
 
 hud is a local coordination board for a person and several agents. Three rules hold:
 
-1. **Board-enforced leases.** Only the board grants an exclusive hold on a ticket. A live lease stays with its holder. One session holds one unfinished ticket. An assignee is durable ownership and blocks everyone else.
-2. **Reclaim of stuck agents.** A session that goes silent loses its leases. An expired lease returns to the queue. Takeover is allowed only once the holder's session is no longer live. A server restart drops every lease, because leases are not saved. Finishing, canceling or reassigning releases the lease.
-3. **Clear decomposition ownership (trees).** The parent ticket owns the split. Its children are that decomposition. A dependency (`blockedBy`) is not ownership. The parent remains a coordination node.
+1. **Board-enforced leases.** Only the board grants an exclusive hold on a ticket. A live lease stays with its holder, and only the holder (or the person) changes a claimed ticket's status, finishes it or deletes it. One session holds one unfinished ticket. An assignee is durable ownership and blocks everyone else.
+2. **Reclaim of stuck agents.** A session silent for 90 seconds, or idle for 15 minutes without hud calls, loses its leases. An expired lease returns to the queue. Takeover is allowed only once the holder's session is no longer live. A server restart drops every lease, because leases are not saved; MCP clients re-take theirs within a 60 second grace. Finishing, canceling or reassigning releases the lease.
+3. **Clear decomposition ownership (trees).** The parent ticket owns the split. Its children are that decomposition. A dependency (`blockedBy`) is not ownership. The parent remains a coordination node: a parent with unfinished children is not ready, and when the split is done it returns to the queue for the whole-task check.
 
 ## Board-enforced leases
 
-A claim is a lease the store grants. A second caller gets `409` `claimed`. The holder renews it by claiming again or by the session heartbeat. `start` moves the ticket to `doing` and is refused while the ticket is blocked (`blocked`). A session that already holds an unfinished ticket gets `one-claim`. A ticket assigned to someone else gets `assigned`. A finished ticket gets `finished`.
+A claim is a lease the store grants. A second caller gets `409` `claimed`. The holder renews it by claiming again or by the session heartbeat, which stops renewing after 15 minutes without hud calls. Anyone else who changes its status, finishes it or deletes it gets `claimed`. `start` moves the ticket to `doing` and is refused while the ticket is blocked (`blocked`). A session that already holds an unfinished ticket gets `one-claim`. A ticket assigned to someone else gets `assigned`. A finished ticket gets `finished`.
 
 The queue is the read model: ready work, then claimed, then done. A lead may pre-assign and link; everyone else pulls a ready row. Both are policies over the same leases.
 
@@ -30,7 +30,7 @@ Landed: [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-a
 
 ## Reclaim of stuck agents
 
-A session that stops heartbeating ends, and its leases release with it. A lease past its time-to-live releases on its own. While the holder is still live, takeover leaves the lease where it is. Once that session is gone and the lease has not yet expired, the next agent reclaims it with takeover (`hud claim <id> --takeover`). The lease also ends when the ticket is finished, canceled, trashed or reassigned, and when its board is cleared or deleted. Reopening a finished ticket does not restore the old lease. Leases are runtime-only, so a restart cannot pin a ticket to a dead agent.
+A session that stops heartbeating ends, and its leases release with it. A session that heartbeats but makes no hud call for 15 minutes keeps its presence while its leases run out. A lease past its time-to-live releases on its own. While the holder is still live, takeover leaves the lease where it is. Once that session is gone and the lease has not yet expired, the next agent reclaims it with takeover (`hud claim <id> --takeover`). The lease also ends when the ticket is finished, canceled, trashed or reassigned, and when its board is cleared or deleted. Reopening a finished ticket does not restore the old lease. Leases are runtime-only, so a restart cannot pin a ticket to a dead agent. For 60 seconds after a restart, tickets that were in progress are held out of the ready list while MCP clients re-take their leases.
 
 No open issue. Reclaim is already what the store and the guide do.
 

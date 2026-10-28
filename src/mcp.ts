@@ -20,6 +20,8 @@ import { formatAgentViewReview, VIEW_REVIEW_MAX_CHARS } from './views.ts';
 const VERSION = JSON.parse(asset('package.json', 'utf8') ?? '{"version":"0.0.0"}').version;
 
 const baseHud = new Hud({ actor: process.env.HUD_ACTOR ?? 'agent' });
+// no session header: background checks must not count as agent activity
+const bgHud = new Hud({ actor: baseHud.actor, session: '' });
 
 const ITEM_FIELDS = {
   title: { type: 'string' },
@@ -525,7 +527,7 @@ const TOOLS = [
   {
     name: 'hud_claim',
     description:
-      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board.',
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board. Status changes, finish and delete of a claimed ticket are holder-only; leases stop renewing after 15 min without hud calls.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -544,7 +546,7 @@ const TOOLS = [
   {
     name: 'hud_queue',
     description:
-      'Read the work queue: open, claimed and done tickets with owner, live session state, blockers and ready flag. Use it before claiming to pick complementary work; use hud_claim to take a ticket.',
+      'Read the work queue: open, claimed and done tickets with owner, live session state, blockers and ready flag. Use it before claiming to pick complementary work; use hud_claim to take a ticket. The header names live leads, rows show openChildren and the holder\'s latest STATUS note.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -561,7 +563,7 @@ const TOOLS = [
   {
     name: 'hud_context',
     description:
-      'Shared, append-only context for a run, project or board. Publish typed entries — FACT (a finding), FAIL (a contradicted approach), SUMMARY (state of the work), STATUS (short progress note) — and read only what changed since your last read. Corrections are new entries with corrects:<entryId>; entries are never edited. export writes a finished run\'s context and attachment bytes to backups/context-<id>-<ts>.zip; exports lists those snapshots.',
+      'Shared, append-only context for a run, project or board. Publish typed entries — FACT (a finding), FAIL (a contradicted approach), SUMMARY (state of the work), STATUS (short progress note) — and read only what changed since your last read. Corrections are new entries with corrects:<entryId>; entries are never edited. open:true reads only unresolved FAILs; ref limits a read to entries about one ticket. export writes a finished run\'s context and attachment bytes to backups/context-<id>-<ts>.zip; exports lists those snapshots.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -576,6 +578,8 @@ const TOOLS = [
         since: { type: 'number', description: 'read: last seen sequence number (omit to use your session cursor)' },
         limit: { type: 'number', description: 'read: at most this many entries (default 200)' },
         mark: { type: 'boolean', description: 'read: advance your session cursor (default true)' },
+        ref: { type: 'string', description: 'read: only entries that ref this ticket (id or KEY-n)' },
+        open: { type: 'boolean', description: 'read: unresolved FAILs only (no later entry corrects them); ignores since and never moves your cursor' },
         session: { type: 'string', description: 'publish/read: session name (default: this MCP session)' },
       },
     },
@@ -794,10 +798,14 @@ function sessionsMarkdown(r: { items: any[]; now: number }): string {
 
 function queueMarkdown(r: QueueResult): string {
   const c = r.counts;
-  const head = `## Queue · ${r.board}\n\n${c.ready} ready · ${c.open} open · ${c.claimed} claimed · ${c.blocked} blocked · ${c.done} done`;
+  const leads = r.leads?.length
+    ? r.leads.map((l) => `Lead: ${l.ident} "${l.title}" held by ${l.session}; scope ${l.scope}. Join it: hud_guide {playbook:"lead"}, worker loop.`)
+    : ['No live lead (no open run ticket with a live claim): follow hud_guide {playbook:"decentralized"}.'];
+  const grace = r.reclaimUntil ? [`Reclaim grace until ${localTime(r.reclaimUntil)}: tickets in progress before the restart are not ready yet.`] : [];
+  const head = `## Queue · ${r.board}\n\n${[...leads, ...grace].join('\n')}\n\n${c.ready} ready · ${c.open} open · ${c.claimed} claimed · ${c.blocked} blocked · ${c.done} done`;
   if (!r.items.length) return `${head}\n\nNo matching work.`;
-  const rows = r.items.map((t) => `| ${mdCell(t.ident)} | ${mdCell(t.status)}${t.ready ? ' · ready' : ''} | ${mdCell(t.owner ?? '—')} | ${t.session ? (t.session.live ? 'live' : 'ended') : '—'} | ${mdCell(t.blockedBy.join(', ') || '—')} | ${mdCell(t.title)} |`);
-  return [head, '', '| Ticket | Status | Owner | Session | Blocked by | Title |', '|---|---|---|---|---|---|', ...rows].join('\n');
+  const rows = r.items.map((t) => `| ${mdCell(t.ident)} | ${mdCell(t.status)}${t.ready ? ' · ready' : ''}${t.openChildren > 0 ? ` · ${t.openChildren} open children` : ''} | ${mdCell(t.owner ?? '—')} | ${t.session ? (t.session.live ? (t.session.idle ? 'idle' : 'live') : 'ended') : '—'} | ${mdCell(t.blockedBy.join(', ') || '—')} | ${mdCell(t.title)} | ${mdCell(t.note ?? '—')} |`);
+  return [head, '', '| Ticket | Status | Owner | Session | Blocked by | Title | Note |', '|---|---|---|---|---|---|---|', ...rows].join('\n');
 }
 
 function contextMarkdown(r: { entries: any[]; cursor: number; complete: boolean; truncated: boolean; oldest: number }, scope?: string): string {
@@ -880,6 +888,7 @@ async function readGuide(hud: Hud, opts: { section?: string; playbook?: string; 
 async function call(name: string, a: any): Promise<string | RichToolResult> {
   validate(name, a);
   const { actor, ...args } = a ?? {};
+  baseHud.session = sessionName();
   const hud = baseHud.forActor(actor ? String(actor) : baseActor);
   switch (name) {
     case 'hud_overview': {
@@ -1000,7 +1009,11 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       return cap(JSON.stringify(trimItem(it), null, 2));
     }
     case 'hud_delete':
-      return `trashed ${brief(await hud.remove(args.id))} (restore with hud_trash)`;
+    {
+      const it = await hud.remove(args.id);
+      forgetHeld([args.id, (it as any)?.id, (it as any)?.ident]);
+      return `trashed ${brief(it)} (restore with hud_trash)`;
+    }
     case 'hud_trash': {
       if (args.action === 'list') {
         const q = args.board ? `?board=${encodeURIComponent(args.board)}` : '';
@@ -1138,14 +1151,17 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       }
       if (action === 'release') {
         const c = await hud.releaseClaim(args.ticket, { session: name, reason: args.reason });
+        forgetHeld([args.ticket, c.ticket, c.ident]);
         return `released ${c.ident}${args.reason ? ` (${args.reason})` : ''}`;
       }
       if (action === 'renew') {
         const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl });
+        held.set(c.ticket, c.ident);
         return `${c.ident} renewed until ${localTime(c.expiresAt)}`;
       }
       if (action !== 'claim') throw new Error('action must be claim|renew|release|status|list');
       const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl, start: args.start, takeover: args.takeover });
+      held.set(c.ticket, c.ident);
       return `${c.ident} "${c.title}" claimed by ${c.session} until ${localTime(c.expiresAt)}${args.start ? '; ticket moved to doing' : ''}`;
     }
     case 'hud_queue': {
@@ -1174,7 +1190,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
         return `published ${e.kind} #${e.seq} ${e.scope} id=${e.id}`;
       }
       if (action !== 'read') throw new Error('action must be publish|read|scopes|export|exports');
-      const r = await hud.contextRead({ scope: args.scope, since: args.since, kinds: args.kind ? String(args.kind).split(',') : undefined, limit: args.limit, session, mark: args.mark });
+      const r = await hud.contextRead({ scope: args.scope, since: args.since, kinds: args.kind ? String(args.kind).split(',') : undefined, limit: args.limit, session, mark: args.mark, ref: args.ref, open: args.open });
       return cap(contextMarkdown(r, args.scope));
     }
     case 'hud_wait': {
@@ -1392,6 +1408,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
     case 'hud_finish': {
       await needBoard(args.board);
       const r = await hud.finish({ board: args.board, ids: args.ids, note: args.note, organize: args.organize, export: args.export, exportAll: args.exportAll });
+      if (Array.isArray(args.ids)) forgetHeld(args.ids);
       const exported = r.exports?.length ? `\n${r.exports.map((e) => `exported ${e.ident} → backups/${e.name} (${e.entries} entries, ${e.attachments} files)`).join('\n')}` : '';
       return (r.done.length ? `finished ${r.board}: ${r.done.join(', ')}` : `finished ${r.board}: nothing left to complete`) + exported;
     }
@@ -1410,6 +1427,16 @@ function alertText(a: any) {
 
 // ---------- alerts → this conversation (Claude Code channels) ----------
 const session: { name?: string } = {};
+/** leases this process holds: ticket id -> ident */
+const held = new Map<string, string>();
+function forgetHeld(keys: unknown[]) {
+  for (const k of keys) for (const [id, ident] of held) if (k === id || k === ident) held.delete(id);
+}
+let pendingNotices: string[] = [];
+function notice(text: string) {
+  pendingNotices.push(text);
+  out({ jsonrpc: '2.0', method: 'notifications/claude/channel', params: { content: `hud: ${text}`, meta: { notice: 'lease' } } });
+}
 let baseActor = baseHud.actor;
 let streaming = false;
 let lastAlert = -1;
@@ -1440,7 +1467,7 @@ async function startAlertStream() {
       const res = await fetch(baseHud.url + '/api/events');
       if (!res.ok || !res.body) throw new Error('events ' + res.status);
       // catch up on alerts raised while we were disconnected (first connect only skips history)
-      const missed: any[] = await baseHud.request('GET', `/api/alerts?all=1${lastAlert >= 0 ? `&since=${lastAlert}` : ''}`).catch(() => []);
+      const missed: any[] = await bgHud.request('GET', `/api/alerts?all=1${lastAlert >= 0 ? `&since=${lastAlert}` : ''}`).catch(() => []);
       if (lastAlert < 0) lastAlert = missed.reduce((m, a) => Math.max(m, a.id ?? 0), 0);
       else for (const al of missed) deliver(al);
       const reader = res.body.getReader();
@@ -1511,9 +1538,50 @@ async function registerPresence() {
   if (presenceRegistered) return;
   presenceRegistered = true;
   const clientVersion = stableVersion(VERSION);
-  try { await baseHud.sessionStart(sessionName(), { actor: baseActor, kind: 'agent', pid: process.pid, ...(clientVersion ? { clientVersion } : {}) }); } catch {}
-  heartbeatTimer = setInterval(() => { baseHud.sessionHeartbeat(sessionName()).catch(() => {}); }, 20_000);
+  baseHud.session = sessionName();
+  bgHud.actor = baseActor;
+  const start = (name: string) => baseHud.sessionStart(name, { actor: baseActor, kind: 'agent', pid: process.pid, ...(clientVersion ? { clientVersion } : {}) });
+  try { await start(sessionName()); } catch {}
+  heartbeatTimer = setInterval(() => { void beat(start); }, 20_000);
   heartbeatTimer.unref();
+}
+async function beat(start: (name: string) => Promise<unknown>) {
+  try {
+    const name = sessionName();
+    baseHud.session = name;
+    bgHud.actor = baseActor;
+    let r;
+    let revived = false;
+    try {
+      r = await baseHud.sessionHeartbeat(name);
+    } catch (e) {
+      // ended after a silence: its leases are gone; revive the session, then report them below
+      if ((e as { code?: string }).code !== 'session-ended') throw e;
+      revived = true;
+      await start(name);
+      r = await baseHud.sessionHeartbeat(name);
+    }
+    if (r.started) await start(name).catch(() => {});
+    const have = new Set((r.session.claims ?? []).map((c: any) => c.ticket ?? c.id ?? c));
+    for (const [id, ident] of [...held]) {
+      if (have.has(id)) continue;
+      if (r.started) {
+        try {
+          await bgHud.claim(id, { session: name });
+          notice(`hud restarted; your lease on ${ident} was re-taken.`);
+        } catch (e) {
+          held.delete(id);
+          notice(`hud restarted and your lease on ${ident} could not be re-taken (${(e as Error).message}). Run hud_claim {action:"status", ticket:"${ident}"} before changing it.`);
+        }
+        continue;
+      }
+      held.delete(id);
+      const it: any = await bgHud.get(id).catch(() => null);
+      if (!it || it.status === 'done' || it.status === 'canceled') continue;
+      const why = revived ? 'this session had ended after 90 s without a heartbeat' : 'idle for 15 minutes without hud calls, reassigned, or released by someone else';
+      notice(`your lease on ${ident} ended (${why}). Run hud_claim {action:"status", ticket:"${ident}"} and claim it again before changing it.`);
+    }
+  } catch {}
 }
 async function endPresence() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -1568,6 +1636,8 @@ async function handleOne(msg: any): Promise<void> {
     switch (method) {
       case 'initialize': {
         if (!process.env.HUD_ACTOR) baseHud.actor = baseActor = actorFromClient(params?.clientInfo?.name) ?? baseActor;
+        bgHud.actor = baseActor;
+        baseHud.session = sessionName();
         void registerPresence();
         // start streaming once the session has any watches (or HUD_SESSION is set); hud_watch/hud_ask also start it
         setTimeout(async () => {
@@ -1594,7 +1664,11 @@ async function handleOne(msg: any): Promise<void> {
       case 'tools/call':
         try {
           const result = await withTimeout(call(params?.name, params?.arguments), CALL_TIMEOUT, String(params?.name));
-          return void reply(typeof result === 'string' ? { content: [{ type: 'text', text: result }] } : result);
+          const pre = pendingNotices.length ? pendingNotices.map((n) => `⚠ hud: ${n}`).join('\n') + '\n\n' : '';
+          pendingNotices = [];
+          if (typeof result === 'string') return void reply({ content: [{ type: 'text', text: pre + result }] });
+          if (pre && result.content[0]?.type === 'text') result.content[0] = { type: 'text', text: pre + result.content[0].text };
+          return void reply(result);
         } catch (e) {
           return void reply({ content: [{ type: 'text', text: `error: ${(e as Error).message}` }], isError: true });
         }

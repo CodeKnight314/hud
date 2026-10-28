@@ -94,7 +94,8 @@ usage:
   hud claim list [--session s] [--board b] [--all]   this session's leases; --all lists every lease
   hud claim renew <id> [--ttl sec]   extend the lease this session already holds
   hud release <id> [--session s] [--reason text]   release a claim
-  hud context read [--scope run:<uuid>] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--session s]
+  hud context read [--scope run:<uuid>] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--ref KEY-n] [--open] [--session s]
+                                     --open: unresolved FAILs only; --ref: entries that reference a ticket
   hud context publish --scope run:<uuid> --kind FACT --text "…" [--data JSON] [--refs EGO-2] [--attach ID] [--corrects ID]
                                      append a typed finding to the shared context (never edit; publish a correction)
   hud context scopes [--board b]     list scopes with entries and last activity
@@ -180,8 +181,8 @@ examples:
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export']);
-const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'sha', 'section', 'playbook']);
+const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export', 'open']);
+const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'sha', 'section', 'playbook', 'ref']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'owner', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
 function parseVal(v: string): unknown {
@@ -257,7 +258,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
   claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] [--all] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'all', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
-  context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
+  context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--ref id] [--open] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
   attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
   wait: { u: 'hud wait [--scope s] [--ticket id] [--sessions a,b] [--kinds context,claim,session] [--since n] [--timeout sec] [--include-self] [--json]', max: 0, f: ['scope', 'ticket', 'sessions', 'kinds', 'since', 'timeout', 'include-self', 'session', 'json'] },
   changes: { u: 'hud changes --since ms [--json]', max: 0, f: ['since', 'json'] },
@@ -296,6 +297,30 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
 };
 // `update` is the release updater now; editing an item is `hud set`
 const ALIAS: Record<string, string> = { issues: 'tickets', get: 'show', new: 'add', delete: 'rm', tidy: 'organize', boards: 'board', projects: 'project', comments: 'comment', trees: 'tree' };
+
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'tcsh', 'csh']);
+
+/** same name the MCP server derives: <actor>-<claude pid>, else the first non-shell ancestor, else <actor>-cli */
+function derivedSession(actor: string): string {
+  const cp = Number(process.env.CLAUDE_PID);
+  if (Number.isInteger(cp) && cp > 0) return `${actor}-${cp}`;
+  if (process.platform !== 'win32') {
+    let pid = process.ppid;
+    for (let hop = 0; hop < 4 && pid > 1; hop++) {
+      try {
+        const out = execFileSync('ps', ['-o', 'ppid=,comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 1000 }).trim();
+        const m = /^(\d+)\s+(.*)$/.exec(out);
+        if (!m) break;
+        const name = basename(m[2]!.trim()).replace(/^-/, '');
+        if (!SHELLS.has(name)) return `${actor}-${pid}`;
+        pid = Number(m[1]);
+      } catch {
+        break;
+      }
+    }
+  }
+  return `${actor}-cli`;
+}
 
 function detectActor() {
   if (process.env.HUD_ACTOR) return process.env.HUD_ACTOR;
@@ -382,8 +407,8 @@ async function main() {
   }
   if (rest.length < (spec.min ?? 0) || (spec.max !== undefined && rest.length > spec.max)) throw new UsageError(rest.length < (spec.min ?? 0) ? `missing argument for "hud ${cmd}"` : `too many arguments for "hud ${cmd}"`);
 
-  const hud = new Hud({ actor, session: typeof flags.session === 'string' ? flags.session : undefined });
-  const session = (typeof flags.session === 'string' ? flags.session : undefined) ?? process.env.HUD_SESSION ?? `${actor}-cli`;
+  const session = (typeof flags.session === 'string' ? flags.session : undefined) ?? process.env.HUD_SESSION ?? derivedSession(actor);
+  const hud = new Hud({ actor, session });
   /** print text (control characters stripped), or the data as JSON under --json */
   const emit = (data: unknown, text?: string) => console.log(json || text === undefined ? (typeof data === 'string' ? data : JSON.stringify(data, null, 2)) : clean(text));
   const raw = (s: string) => console.log(s);
@@ -614,10 +639,16 @@ async function main() {
       const r = await hud.queue({ board: rest[0] ?? flags.board, status: flags.status, project: flags.project, assignee: flags.assignee, owner: flags.owner, includeDone: !!flags.all, limit: flags.limit === undefined ? undefined : Number(flags.limit) });
       const { counts } = r;
       const lines = r.items.map((t) => {
-        const marks = [t.ready ? 'ready' : '', t.blocked ? 'blocked' : '', t.claim ? 'claimed' : ''].filter(Boolean).join(',');
-        return `${t.ident.padEnd(8)} ${t.status.padEnd(9)} ${(t.owner ?? '—').padEnd(12)} ${marks.padEnd(18)} ${t.title}`;
+        const sess = t.session ? (!t.session.live ? 'ended' : t.session.idle ? 'idle' : 'live') : '';
+        const marks = [t.ready ? 'ready' : '', t.blocked ? 'blocked' : '', t.claim ? `claimed${sess ? ` (${sess})` : ''}` : ''].filter(Boolean).join(',');
+        const kids = t.openChildren > 0 ? ` · ${t.openChildren} open children` : '';
+        return `${t.ident.padEnd(8)} ${t.status.padEnd(9)} ${(t.owner ?? '—').padEnd(12)} ${marks.padEnd(24)} ${t.title}${kids}${t.note ? `\n${' '.repeat(9)}note: ${t.note}` : ''}`;
       });
-      return emit(r, `${r.board}: ${counts.ready} ready · ${counts.open} open · ${counts.claimed} claimed · ${counts.blocked} blocked · ${counts.done} done\n${lines.join('\n')}`.trimEnd());
+      const head = r.leads.length
+        ? r.leads.map((l) => `Lead: ${l.ident} "${l.title}" held by ${l.session}; scope ${l.scope}. Join it: hud guide lead, worker loop.`)
+        : ['No live lead (no open run ticket with a live claim): follow hud guide decentralized.'];
+      if (r.reclaimUntil) head.push(`Reclaim grace until ${new Date(r.reclaimUntil).toLocaleTimeString()}: tickets in progress before the restart are not ready yet.`);
+      return emit(r, `${head.join('\n')}\n${r.board}: ${counts.ready} ready · ${counts.open} open · ${counts.claimed} claimed · ${counts.blocked} blocked · ${counts.done} done\n${lines.join('\n')}`.trimEnd());
     }
     case 'session': {
       const sub = rest[0] ?? 'list';
@@ -634,7 +665,7 @@ async function main() {
       }
       if (sub === 'heartbeat') {
         const r = await hud.sessionHeartbeat(name);
-        return emit(r, `session ${r.session.id} live; ${r.renewed.length} claims renewed`);
+        return emit(r, `session ${r.session.id} ${r.started ? 're-created (it was unknown to the server); ' : ''}live; ${r.renewed.length} claims renewed`);
       }
       if (sub === 'end') {
         const r = await hud.sessionEnd(name);
@@ -748,7 +779,7 @@ async function main() {
         return emit(rows, rows.length ? rows.map((row) => `${row.name}  ${row.runId}  ${row.bytes}b  ${new Date(row.t).toLocaleString()}`).join('\n') : 'no context exports');
       }
       if (sub !== 'read') throw new UsageError(`unknown context command "${sub}" — try: hud context read|publish|scopes|export|exports`);
-      const r = await hud.contextRead({ scope: flags.scope as string | undefined, since: flags.since === undefined ? undefined : Number(flags.since), kinds: flags.kind === undefined ? undefined : String(flags.kind).split(','), limit: flags.limit === undefined ? undefined : Number(flags.limit), session, mark: !flags.peek });
+      const r = await hud.contextRead({ scope: flags.scope as string | undefined, since: flags.since === undefined ? undefined : Number(flags.since), kinds: flags.kind === undefined ? undefined : String(flags.kind).split(','), limit: flags.limit === undefined ? undefined : Number(flags.limit), ref: flags.ref as string | undefined, open: flags.open ? true : undefined, session, mark: !flags.peek });
       const lines = r.entries.map((e) => `#${e.seq} ${e.kind.padEnd(7)} ${e.actor.padEnd(10)} ${e.text}${e.corrects ? `  (corrects ${e.corrects})` : ''}`);
       return emit(r, `cursor=${r.cursor}${r.truncated ? ' (older entries pruned)' : ''}${r.complete ? '' : ' (more remain)'}\n${lines.join('\n')}`.trimEnd());
     }
