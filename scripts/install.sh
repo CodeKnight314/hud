@@ -8,7 +8,7 @@
 #   HUD_HOME=~/.hud          install root (app/ + bin/hud)
 #   HUD_REPO=owner/name      source repository
 #   HUD_ASSET_DIR=/path      install from local assets instead of GitHub (testing/offline)
-#   HUD_NO_PATH_HINT=1       do not print the PATH advice
+#   HUD_NO_PATH_EDIT=1       do not touch PATH or your shell rc; only print the line to add
 set -eu
 
 REPO="${HUD_REPO:-CodeKnight314/hud}"
@@ -72,21 +72,62 @@ exec "$NODE" "$HUD_HOME/app/hud.mjs" "\$@"
 LAUNCHER
 chmod 755 "$HUD_HOME/bin/hud"
 
+# Make `hud` work as typed: link into a PATH directory we can write, else add a marked block to the
+# login shell rc. Nothing is edited with HUD_NO_PATH_EDIT=1.
+ensure_on_path() {
+  case ":$PATH:" in *":$HUD_HOME/bin:"*) return 0 ;; esac
+  [ -n "${HUD_NO_PATH_EDIT:-}" ] && return 1
+
+  for dir in "$HOME/.local/bin" "$HOME/bin"; do
+    case ":$PATH:" in
+      *":$dir:"*)
+        if [ -d "$dir" ] && [ -w "$dir" ] && ln -sf "$HUD_HOME/bin/hud" "$dir/hud" 2>/dev/null; then
+          say "linked $dir/hud"
+          return 0
+        fi
+        ;;
+    esac
+  done
+  case ":$PATH:" in
+    *":/usr/local/bin:"*)
+      if [ -w /usr/local/bin ] && ln -sf "$HUD_HOME/bin/hud" /usr/local/bin/hud 2>/dev/null; then
+        say "linked /usr/local/bin/hud"
+        return 0
+      fi
+      ;;
+  esac
+
+  case "$(basename "${SHELL:-sh}")" in
+    zsh) rc="$HOME/.zshrc" ;;
+    bash)
+      if [ "$(uname -s)" = Darwin ] && [ -f "$HOME/.bash_profile" ]; then rc="$HOME/.bash_profile"
+      else rc="$HOME/.bashrc"; fi
+      ;;
+    *) rc="$HOME/.profile" ;;
+  esac
+  mkdir -p "$(dirname "$rc")"
+  if grep -qF "$HUD_HOME/bin" "$rc" 2>/dev/null; then
+    say "$rc already puts $HUD_HOME/bin on PATH"
+  else
+    printf '\n# hud: put the hud CLI on PATH\ncase ":$PATH:" in *":%s/bin:"*) ;; *) export PATH="%s/bin:$PATH" ;; esac\n' "$HUD_HOME" "$HUD_HOME" >> "$rc" || return 1
+    say "added $HUD_HOME/bin to PATH in $rc"
+  fi
+  return 0
+}
+
 say "hud $VERSION installed at $HUD_HOME"
-say ""
 say "  hud                 start the server and open the board in your browser"
 say "  hud status          server pid, port, data dir"
 say "  hud update          install the next release"
 say "  hud mcp install     register hud with Claude Code, Codex and OpenCode"
 say ""
-case ":$PATH:" in
-  *":$HUD_HOME/bin:"*) : ;;
-  *)
-    [ -n "${HUD_NO_PATH_HINT:-}" ] || {
-      say "add it to PATH (one line in ~/.zshrc or ~/.bashrc):"
-      say "  export PATH=\"$HUD_HOME/bin:\$PATH\""
-      say ""
-      say "or run it by path now: $HUD_HOME/bin/hud"
-    }
-    ;;
-esac
+if ensure_on_path; then
+  case ":$PATH:" in
+    *":$HUD_HOME/bin:"*) say "run it now: hud" ;;
+    *) say "open a new terminal, then run: hud (or right now: . \"$rc\" && hud)" ;;
+  esac
+else
+  say "hud is not on PATH yet. Add it with:"
+  say "  export PATH=\"$HUD_HOME/bin:\$PATH\""
+  say "or run it by path now: $HUD_HOME/bin/hud"
+fi

@@ -16,9 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/inst
 Windows, in PowerShell: `irm https://raw.githubusercontent.com/CodeKnight314/hud/main/scripts/install.ps1 | iex`
 
 The installer fetches the latest [stable release](https://github.com/CodeKnight314/hud/releases/latest), verifies it
-against that release's `SHA256SUMS`, and writes `~/.hud/bin/hud` (Windows: `%USERPROFILE%\.hud\bin\hud.cmd`). It
-prints the `PATH` line to add when the directory is not on yours yet. There is no app bundle, no installer to trust,
-and no Gatekeeper or SmartScreen dialog: nothing is signed, and nothing needs to be.
+against that release's `SHA256SUMS`, and writes `~/.hud/bin/hud` (Windows: `%USERPROFILE%\.hud\bin\hud.cmd`). It also
+puts that directory on your `PATH`: a symlink into a directory that is already there, otherwise a marked block in your
+shell rc (`HUD_NO_PATH_EDIT=1` opts out). Open a new terminal afterwards. There is no app bundle, no installer to
+trust, and no Gatekeeper or SmartScreen dialog: nothing is signed, and nothing needs to be.
 
 ## First run
 
