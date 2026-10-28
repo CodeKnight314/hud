@@ -195,7 +195,10 @@ to those bounds. The window letterboxes that surface: one scale for both axes, c
 side. Card coordinates stay in the 1600 × 900 space when the window changes — do not reflow a board to match the
 window. Auto layout is on by default; omit coordinates and let hud place and size visual cards.
 
-**Tickets are list objects, not canvas cards.** Use **Tickets** (or `l`) to search and manage them; clicking a row opens
+**Tickets are list objects, not canvas cards.** A ticket or project never carries a position: `hud_create`,
+`hud add ticket --x …`, or a `PATCH` with `x`/`y`/`w`/`h` is a 400 (`a ticket lives in the ticket tree, not on the
+canvas`). The canvas menu and the `t` shortcut open a new ticket row in the tree instead of placing a card. Use
+**Tickets** (or `l`) to search and manage them; clicking a row opens
 the inspector. Done and canceled tickets are hidden by default; **completed** reveals them, and an explicit status
 filter or search also finds them. The canvas shows monitors, notes, utilities and their frames. Double-click any
 visual card to open the inspector. Ticket-only frames and projects do not take canvas space. Ticket-heavy boards
@@ -1100,7 +1103,7 @@ The installed bundle runs the same local server the CLI and MCP use. It keeps da
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
 (one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
-directory. This tree's version is 0.3.2 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+directory. This tree's version is 0.3.3 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
 `hud version` prints it.
 
 ### Connections
@@ -1136,13 +1139,13 @@ esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `S
 against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
 `install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
 
-For v0.3.2, leave every published stable release unchanged. The four version fields already agree at 0.3.2.
+For v0.3.3, leave every published stable release unchanged. The four version fields already agree at 0.3.3.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.3.2`. CI verifies the tag against the four version fields, runs the test
+1. A person pushes the stable tag `v0.3.3`. CI verifies the tag against the four version fields, runs the test
    matrix, and builds the tarball.
 2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
-3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.2.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.3.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder

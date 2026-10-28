@@ -4,6 +4,14 @@ hud is a local board a person and several agents share. The board coordinates th
 
 The three rules below are the contract in this repo. The live Linear HUD project description does not state them. Copying this block into Linear is a separate step, and it is out of scope for the change that added this page. Issues RIC-7 through RIC-37 each map to one criterion. RIC-11, RIC-13, RIC-15, RIC-17, RIC-19, RIC-28, RIC-31, RIC-33, RIC-34, RIC-36 and RIC-37 have landed on 0.2.0; the other rows are still open.
 
+## Surfaces
+
+The canvas and the tree carry different objects. The **canvas** is for monitors: monitor cards, their charts, and the
+frames, notes and utilities that group or annotate them. The **tree** is for the work: tickets and projects, with
+`parent` as the ownership edge and `blockedBy` as the dependency. A ticket or a project has no canvas position;
+creating or patching one with `x`/`y`/`w`/`h` is refused, and the canvas menu does not create tickets. This split is
+what keeps monitors glanceable and tasks searchable.
+
 ## Three rules
 
 hud is a local coordination board for a person and several agents. Three rules hold:
