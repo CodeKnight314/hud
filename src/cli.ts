@@ -333,10 +333,16 @@ async function stopServer(hud: Hud): Promise<string> {
           process.kill(info.pid, 'SIGTERM');
         } catch {}
       }
-      return `stopped hud (pid ${info.pid})`;
+    } else {
+      await hud.request('POST', '/api/shutdown');
     }
-    await hud.request('POST', '/api/shutdown');
-    return 'stopped hud';
+    // The server answers the shutdown request before it exits; wait for the port so an immediate
+    // restart (hud update) cannot mistake the dying process for a live one.
+    for (let i = 0; i < 50; i++) {
+      if (!(await hud.healthInfo().catch(() => null))) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return info.pid ? `stopped hud (pid ${info.pid})` : 'stopped hud';
   }
   // not answering: the pid file only counts if that pid really is a hud server
   const file = join(config().dataDir, 'hud.pid');
