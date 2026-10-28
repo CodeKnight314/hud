@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HudError, STATE_VERSION, Store } from '../src/store.ts';
+import { HudError, LEASE_IDLE_MS, STATE_VERSION, Store } from '../src/store.ts';
 import { ticketsView } from '../src/summary.ts';
 import { attachmentPath, hashBytes, readAttachmentBytes, sanitizeName, setAttachmentsRoot, writeAttachmentBytes } from '../src/attachments.ts';
 import { buildZip, listZipEntries, zipEntry, zipSegment } from '../src/context-export.ts';
@@ -631,6 +631,188 @@ function forests() {
   finish(store);
 }
 
+/** 0.4.0 lease, fencing, grace, queue and context-read semantics */
+async function leaseFixes() {
+  const { store, file } = fresh('lease');
+  const priv = store as any;
+  // A1: ttl is kept across re-claim and heartbeat
+  store.sessionStart({ id: 'w1', actor: 'wa', kind: 'agent' }, 'wa');
+  const t1 = ticket(store, 'one');
+  store.claim(t1.id, { session: 'w1', ttl: 300 }, 'wa');
+  assert.equal(priv.claims.get(t1.id).ttlMs, 300_000);
+  store.claim(t1.id, { session: 'w1' }, 'wa');
+  assert.equal(priv.claims.get(t1.id).ttlMs, 300_000, 're-claim without ttl keeps ttlMs');
+  store.claim(t1.id, { session: 'w1', ttl: 60 }, 'wa');
+  assert.equal(priv.claims.get(t1.id).ttlMs, 60_000, 're-claim with ttl updates ttlMs');
+  const c = priv.claims.get(t1.id);
+  const base = Date.now();
+  c.expiresAt = base + 20_000;
+  const hb = store.sessionHeartbeat('w1', base);
+  assert.equal(hb.started, false);
+  assert.equal(hb.renewed.length, 1);
+  assert.equal(c.expiresAt, base + 60_000, 'heartbeat renews to ttlMs, not the default');
+  c.expiresAt = base + 40_000;
+  assert.equal(store.sessionHeartbeat('w1', base).renewed.length, 0, 'not renewed above half the ttl');
+
+  // A2: touch, idle, presence
+  store.sessionTouch('ghost');
+  store.sessionTouch('!!bad id!!');
+  assert.equal(priv.liveSessions.has('ghost'), false, 'touch never creates sessions');
+  const s = priv.liveSessions.get('w1');
+  s.lastActiveAt = 1;
+  s.lastSeenAt = 1;
+  store.sessionTouch('w1', 5000);
+  assert.equal(s.lastActiveAt, 5000);
+  assert.equal(s.lastSeenAt, 5000);
+  const later = base + LEASE_IDLE_MS + 60_000;
+  s.lastActiveAt = base;
+  c.expiresAt = later + 1_000;
+  const idleHb = store.sessionHeartbeat('w1', later);
+  assert.equal(idleHb.renewed.length, 0, 'idle session does not renew');
+  assert.equal(c.expiresAt, later + 1_000);
+  s.lastSeenAt = Date.now();
+  s.lastActiveAt = Date.now() - LEASE_IDLE_MS - 1000;
+  const view = store.sessions().items.find((x) => x.id === 'w1')!;
+  assert.equal(view.live, true);
+  assert.equal(view.idle, true);
+  assert.ok(typeof view.lastActiveAt === 'number');
+  assert.equal(store.queue('main').items.find((r) => r.id === t1.id)!.session!.idle, true);
+  s.lastActiveAt = Date.now();
+  assert.equal(store.sessions().items.find((x) => x.id === 'w1')!.idle, false);
+  // expires normally once idle
+  c.expiresAt = Date.now() - 1;
+  store.pruneCoordination();
+  assert.equal(store.claimOf(t1.id), null);
+
+  // A3: started flag
+  const r1 = store.sessionHeartbeat('fresh-one');
+  assert.equal(r1.started, true);
+  assert.equal(store.sessionHeartbeat('fresh-one').started, false);
+
+  // A4: fencing
+  store.sessionStart({ id: 'h', actor: 'holder', kind: 'agent' }, 'holder');
+  store.sessionStart({ id: 'o', actor: 'other', kind: 'agent' }, 'other');
+  const f1 = ticket(store, 'fenced');
+  const f2 = ticket(store, 'fenced two');
+  store.claim(f1.id, { session: 'h' }, 'holder');
+  expectError(() => store.update(f1.id, { status: 'review' }, 'other', { session: 'o' }), 409, 'claimed', 'update by non-holder');
+  expectError(() => store.update(f1.id, { status: 'review' }, 'holder', { session: 'o' }), 409, 'claimed', 'same actor, other session');
+  expectError(() => store.update(f1.id, { status: 'review' }, 'other'), 409, 'claimed', 'actor fallback');
+  expectError(() => store.finish({ ids: [f2.id, f1.id], session: 'o' }, 'other'), 409, 'claimed', 'finish by non-holder');
+  assert.equal(store.get(f2.id).status, 'todo', 'finish validates all before changing any');
+  expectError(() => store.remove(f1.id, 'other', { session: 'o' }), 409, 'claimed', 'remove by non-holder');
+  store.update(f1.id, { priority: 'high' }, 'other', { session: 'o' });
+  store.update(f1.id, { status: 'todo' }, 'other', { session: 'o' });
+  store.update(f1.id, { status: 'doing' }, 'holder', { session: 'h' });
+  store.update(f1.id, { status: 'review' }, 'holder');
+  store.update(f1.id, { status: 'doing' }, 'user');
+  store.update(f1.id, { status: 'review' }, 'hud');
+  // expired claim and dead holder do not fence
+  priv.claims.get(f1.id).expiresAt = Date.now() - 1;
+  store.update(f1.id, { status: 'doing' }, 'other', { session: 'o' });
+  priv.claims.get(f1.id).expiresAt = Date.now() + 60_000;
+  priv.liveSessions.get('h').lastSeenAt = 1;
+  store.update(f1.id, { status: 'review' }, 'other', { session: 'o' });
+  priv.liveSessions.get('h').lastSeenAt = Date.now();
+  store.finish({ ids: [f1.id], session: 'h' }, 'holder');
+  assert.equal(store.get(f1.id).status, 'done');
+  // bare finish skips tickets a peer holds instead of refusing the whole call
+  const b1 = store.create({ type: 'ticket', title: 'bare mine' }, 'other');
+  const b2 = store.create({ type: 'ticket', title: 'bare peer-held' }, 'other');
+  store.claim(b2.id, { session: 'h' }, 'holder');
+  const bare = store.finish({ session: 'o' }, 'other');
+  assert.ok(bare.done.includes(b1.id) && !bare.done.includes(b2.id), 'bare finish skips peer-held tickets');
+  assert.notEqual(store.get(b2.id).status, 'done');
+  expectError(() => store.finish({ ids: [b2.id], session: 'o' }, 'other'), 409, 'claimed', 'named finish is still refused');
+  store.releaseClaim(b2.id, { session: 'h' }, 'holder');
+  const f3 = ticket(store, 'start passes');
+  store.claim(f3.id, { session: 'o', start: true }, 'other');
+  assert.equal(store.get(f3.id).status, 'doing');
+  store.remove(f3.id, 'user');
+
+  // A6: openChildren, notes, leads
+  store.sessionStart({ id: 'lead', actor: 'lead', kind: 'agent' }, 'lead');
+  const parent = ticket(store, 'parent');
+  const kid = ticket(store, 'kid', { parent: parent.id });
+  let q = store.queue('main');
+  const prow = q.items.find((r) => r.id === parent.id)!;
+  assert.equal(prow.openChildren, 1);
+  assert.equal(prow.ready, false);
+  assert.equal(q.items.find((r) => r.id === kid.id)!.ready, true);
+  store.claim(parent.id, { session: 'lead' }, 'lead');
+  store.update(kid.id, { status: 'done' }, 'user');
+  q = store.queue('main');
+  assert.equal(q.items.find((r) => r.id === parent.id)!.openChildren, 0);
+  store.releaseClaim(parent.id, { session: 'lead' }, 'lead');
+  assert.equal(store.queue('main').items.find((r) => r.id === parent.id)!.ready, true, 'parent ready once children finish');
+  const noted = ticket(store, 'noted');
+  store.sessionStart({ id: 'n', actor: 'noter', kind: 'agent' }, 'noter');
+  store.contextPublish({ scope: 'board:main', kind: 'STATUS', text: 'old status', refs: [noted.id] }, 'noter');
+  store.claim(noted.id, { session: 'n' }, 'noter');
+  priv.claims.get(noted.id).claimedAt = Date.now() + 5;
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(store.queue('main').items.find((r) => r.id === noted.id)!.note, undefined, 'status before the claim is not a note');
+  store.contextPublish({ scope: 'board:main', kind: 'STATUS', text: 'first\nattempt', refs: [noted.id] }, 'noter');
+  store.contextPublish({ scope: 'board:main', kind: 'STATUS', text: 'x'.repeat(200), refs: [noted.id] }, 'noter');
+  store.contextPublish({ scope: 'board:main', kind: 'STATUS', text: 'unrelated' }, 'noter');
+  assert.equal(store.queue('main').items.find((r) => r.id === noted.id)!.note, 'x'.repeat(160));
+  const run = ticket(store, 'run ticket', { tags: ['Run'] });
+  const idle = ticket(store, 'idle run', { tags: ['run'] });
+  assert.equal(store.queue('main').leads.length, 0, 'unclaimed run ticket is not a lead');
+  store.claim(run.id, { session: 'lead' }, 'lead');
+  q = store.queue('main', { owner: 'nobody' });
+  assert.equal(q.leads.length, 1, 'leads ignore filters');
+  assert.deepEqual(q.leads[0], { ticket: run.id, ident: store.ident(store.get(run.id)), title: 'run ticket', scope: `run:${run.id}`, session: 'lead', actor: 'lead' });
+  priv.liveSessions.get('lead').endedAt = Date.now();
+  assert.equal(store.queue('main').leads.length, 0, 'ended holder is not a lead');
+  assert.ok(idle);
+
+  // A7: ref and open
+  const rb = ticket(store, 'ref target');
+  const fail1 = store.contextPublish({ scope: 'board:main', kind: 'FAIL', text: 'bad A', refs: [rb.id] }, 'noter');
+  const fail2 = store.contextPublish({ scope: 'board:main', kind: 'FAIL', text: 'bad B' }, 'noter');
+  store.contextPublish({ scope: 'board:main', kind: 'FACT', text: 'fact', refs: [rb.id] }, 'noter');
+  assert.deepEqual(store.contextRead({ scope: 'board:main', ref: rb.id, since: 0 }, { mark: false }).entries.map((e) => e.kind), ['FAIL', 'FACT']);
+  let open = store.contextRead({ scope: 'board:main', open: true, kinds: ['FACT'] }, { session: 'rd' });
+  assert.deepEqual(open.entries.map((e) => e.id), [fail1.id, fail2.id], 'open overrides kinds, oldest first');
+  assert.equal(open.complete, true);
+  store.contextRead({ scope: 'board:main' }, { session: 'rd' });
+  const cur = store.contextRead({ scope: 'board:main', since: 0 }, { mark: false }).cursor;
+  open = store.contextRead({ scope: 'board:main', open: true, since: cur }, { session: 'rd' });
+  assert.equal(open.entries.length, 2, 'open ignores since');
+  assert.equal(open.cursor, cur, 'open returns the unchanged cursor');
+  assert.equal(store.contextRead({ scope: 'board:main' }, { session: 'rd' }).entries.length, 0, 'open did not move the cursor');
+  assert.equal(store.contextRead({ scope: 'board:main', open: true, limit: 1 }, {}).complete, false);
+  store.contextPublish({ scope: 'board:main', kind: 'FACT', text: 'fixed', corrects: fail1.id }, 'noter');
+  open = store.contextRead({ scope: 'board:main', open: true }, {});
+  assert.deepEqual(open.entries.map((e) => e.id), [fail2.id]);
+  assert.equal(store.contextRead({ scope: 'board:main', open: true, ref: rb.id }, {}).entries.length, 0);
+
+  // A5: restart grace
+  const g = ticket(store, 'in progress', { status: 'doing' });
+  const g2 = ticket(store, 'review one', { status: 'review' });
+  store.flush();
+  finish(store);
+  const re = new Store(file);
+  assert.ok((re.reclaimUntil ?? 0) > Date.now());
+  let rq = re.queue('main');
+  assert.ok(rq.reclaimUntil && rq.reclaimUntil > Date.now());
+  assert.equal(rq.items.find((r) => r.id === g.id)!.ready, false);
+  assert.equal(rq.items.find((r) => r.id === g2.id)!.ready, false);
+  re.sessionStart({ id: 'rc', actor: 'rc', kind: 'agent' }, 'rc');
+  re.claim(g.id, { session: 'rc' }, 'rc');
+  re.releaseClaim(g.id, { session: 'rc' }, 'rc');
+  assert.equal(re.queue('main').items.find((r) => r.id === g.id)!.ready, true, 'claiming leaves the grace set');
+  assert.equal(re.queue('main').items.find((r) => r.id === g2.id)!.ready, false);
+  re.reclaimUntil = 0;
+  rq = re.queue('main');
+  assert.equal(rq.items.find((r) => r.id === g2.id)!.ready, true);
+  assert.equal(rq.reclaimUntil, undefined);
+  finish(re);
+  finish(store);
+}
+
+
 migration();
 sessions();
 claims();
@@ -644,4 +826,5 @@ await contextPagesKeepNewest();
 runContextExport();
 runContextExportComplete();
 forests();
+await leaseFixes();
 console.log('PASS coordination store checks');

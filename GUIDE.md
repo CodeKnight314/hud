@@ -111,7 +111,7 @@ MCP, the CLI and HTTP call the same store methods. A `KEY-n` ident is accepted a
 | List leases | `hud_claim {action:"list", all?:true, session?, board?}` | `hud claim list [--session s] [--board b] [--all]` | `GET /api/claims?session=&board=` |
 | Release a lease | `hud_claim {action:"release", ticket, reason?}` | `hud release <id> [--reason text]` | `DELETE /api/items/:id/claim?session=&reason=` |
 | Publish shared context | `hud_context {action:"publish", scope, kind, text}` | `hud context publish --scope s --kind FACT --text t` | `POST /api/context {scope, kind, text}` |
-| Read shared context | `hud_context {action:"read", scope?, since?}` | `hud context read [--scope s] [--since n]` | `GET /api/context` or `POST /api/context/read` |
+| Read shared context | `hud_context {action:"read", scope?, since?, open?, ref?}` | `hud context read [--scope s] [--since n] [--open] [--ref id]` | `GET /api/context?ref=&open=1` or `POST /api/context/read` |
 | List context scopes | `hud_context {action:"scopes", board?}` | `hud context scopes [--board b]` | `GET /api/context/scopes?board=` |
 | Update ticket status | `hud_update {id, status}` | `hud set <id> <status>` | `PATCH /api/items/:id {status}` |
 
@@ -344,7 +344,8 @@ the agents decide the work.
   `hud_session {action:"list"}` (or `hud session list`) shows name, kind, age and claims.
 - **A claim is an exclusive lease.** `hud_claim {ticket:"EGO-3"}` succeeds for the first caller and returns a 409 with
   `code:"claimed"` for everyone else. Leases last 120 s by default (15–900 via `ttl`); renew by calling `claim` again,
-  or rely on the session heartbeat. One session holds at most one unfinished claim, so two agents cannot silently grab
+  or rely on the session heartbeat. The heartbeat keeps the `ttl` you chose and renews in its second half, so a `ttl`
+  under about 40 s outlives no 20 s heartbeat: renew it by claiming again. One session holds at most one unfinished claim, so two agents cannot silently grab
   the same work. `start: true` also moves the ticket to `doing`; it is refused while the ticket is blocked.
   `hud_claim {action:"status", ticket}` and `GET /api/items/:id/claim` return the lease (`expiresAt`, `live`,
   `sessionLive`) or null when the ticket is free. `hud_claim {action:"list"}` lists this session's leases; pass
@@ -356,10 +357,28 @@ the agents decide the work.
   ownership: an agent cannot claim work assigned to someone else.
 - **Claims end with the work.** Finishing, canceling, trashing, clearing or deleting the board releases the lease.
   Reopening a finished ticket does not restore it. Assigning the ticket to someone else releases it too.
+- **Leases fence writes.** While a ticket's lease is unexpired and its session is live, only the holder (or the person)
+  can change its status, finish it or delete it; anyone else gets 409 `claimed` with `session` and `expiresAt`. The
+  holder is the same session, or the same actor when no session is sent; a `session` in the body or query beats the
+  `x-hud-session` header. Comments, links, `hud_ask` and assignee changes are not fenced (reassigning releases the
+  claim). Every `x-hud-session` request counts as activity; the MCP client and the CLI send it.
+- **Idle leases stop renewing.** The heartbeat keeps a session present, but it renews leases only while the session
+  made a hud call in the last 15 minutes (`lastActiveAt`). After that the lease runs out and expires normally. A
+  session row carries `lastActiveAt` and `idle`.
+- **Restarts re-take leases.** A restart drops every lease. For 60 s afterward (`reclaimUntil` in the queue) a ticket
+  that was `doing` or `review` before the restart and is unclaimed is not `ready`. The MCP client notices within about
+  20 s (the heartbeat returns `started: true` for a re-created session), re-claims its held tickets and says so in a
+  `⚠ hud:` notice on its next tool result.
+- **The CLI has a session.** `--session`, then `HUD_SESSION`, then `<actor>-<CLAUDE_PID>` under Claude Code (the same
+  session as that agent's MCP), otherwise `<actor>-<pid>` of the first non-shell ancestor process, else `<actor>-cli`.
 - **The queue is the read model.** `hud_queue` returns `open`, `claimed` and `done` rows with owner, live session state,
   blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
   `hud_queue {includeDone: true}` includes finished tickets. Each claimed row names the holding session. The board
   canvas shows that ready count and each claim's session name, ticket and lease time without opening Runs.
+  A row adds `openChildren` (direct children not finished; `ready` needs `0`, so a parent returns to the queue for the
+  whole-task check once its split is done) and, on claimed rows, `note` (the newest `STATUS` entry that refs the ticket
+  since the claim). The result adds `leads` (open `run` tickets with a live claim: `ticket`, `ident`, `title`, `scope`,
+  `session`, `actor`) and, during the restart grace, `reclaimUntil`. The queue row's session reports `idle`.
 
 Two coordination policies use the same primitives. Each has a copy-paste playbook — claim, publish a FACT, wait,
 finish — plus what to do on an expired lease, a blocked ticket, and an assignee conflict. Fetch that playbook on its
@@ -372,8 +391,9 @@ own:
 
 `centralized` is an alias of `lead`. The playbook is the procedure. The primitives above are the reference.
 
-- **Decentralized:** every agent calls `hud_queue`, picks a `ready` row, claims it with `start: true`, publishes a
-  FACT, waits when a peer holds the next fact, and finishes. No planner.
+- **Decentralized:** every agent calls `hud_queue` (its header names any live lead), reads the scope and its open
+  FAILs, claims a `ready` row with `start: true`, announces with a STATUS, splits when the ticket is too big,
+  publishes FACTs and FAILs early, waits only after independent work, and finishes. No planner.
 - **Lead:** a lead creates sub-tickets with `parent` and `blockedBy`, pre-assigns `assignee` where ownership is
   fixed, and leaves the rest in the queue for pull. Workers run the worker loop in the lead playbook. The lead's
   waits show up as blocked or claimed rows.
@@ -383,7 +403,7 @@ The queue says *what* to do; the shared context records *what was learned*. It i
 **run**, a **project** or a **board**, and agents read only what changed since their last read.
 
     hud_context {action: "publish", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", kind: "FACT", text: "…", refs?, data?, attachments?, corrects?}
-    hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", since?, kind?, limit?, mark?}
+    hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", since?, kind?, limit?, mark?, ref?, open?}
     hud_context {action: "scopes", board?}
 
 - **Scopes:** `run:<uuid>` is `run:` plus the ticket's `id` from `hud_get` (a uuid; the example above is the shape), and
@@ -392,10 +412,14 @@ The queue says *what* to do; the shared context records *what was learned*. It i
   derived from the scope, so entries never drift across boards. A lead FACT on `run:<uuid>` is not included in a
   `board:main` read — list scopes, or `hud_get` the run ticket, and read `run:<uuid>`. A finished run (`done` or
   `canceled`) keeps the tag and the scope log. The playbooks follow lead only while that ticket is open (`backlog`,
-  `todo`, `doing`, `review`, or `blocked`).
+  `todo`, `doing`, `review`, or `blocked`) and its claim is live; `hud_queue` names it in `leads`.
 - **Kinds:** `FACT` is a finding supported by observations; `FAIL` is an approach or hypothesis that was contradicted,
   with the conditions under which it failed; `SUMMARY` is the state of a finished or handed-off piece of work;
   `STATUS` is a short progress note. Facts and failures are what let a peer skip a dead end.
+- **Open FAILs.** `open: true` returns only the `FAIL` entries in the scope that no retained entry `corrects`,
+  oldest-first up to `limit`. It ignores `since` and `kinds` and never moves the cursor. `ref` (a ticket id or `KEY-n`)
+  keeps only entries whose `refs` include that ticket. A FAIL stays open until a later entry corrects it, with the
+  fix or with why it no longer applies. Read `open:true, ref` before you finish.
 - **Append-only.** There is no edit or delete. Correct an entry by publishing a new one with `corrects: "<entry id>"`.
   Readers see both, so the correction is visible without erasing the history.
 - **Delta reads.** Every entry has a monotonically increasing `seq`. `read` with `since: <seq>` returns only newer
@@ -1032,7 +1056,7 @@ responded.
 ## Finishing a run
 When you're done, call `hud_finish {board?, ids?, note?, export?, exportAll?}` (`hud finish [--export] [--all]`). It marks the named items complete and tidies
 the board (re-runs organize) so the canvas ends up clean. Pass `organize: false` to leave the layout alone. With no `ids` it only completes items you created or are assigned, and
-only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work.
+only push/manual monitors; it never touches tickets awaiting a decision, `canceled` tickets or other actors' work. A bare finish also skips tickets another live session holds; naming such a ticket in `ids` is refused whole with 409 `claimed`.
 Finishing releases your claim on those tickets. If you coordinated with peers, publish a final `SUMMARY` entry before
 finishing so the next session can start from what you learned. `export: true` (`--export`) snapshots each run ticket this call marks `done`, to
 `backups/context-<id>-<ts>.zip`. It does not walk back through runs that are already finished. Pass `ids` to snapshot those runs as well, including one that is already `done` or `canceled` (`hud finish <id> --export`, or `hud context export <id>` after the fact). `exportAll: true` (`--export --all`) snapshots every `done` or `canceled` run you created or are assigned on the board, and leaves a canceled run `canceled`. The response includes `exports`. The same snapshot is `hud context export <run>`
@@ -1103,7 +1127,7 @@ The installed bundle runs the same local server the CLI and MCP use. It keeps da
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
 (one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
-directory. This tree's version is 0.3.3 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+directory. This tree's version is 0.4.0 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
 `hud version` prints it.
 
 ### Connections
@@ -1139,13 +1163,13 @@ esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `S
 against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
 `install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
 
-For v0.3.3, leave every published stable release unchanged. The four version fields already agree at 0.3.3.
+For v0.4.0, leave every published stable release unchanged. The four version fields already agree at 0.4.0.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.3.3`. CI verifies the tag against the four version fields, runs the test
+1. A person pushes the stable tag `v0.4.0`. CI verifies the tag against the four version fields, runs the test
    matrix, and builds the tarball.
 2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
-3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.3.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.4.0.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder

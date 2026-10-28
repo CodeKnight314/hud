@@ -127,7 +127,8 @@ bundle/, dist/   build output (git-ignored)
   lets any `:id` route accept an ident. `projectsView()` is the read model the list UI, `hud ls tickets`, `hud_tickets`
   and the CLI all share. Don't write these fields directly and don't infer links from titles.
 - **Presence and claims are runtime-only.** `Store.liveSessions` and `Store.claims` are never persisted, exported or
-  written on a heartbeat; a restart intentionally forgets them. Claim release is wired into every "became done"
+  written on a heartbeat; a restart intentionally forgets them. Leases fence writes (status change, finish, delete by a
+  non-holder is 409 `claimed`), and `lastActiveAt` and the restart reclaim set are runtime-only too. Claim release is wired into every "became done"
   path (`update`, `finish`, `syncTickets`) plus trash, board clear/delete and reassign. A claim never changes status
   by itself; `start:true` goes through `update()`. Use the 409 `code` values (`claimed`, `one-claim`, `finished`,
   `assigned`, `blocked`) rather than adding status codes.
@@ -313,8 +314,8 @@ smoke-tests the installer against that tarball. A tag must be a stable `vX.Y.Z` 
 and `install.ps1`, and CI creates a draft release. A person reviews and publishes that draft; `hud update` ignores
 drafts and prereleases.
 
-The package version is 0.3.3 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
-Leave published stable releases unchanged. A person publishes 0.3.3 by pushing the tag `v0.3.3`, reviewing the draft
+The package version is 0.4.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+Leave published stable releases unchanged. A person publishes 0.4.0 by pushing the tag `v0.4.0`, reviewing the draft
 CI creates (the tarball, its checksums and the two install scripts), and publishing that draft by hand.
 Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual dispatch build temporary artifacts but do not create a release.
 

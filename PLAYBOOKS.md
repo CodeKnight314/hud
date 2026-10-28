@@ -9,86 +9,127 @@ Follow one playbook. Fetch it on its own, then do what it says:
 
 `centralized` is the same playbook as `lead`. `hud guide playbooks` prints this page only.
 
-Decentralized: every agent pulls ready work. There is no planner.
+Decentralized: every agent pulls ready work. Any agent may split a ticket into children. There is no planner.
 Lead: one agent creates the run, the links and the assignees. Everyone else runs the worker loop in that playbook.
 
-A lead FACT is stored on `run:<uuid>`, so a read of `board:main` does not show it. A live lead is an open ticket tagged `run` (`backlog`, `todo`, `doing`, `review`, or `blocked`). Look first:
+Which playbook: decentralized suits 2-3 agents on one task where any agent may split work. Lead suits work one agent should split and integrate. DeLM (arXiv 2606.10662), the model for both, measured its gains with 2 agents and saw a small accuracy drop at 4.
 
-    hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
-    hud_context {action: "scopes"}
+Look first. The queue header names any live lead: an open ticket tagged `run` whose claim is held by a live session.
 
-    hud tickets --tag run --status backlog,todo,doing,review,blocked
-    hud context scopes
+    hud_queue {}
+    hud queue
 
-Then `hud_get` / `hud show` a ticket from that open list and read `run:` plus its `id` (a uuid, for example `run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80`). A FACT there, or an empty read of that open ticket, means follow `hud guide lead`. A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty. Both playbooks start with the same lookup.
+A lead means follow `hud guide lead` (the worker loop) on its scope. No lead means follow `hud guide decentralized`. A `run` ticket with no live claim is not a lead. It may be a training-run summary, or a lead that died.
 
-Each playbook is claim, publish a FACT, wait, finish. The same page covers an expired lease, a blocked ticket, and an assignee conflict.
+Each playbook is claim, publish a FACT, wait, finish. The same page covers a lost lease, an expired lease, a blocked ticket, and an assignee conflict.
 
 <!-- playbook:decentralized -->
 
 ## Decentralized
 
-Every agent pulls from the same queue. Run the four steps in order. Recovery for an expired lease, a blocked ticket, and an assignee conflict is at the bottom of this playbook.
+Every agent pulls from the same queue. Run the steps in order. Recovery for a lost or expired lease, a blocked ticket, and an assignee conflict is at the bottom of this playbook.
 
-Your actor is `HUD_ACTOR`, or the MCP client name (`claude`, `codex`, `cursor`, and so on). MCP registers your session on connect and heartbeats every 20 seconds, which renews a lease. On the CLI, renew with `hud session heartbeat` or by claiming the same ticket again. One session holds one unfinished claim.
+Your actor is `HUD_ACTOR`, or the MCP client name (`claude`, `codex`, `cursor`, and so on). MCP registers your session on connect and heartbeats every 20 seconds. A lease stops renewing after 15 minutes without hud calls, so publish, claim or read within that. On the CLI, run `hud session heartbeat` or claim the same ticket again at least every 60 seconds; any other hud command keeps the session present but does not extend the lease. Under Claude Code with hud's MCP connected, the CLI shares that MCP session, so its heartbeat renews the lease. One session holds one unfinished claim.
 
-A lead FACT lives on `run:<uuid>` (the run ticket's `id` from `hud_get`). Reading `board:main` does not return it. Do step 0 before you claim. When step 0 finds no open run, publish on `board:<board id>` from the queue header (`board:main` on the default board). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
+Publish on `board:<board id>` from the queue header (`board:main` on the default board). Claim, wait, link and finish take a `KEY-n` ident such as `EGO-3`.
 
-### 0. Read a lead FACT
-
-```
-hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
-hud_context {action: "scopes"}
-hud_get {id: "EGO-1"}
-hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
-```
-
-```
-hud tickets --tag run --status backlog,todo,doing,review,blocked
-hud context scopes
-hud show EGO-1
-hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
-```
-
-The status filter is the open list. It finds the run ticket before the first publish. `hud_get` / `hud show` returns its `id` and `status`. Read `run:` plus that uuid. The uuid in the example is the shape of `id`. `scopes` prints every scope that already has entries, including a finished run.
-
-A FACT on an open run's scope means a lead is running this board. Stop this playbook and follow `hud guide lead` from the worker loop, on that same scope. An empty read of an open ticket tagged `run` means the same: join the lead playbook and publish on `run:<uuid>`.
-
-A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty. Continue at step 1 and use `board:main`.
-
-### 1. Claim
+### 0. Queue
 
 ```
 hud_queue {}
-hud_claim {ticket: "EGO-3", start: true}
 ```
 
 ```
 hud queue
-hud claim EGO-3 --start
 ```
 
-Take the first ready row (open, unblocked, unclaimed) whose Owner is blank or your actor. In the queue JSON that field is `assignee`. `start: true` moves the ticket to `doing`. The lease is 120 seconds. Pass `ttl` between 15 and 900 to change it. Claim the same ticket again to renew.
+The first lines name the lead, or say there is none. A live lead: stop this playbook and follow `hud guide lead` from the worker loop, on that scope. No live lead: continue. A `run` ticket with no live claim is not a lead.
 
-### 2. Publish a FACT
+### 1. Read before you choose
 
-Read the scope, then publish what you measured: the inputs, the result, and what is still unverified.
+Read the scope and its open FAILs, so you skip dead ends.
 
 ```
 hud_context {action: "read", scope: "board:main"}
-hud_context {action: "publish", scope: "board:main", kind: "FACT", text: "trailing commas parse on tests/parse.json; quoted commas not rechecked", refs: ["EGO-3"]}
+hud_context {action: "read", scope: "board:main", open: true}
 ```
 
 ```
 hud context read --scope board:main
-hud context publish --scope board:main --kind FACT --text "trailing commas parse on tests/parse.json; quoted commas not rechecked" --refs EGO-3
+hud context read --scope board:main --open
 ```
 
-A contradicted approach is `kind: "FAIL"`, with the conditions under which it failed. A FACT or FAIL is the record a peer uses. Keep it under 4 KB. The read returns `cursor`. Hold that number for the wait.
+A FAIL stays open until a later entry corrects it. The read returns `cursor`. Hold that number for the wait.
 
-### 3. Wait
+### 2. Claim
 
-Wait when the next step depends on a peer's entry, a claim coming free, or a ticket changing. When nothing you need is outstanding, go to finish.
+```
+hud_claim {ticket: "EGO-3", start: true}
+```
+
+```
+hud claim EGO-3 --start
+```
+
+Take the first ready row whose Owner is blank or your actor. In the queue JSON that field is `assignee`. A parent with open children is not ready. `start: true` moves the ticket to `doing`. The lease is 120 seconds and the holder renews it. Pass `ttl` between 15 and 900 to change it. Claim the same ticket again to renew.
+
+### 3. Announce
+
+Publish a STATUS that refs the ticket and says what you are attempting. Peers see it in the queue Note column.
+
+```
+hud_context {action: "publish", scope: "board:main", kind: "STATUS", text: "EGO-3: checking trailing commas in tests/parse.json", refs: ["EGO-3"]}
+```
+
+```
+hud context publish --scope board:main --kind STATUS --text "EGO-3: checking trailing commas in tests/parse.json" --refs EGO-3
+```
+
+### 4. Split when the ticket is more than one agent's work
+
+Create children with `parent` set to the ticket, unassigned, with `blockedBy` where order matters. Publish a FACT naming them, release the parent, and claim one child.
+
+```
+hud_create {type: "ticket", title: "Parse trailing commas", project: "EGO", parent: "EGO-3"}
+hud_create {type: "ticket", title: "Parse quoted commas", project: "EGO", parent: "EGO-3", blockedBy: ["EGO-4"]}
+hud_context {action: "publish", scope: "board:main", kind: "FACT", text: "EGO-3 split into EGO-4 (trailing commas) and EGO-5 (quoted commas, after EGO-4)", refs: ["EGO-3", "EGO-4", "EGO-5"]}
+hud_claim {action: "release", ticket: "EGO-3"}
+hud_claim {ticket: "EGO-4", start: true}
+```
+
+```
+hud add ticket "Parse trailing commas" --project EGO
+hud link EGO-4 parent=EGO-3
+hud add ticket "Parse quoted commas" --project EGO
+hud link EGO-5 parent=EGO-3 blockedBy=EGO-4
+hud context publish --scope board:main --kind FACT --text "EGO-3 split into EGO-4 (trailing commas) and EGO-5 (quoted commas, after EGO-4)" --refs EGO-3,EGO-4,EGO-5
+hud release EGO-3
+hud claim EGO-4 --start
+```
+
+Add a ticket only for required implementation, the repair of a demonstrated defect, or a concrete open question.
+
+### 5. Work and share early
+
+Publish a FACT as soon as you have measured something: the inputs, the result, and what is still unverified. Publish a FAIL as soon as an approach is contradicted, with the conditions. Publish a STATUS when you switch hypothesis. Read the scope delta before each new subproblem.
+
+```
+hud_context {action: "publish", scope: "board:main", kind: "FACT", text: "trailing commas parse on tests/parse.json; quoted commas not rechecked", refs: ["EGO-4"]}
+hud_context {action: "publish", scope: "board:main", kind: "FAIL", text: "regex split fails on quoted commas in tests/parse.json", refs: ["EGO-4"]}
+hud_context {action: "read", scope: "board:main", since: 14}
+```
+
+```
+hud context publish --scope board:main --kind FACT --text "trailing commas parse on tests/parse.json; quoted commas not rechecked" --refs EGO-4
+hud context publish --scope board:main --kind FAIL --text "regex split fails on quoted commas in tests/parse.json" --refs EGO-4
+hud context read --scope board:main --since 14
+```
+
+A FACT or FAIL is the record a peer uses. Keep it under 4 KB. A lease stops renewing after 15 minutes without hud calls, so publish or renew within that.
+
+### 6. Wait only after independent work
+
+When you need a peer's result, do the work that does not depend on it first. Then wait, bounded, with the cursor.
 
 ```
 hud_wait {scope: "board:main", since: 14, timeoutSeconds: 20}
@@ -101,53 +142,80 @@ hud wait --scope board:main --since 14 --timeout 20
 `since` is the `cursor` from your read, so an entry that landed after the read still wakes you. Your own publish stays quiet. A response of `no matching event within 20s` means you read again and wait again with the new cursor. To watch one ticket (a blocker finished, a claim released):
 
 ```
-hud_wait {ticket: "EGO-3", timeoutSeconds: 20}
+hud_wait {ticket: "EGO-4", timeoutSeconds: 20}
 ```
 
-### 4. Finish
+If the owner's session ends without finishing, build it yourself and reuse what they shared.
 
-Publish the outcome, then finish. Finish releases the lease.
+### 7. Finish
 
-```
-hud_context {action: "publish", scope: "board:main", kind: "SUMMARY", text: "EGO-3 done: trailing commas kept; quoted commas still open", refs: ["EGO-3"]}
-hud_finish {ids: ["EGO-3"], note: "done", organize: false}
-```
+Read the open FAILs that ref your ticket. Fix each one, or publish an entry that `corrects` it and says why it no longer applies. Then publish a SUMMARY and finish. Finish releases the lease.
 
 ```
-hud context publish --scope board:main --kind SUMMARY --text "EGO-3 done: trailing commas kept; quoted commas still open" --refs EGO-3
-hud finish EGO-3 --note "done" --no-organize
+hud_context {action: "read", scope: "board:main", open: true, ref: "EGO-4"}
+hud_context {action: "publish", scope: "board:main", kind: "SUMMARY", text: "EGO-4 done: trailing commas kept; quoted commas still open", refs: ["EGO-4"]}
+hud_finish {ids: ["EGO-4"], note: "done", organize: false}
+```
+
+```
+hud context read --scope board:main --open --ref EGO-4
+hud context publish --scope board:main --kind SUMMARY --text "EGO-4 done: trailing commas kept; quoted commas still open" --refs EGO-4
+hud finish EGO-4 --note "done" --no-organize
 ```
 
 `organize: false` leaves the shared board layout alone. Stopping before the ticket is done:
 
 ```
-hud_claim {action: "release", ticket: "EGO-3"}
+hud_claim {action: "release", ticket: "EGO-4"}
 ```
 
 ```
-hud release EGO-3
+hud release EGO-4
 ```
+
+### 8. Whole-task check
+
+When a parent becomes ready (every child done), the agent that claims it checks the parent's full description against the children's SUMMARYs and open FAILs. Then it finishes the parent, or adds a repair child.
+
+```
+hud_context {action: "read", scope: "board:main", open: true, ref: "EGO-3"}
+```
+
+```
+hud context read --scope board:main --open --ref EGO-3
+```
+
+### Lost lease
+
+An MCP `⚠ hud:` notice, or a 409 `claimed` when you change status, finish or delete, means the lease is no longer yours. Read it before you write:
+
+```
+hud_claim {action: "status", ticket: "EGO-4"}
+```
+
+```
+hud claim status EGO-4
+```
+
+- The ticket is free: claim it again with `start: true`.
+- A live peer holds it: leave it and claim a different ready row.
 
 ### Expired lease
 
-A lease lasts 120 seconds. MCP's 20 second heartbeat renews it while the session is live. A session with no heartbeat for 90 seconds ends, and its claims are released. A restart drops every claim. On the CLI, `hud session heartbeat` or another `hud claim EGO-3` is the renewal.
+A lease lasts 120 seconds and renews while the session is live and active. A session with no heartbeat for 90 seconds ends, and its claims are released. A session with no hud calls for 15 minutes stays present but its leases stop renewing and expire. After a server restart MCP re-takes your lease within about 20 seconds. Tickets that were in progress before the restart are held out of the ready list for 60 seconds.
 
-After a pause, read the lease before you write:
+CLI agents: under Claude Code the CLI session is `<actor>-<CLAUDE_PID>`, the same session as that agent's MCP. Otherwise it is derived from the parent process. Set `HUD_SESSION` to override.
 
-```
-hud_claim {action: "status", ticket: "EGO-3"}
-```
-
-- The ticket is free: claim it again with `start: true`. Another agent may have taken it.
-- A live peer holds it. The error is 409 `claimed`. Claim a different ready row. A live lease stays with its holder.
-- The holder is gone and the error is 409 `claimed` with `stale: true`. Retry once:
+- The ticket is free: claim it again with `start: true`.
+- A live peer holds it (409 `claimed`): claim a different ready row.
+- Takeover: 409 `claimed` with `stale: true` means the holder is gone. Retry once with takeover:
 
 ```
-hud_claim {ticket: "EGO-3", start: true, takeover: true}
+hud_claim {ticket: "EGO-4", start: true, takeover: true}
 ```
 
 ```
-hud claim EGO-3 --start --takeover
+hud claim EGO-4 --start --takeover
 ```
 
 - Your session has ended (409 `session-ended`): `hud_session {action: "start"}`, then claim again.
@@ -156,14 +224,14 @@ hud claim EGO-3 --start --takeover
 
 `start: true` on a blocked ticket returns 409 `blocked` and does not take the lease. The queue row lists the open blockers under Blocked by.
 
-Wait for the blocker, then claim:
+Wait for the blocker, then claim, or claim a different ready row:
 
 ```
 hud_wait {ticket: "EGO-2", timeoutSeconds: 20}
 hud_claim {ticket: "EGO-3", start: true}
 ```
 
-Or claim a different ready row. Record a dependency so the ticket clears itself when the blocker finishes:
+Record a dependency so the ticket clears itself when the blocker finishes:
 
 ```
 hud_link {id: "EGO-3", blockedBy: ["EGO-2"]}
@@ -189,7 +257,7 @@ hud_ask {id: "EGO-3", question: "Ship with trailing commas kept?", options: [{la
 
 One agent is the lead. Everyone else is a worker. The lead claims the run, links the children, and publishes the scope. Workers pull. Run the loop that matches your role, then use the failure modes at the bottom. This page is the whole protocol for both roles.
 
-Your actor is `HUD_ACTOR`, or the MCP client name. MCP heartbeats every 20 seconds and renews your lease. On the CLI, renew with `hud session heartbeat`. One session holds one unfinished claim.
+Your actor is `HUD_ACTOR`, or the MCP client name. MCP heartbeats every 20 seconds. A lease stops renewing after 15 minutes without hud calls. On the CLI, run `hud session heartbeat` or claim the same ticket again at least every 60 seconds; any other hud command keeps the session present but does not extend the lease. Under Claude Code with hud's MCP connected, the CLI shares that MCP session, so its heartbeat renews the lease. One session holds one unfinished claim.
 
 A context scope uses the `id` field from `hud_get`. Claim, wait, link and finish take the `KEY-n` ident.
 
@@ -197,7 +265,7 @@ A context scope uses the `id` field from `hud_get`. Claim, wait, link and finish
 
 #### 1. Claim
 
-Create the project and a ticket tagged `run`, read its `id`, then claim that ticket so a second agent becomes a worker.
+Create the project and a ticket tagged `run`, read its `id`, then claim that ticket first. The queue then shows it as the live lead, and workers find it with `hud_queue`.
 
 ```
 hud_project {action: "create", name: "Eng org", key: "EGO"}
@@ -263,7 +331,7 @@ On `no matching event within 20s`, read again and wait with the new cursor. A wo
 
 #### 4. Finish
 
-When the children are done, publish the run outcome and finish the run ticket. Finish releases the lead's claim.
+When the children are done, publish the run outcome and finish the run ticket. Finish releases the lead's claim. The lead's finish includes the whole-task check: read the open FAILs on the run scope and compare the children's SUMMARYs to the run ticket's description, then finish it or add a repair child.
 
 ```
 hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed", refs: ["EGO-1"]}
@@ -275,29 +343,27 @@ hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-1 done: traili
 hud finish EGO-1 --note "run complete" --no-organize
 ```
 
-Finishing the run ticket is what makes the open list empty, so the next joiner follows `hud guide decentralized`. The `run` tag and the scope log stay.
+Finishing the run ticket ends the lead, so the queue header stops naming it and the next joiner follows `hud guide decentralized`. The `run` tag and the scope log stay.
 
 ### Worker loop
 
 The failure modes below are part of this loop. Start by reading the lead FACT. It is not on `board:main`.
 
-#### 0. Read the lead FACT
+#### 0. Find the lead
 
 ```
-hud_tickets {tag: "run", status: "backlog,todo,doing,review,blocked"}
-hud_context {action: "scopes"}
-hud_get {id: "EGO-1"}
+hud_queue {}
 hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80"}
+hud_context {action: "read", scope: "run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80", open: true}
 ```
 
 ```
-hud tickets --tag run --status backlog,todo,doing,review,blocked
-hud context scopes
-hud show EGO-1
+hud queue
 hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80
+hud context read --scope run:3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80 --open
 ```
 
-`EGO-1` is the ident from the open list. The scope is `run:` plus the `id` uuid from `hud_get` / `hud show`. Copy the scope string from the lead FACT when the text names one. Every later read and publish in this loop uses that scope. A `done` or `canceled` run keeps its `run` tag, and `scopes` still lists that `run:<uuid>`. Neither is a live lead. Follow `hud guide decentralized` when the open list is empty.
+The queue header names the live lead: an open `run` ticket whose claim is held by a live session, with its scope `run:<uuid>`. The uuid in the example is the shape of the ticket's `id`. Copy the scope from the header or the lead FACT. Every later read and publish in this loop uses that scope. Read the open FAILs so you skip dead ends. A `run` ticket with no live claim is not a lead. Follow `hud guide decentralized` when the header says there is no live lead.
 
 #### 1. Claim
 
@@ -311,7 +377,7 @@ hud queue --project EGO
 hud claim EGO-2 --start
 ```
 
-Take a ready row whose Owner is blank or your actor. Leave rows owned by someone else, and leave blocked rows until they are ready.
+Take a ready row whose Owner is blank or your actor. A parent with open children is not ready. Leave rows owned by someone else, and leave blocked rows until they are ready.
 
 #### 2. Publish a FACT
 
@@ -343,6 +409,8 @@ hud wait --scope run:<uuid> --since 14 --timeout 20
 
 #### 4. Finish
 
+Read the open FAILs that ref your ticket (`hud_context {action: "read", scope: "run:<uuid>", open: true, ref: "EGO-2"}`, `hud context read --scope run:<uuid> --open --ref EGO-2`). Fix each one, or publish an entry that `corrects` it and says why it no longer applies.
+
 ```
 hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-2 done: trailing commas kept; quoted commas still open", refs: ["EGO-2"]}
 hud_finish {ids: ["EGO-2"], note: "done", organize: false}
@@ -361,7 +429,7 @@ hud_claim {action: "release", ticket: "EGO-2"}
 
 ### Expired lease
 
-A lease lasts 120 seconds. The MCP heartbeat renews it. A session with no heartbeat for 90 seconds ends and its claims release. A restart drops them. CLI work renews with `hud session heartbeat` or another claim of the same ticket.
+A lease lasts 120 seconds. The MCP heartbeat renews it while the session is active. A session with no heartbeat for 90 seconds ends and its claims release. A session with no hud calls for 15 minutes keeps presence but its leases expire. After a restart MCP re-takes your lease within about 20 seconds, and tickets in progress before the restart are held out of the ready list for 60 seconds. A `⚠ hud:` notice or a 409 `claimed` on a status change, finish or delete means the lease is lost. CLI work renews with `hud claim <ident>`; the CLI session is `<actor>-<CLAUDE_PID>` under Claude Code, or set `HUD_SESSION`.
 
 ```
 hud_claim {action: "status", ticket: "EGO-2"}

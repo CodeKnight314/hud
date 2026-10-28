@@ -498,9 +498,13 @@ export interface SessionView {
   clientVersion?: string;
   startedAt: number;
   lastSeenAt: number;
+  /** last hud call; leases stop renewing 15 minutes after it */
+  lastActiveAt: number;
   endedAt?: number;
   /** not ended and seen within the presence TTL */
   live: boolean;
+  /** live but no hud calls for 15 minutes */
+  idle: boolean;
   claims: { ticket: string; ident: string; expiresAt: number }[];
 }
 
@@ -551,10 +555,14 @@ export interface QueueRow {
   blockedBy: string[];
   claim: ClaimView | null;
   owner: string | null;
-  session: { id: string; name: string; live: boolean; lastSeenAt: number; kind: SessionKind } | null;
+  session: { id: string; name: string; live: boolean; idle: boolean; lastSeenAt: number; kind: SessionKind } | null;
   bucket: 'open' | 'claimed' | 'done';
   /** open, unblocked and unclaimed */
   ready: boolean;
+  /** direct children that are not finished */
+  openChildren: number;
+  /** newest STATUS entry that refs this ticket since it was claimed (claimed rows only) */
+  note?: string;
   updatedAt: number;
 }
 
@@ -563,6 +571,10 @@ export interface QueueResult {
   board: string;
   counts: { open: number; claimed: number; done: number; blocked: number; ready: number };
   items: QueueRow[];
+  /** unfinished run tickets held by a live session */
+  leads: Array<{ ticket: string; ident: string; title: string; scope: string; session: string; actor: string }>;
+  /** present while tickets in progress before a restart are held out of ready */
+  reclaimUntil?: number;
 }
 
 

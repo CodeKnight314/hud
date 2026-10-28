@@ -300,8 +300,10 @@ function actorOf(req: IncomingMessage, body?: any, q?: URLSearchParams) {
 
 /** the session making a call: header, body or query; undefined when the caller has none */
 function sessionOf(req: IncomingMessage, body?: any, q?: URLSearchParams): string | undefined {
-  const h = req.headers['x-hud-session'];
-  const s = (typeof h === 'string' ? h : undefined) || (isObj(body) ? body.session : undefined) || q?.get('session');
+  // an explicit body or query session beats the client's ambient header, which is percent-encoded like x-hud-actor
+  let h = req.headers['x-hud-session'] as string | undefined;
+  if (h) try { h = decodeURIComponent(h); } catch {}
+  const s = (isObj(body) ? body.session : undefined) || q?.get('session') || h;
   return s === undefined || s === null || s === '' ? undefined : String(s).slice(0, 64);
 }
 
@@ -662,14 +664,20 @@ route('GET', '/api/context', (req, _res, _m, q) => store.contextRead({
   since: numParam(q, 'since'),
   kinds: kindsOf(q.get('kind')) as any,
   limit: numParam(q, 'limit'),
+  ref: q.get('ref') || undefined,
+  open: q.get('open') === '1' || q.get('open') === 'true',
 }, { session: sessionOf(req, undefined, q), mark: q.get('mark') === '1' }));
 route('POST', '/api/context/read', async (req) => {
   const b = await readObj(req);
+  if (b.ref !== undefined && typeof b.ref !== 'string') throw new HudError(400, 'ref must be a string');
+  if (b.open !== undefined && typeof b.open !== 'boolean') throw new HudError(400, 'open must be a boolean');
   return store.contextRead({
     scope: b.scope === undefined ? undefined : String(b.scope),
     since: b.since === undefined ? undefined : Number(b.since),
     kinds: kindsOf(b.kinds ?? b.kind) as any,
     limit: b.limit === undefined ? undefined : Number(b.limit),
+    ref: b.ref === undefined ? undefined : String(b.ref),
+    open: b.open === undefined ? undefined : b.open,
   }, { session: sessionOf(req, b), mark: b.mark !== false });
 });
 route('GET', '/api/context/scopes', (_req, _res, _m, q) => store.contextScopes(q.get('board') ? store.requireBoard(q.get('board')!).id : undefined));
@@ -802,7 +810,8 @@ route('PATCH', '/api/items', async (req, _s, _m, q) => {
   const b = await readBody(req);
   if (!Array.isArray(b) || b.some((x) => !isObj(x) || x.id === undefined)) throw new HudError(400, 'expected an array of {id, ...patch}');
   const actor = actorOf(req, undefined, q);
-  return b.map(({ id, ...patch }) => withGraph(store.update(store.resolveId(String(id)), patch, actor)));
+  const session = sessionOf(req, undefined, q);
+  return b.map(({ id, ...patch }) => withGraph(store.update(store.resolveId(String(id)), patch, actor, { session })));
 });
 route('GET', '/api/items/:id', (_r, _s, [id], q) => fullItem(store.get(rid(id, q))));
 route('GET', '/api/items/:id/activity', (_r, _s, [id], q) => store.itemActivity(rid(id, q), Math.floor(numParam(q, 'limit') || 100)));
@@ -823,9 +832,11 @@ route('POST', '/api/items/:id/unlink', async (req, _s, [id], q) => {
 });
 route('PATCH', '/api/items/:id', async (req, _s, [id], q) => {
   const b = await readObj(req);
-  return withGraph(store.update(rid(id, q), b, actorOf(req, b)));
+  const session = sessionOf(req, b);
+  delete b.session;
+  return withGraph(store.update(rid(id, q), b, actorOf(req, b), { session }));
 });
-route('DELETE', '/api/items/:id', (req, _s, [id], q) => Store.lite(store.remove(rid(id, q), actorOf(req, undefined, q))));
+route('DELETE', '/api/items/:id', (req, _s, [id], q) => Store.lite(store.remove(rid(id, q), actorOf(req, undefined, q), { session: sessionOf(req, undefined, q) })));
 route('POST', '/api/items/:id/comments', async (req, _s, [id], q) => {
   const b = await readObj(req);
   if (typeof b.text !== 'string') throw new HudError(400, 'text must be a string');
@@ -858,7 +869,7 @@ route('POST', '/api/finish', async (req) => {
   const b = await readObj(req);
   if (b.export !== undefined && typeof b.export !== 'boolean') throw new HudError(400, 'export must be a boolean');
   if (b.exportAll !== undefined && typeof b.exportAll !== 'boolean') throw new HudError(400, 'exportAll must be a boolean');
-  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize, export: b.export, exportAll: b.exportAll }, actorOf(req, b));
+  const r = store.finish({ board: b.board, ids: strList(b.ids, 'ids').map((x) => store.resolveId(x)), note: b.note, organize: b.organize, export: b.export, exportAll: b.exportAll, session: sessionOf(req, b) }, actorOf(req, b));
   // report idents so the CLI/MCP messages read the same as everywhere else
   return { ...r, done: r.done.map((x: string) => store.identOf(store.resolveId(x))) };
 });
@@ -1063,6 +1074,8 @@ const handler = async (req: IncomingMessage, res: ServerResponse) => {
     if (['iframe', 'frame', 'object', 'embed'].includes(String(req.headers['sec-fetch-dest'] ?? '')) && !/^\/api\/program-frame\/[\w-]+$/.test(url.pathname)) return send(res, 403, { error: 'embedded navigation is restricted to program frames' });
     if (url.pathname.startsWith('/api/program-preview/')) res.setHeader('content-security-policy', CSP);
     if (url.pathname.startsWith('/api/')) {
+      const touched = sessionOf(req);
+      if (touched && !/^\/api\/sessions\/[^/]+\/heartbeat\/?$/.test(url.pathname)) store.sessionTouch(touched);
       const reported = stableVersion(req.headers['x-hud-client-version']);
       if (reported) {
         const sid = sessionOf(req);

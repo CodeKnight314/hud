@@ -615,7 +615,7 @@ export class Hud {
   reconnectAck(): Promise<ReconnectChecklist> {
     return this.request('POST', '/api/reconnect/ack');
   }
-  sessionHeartbeat(name = this.session): Promise<{ session: SessionView; renewed: ClaimView[] }> {
+  sessionHeartbeat(name = this.session): Promise<{ session: SessionView; renewed: ClaimView[]; started: boolean }> {
     if (!name) throw new HudRequestError(0, 'this client has no session; pass a name or set HUD_SESSION');
     return this.request('POST', `/api/sessions/${encodeURIComponent(name)}/heartbeat`);
   }
@@ -661,7 +661,7 @@ export class Hud {
   contextPublish(input: { scope: string; kind: string; text: string; data?: Record<string, unknown>; refs?: string[]; attachments?: string[]; corrects?: string; session?: string }): Promise<ContextEntry> {
     return this.request('POST', '/api/context', { ...input, session: input.session ?? this.session });
   }
-  contextRead(q: { scope?: string; since?: number; kinds?: string[]; limit?: number; session?: string; mark?: boolean } = {}): Promise<{ entries: ContextEntry[]; cursor: number; oldest: number; complete: boolean; truncated: boolean; now: number }> {
+  contextRead(q: { scope?: string; since?: number; kinds?: string[]; limit?: number; session?: string; mark?: boolean; ref?: string; open?: boolean } = {}): Promise<{ entries: ContextEntry[]; cursor: number; oldest: number; complete: boolean; truncated: boolean; now: number }> {
     return this.request('POST', '/api/context/read', { ...q, session: q.session ?? this.session });
   }
   contextScopes(board?: string): Promise<{ scope: string; scopeType: string; scopeId: string; board: string; count: number; lastAt: number }[]> {

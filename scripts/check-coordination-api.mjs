@@ -57,7 +57,7 @@ async function cli(args, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [join(root, 'bin/hud.js'), ...args], {
       cwd: root,
-      env: { ...process.env, HUD_SCRATCH: '1', HUD_PORT: base.port, HUD_URL: base.origin, ...env },
+      env: Object.fromEntries(Object.entries({ ...process.env, HUD_SCRATCH: '1', HUD_PORT: base.port, HUD_URL: base.origin, ...env }).filter(([, v]) => v !== undefined)),
     });
     let out = '';
     let err = '';
@@ -131,6 +131,13 @@ try {
   assert.equal(s.live, true, 'session is live');
   const hb = await ok(`/api/sessions/${encodeURIComponent(s.id)}/heartbeat`, { method: 'POST' });
   assert.equal(hb.session.live, true, 'heartbeat keeps the session live');
+  assert.equal(hb.started, false, 'heartbeat of a known session does not re-create it');
+  assert.equal(hb.session.idle, false, 'a fresh session is not idle');
+  assert.equal(typeof hb.session.lastActiveAt, 'number', 'session view carries lastActiveAt');
+  const unknownBeat = await ok(`/api/sessions/${encodeURIComponent(`beat-new-${nonce}`)}/heartbeat`, { method: 'POST' });
+  assert.equal(unknownBeat.started, true, 'heartbeat of an unknown session reports it was re-created');
+  assert.equal((await ok(`/api/sessions/${encodeURIComponent(`beat-new-${nonce}`)}/heartbeat`, { method: 'POST' })).started, false, 'the second heartbeat finds it');
+  await ok(`/api/sessions/${encodeURIComponent(`beat-new-${nonce}`)}`, { method: 'DELETE' });
 
   // claims
   const c1 = await ok(`/api/items/${encodeURIComponent(t1.id)}/claim`, { method: 'POST', body: { session: s.id, start: true } }, s.id);
@@ -297,6 +304,126 @@ try {
   assert.ok(cliList.some((row) => row.name === cliExport.name), 'CLI lists the snapshot');
   const mcpExport = await mcpText('hud_context', { action: 'export', scope: `run:${run.id}` });
   assert.match(mcpExport, /exported .+backups\/context-/, 'MCP exports the finished run');
+
+
+  // coordination fixes: write fencing, leads, open children, context ref/open, CLI session, heartbeat started
+  const sessA = `fence-a-${nonce}`;
+  const sessB = `fence-b-${nonce}`;
+  await ok('/api/sessions', { method: 'POST', body: { id: sessA, kind: 'agent', actor: 'fence-a' } });
+  await ok('/api/sessions', { method: 'POST', body: { id: sessB, kind: 'agent', actor: 'fence-b' } });
+  const as = (actor, session) => ({ headers: { 'x-hud-actor': actor, 'x-hud-session': session } });
+  const mk = (title, extra = {}) => ok('/api/items', { method: 'POST', body: { type: 'ticket', board: boardId, title: `${title} ${nonce}`, status: 'todo', ...extra } });
+  const fenced = await mk('Fenced');
+  await ok(`/api/items/${encodeURIComponent(fenced.id)}/claim`, { method: 'POST', body: { session: sessA, start: true }, ...as('fence-a', sessA) });
+  const noStatus = await req(`/api/items/${encodeURIComponent(fenced.id)}`, { method: 'PATCH', body: { status: 'review' }, ...as('fence-b', sessB) });
+  assert.equal(noStatus.res.status, 409, 'status change by a non-holder session is refused');
+  assert.equal(noStatus.body.code, 'claimed', 'fence refusal carries the claimed code');
+  assert.equal(noStatus.body.session, sessA, 'fence refusal names the holder');
+  assert.equal((await ok(`/api/items/${encodeURIComponent(fenced.id)}`)).status, 'doing', 'refused change left the ticket alone');
+  const noFinish = await req('/api/finish', { method: 'POST', body: { ids: [fenced.id], organize: false }, ...as('fence-b', sessB) });
+  assert.equal(noFinish.res.status, 409, 'finish by a non-holder session is refused');
+  assert.equal(noFinish.body.code, 'claimed', 'finish refusal carries the claimed code');
+  assert.equal((await ok(`/api/items/${encodeURIComponent(fenced.id)}`)).status, 'doing', 'refused finish left the ticket doing');
+  const noDelete = await req(`/api/items/${encodeURIComponent(fenced.id)}`, { method: 'DELETE', ...as('fence-b', sessB) });
+  assert.equal(noDelete.res.status, 409, 'delete by a non-holder session is refused');
+  const bulk = await req('/api/items', { method: 'PATCH', body: [{ id: fenced.id, status: 'review' }], ...as('fence-a', sessB) });
+  assert.equal(bulk.res.status, 409, 'bulk PATCH is fenced by session too');
+  const sameActor = await req(`/api/items/${encodeURIComponent(fenced.id)}`, { method: 'PATCH', body: { status: 'review' }, ...as('fence-a', sessB) });
+  assert.equal(sameActor.res.status, 409, 'a matching actor name does not bypass the fence when the session differs');
+  await ok(`/api/items/${encodeURIComponent(fenced.id)}/comments`, { method: 'POST', body: { text: 'comments are not fenced' }, ...as('fence-b', sessB) });
+  assert.equal((await ok(`/api/items/${encodeURIComponent(fenced.id)}`, { method: 'PATCH', body: { status: 'review' }, ...as('fence-a', sessA) })).status, 'review', 'the holder changes status');
+  assert.equal((await ok(`/api/items/${encodeURIComponent(fenced.id)}`, { method: 'PATCH', body: { status: 'doing' }, ...as('fence-a', sessA) })).status, 'doing', 'the holder moves it back');
+  const finishedByHolder = await ok('/api/finish', { method: 'POST', body: { ids: [fenced.id], organize: false }, ...as('fence-a', sessA) });
+  assert.equal(finishedByHolder.done.length, 1, 'the holder finishes');
+
+  // leads: a claimed run ticket is a lead, an unclaimed one is not
+  const lead = await mk('Lead run', { tags: ['run'] });
+  const orphan = await mk('Orphan run', { tags: ['Run'] });
+  await ok(`/api/items/${encodeURIComponent(lead.id)}/claim`, { method: 'POST', body: { session: sessA, start: true }, ...as('fence-a', sessA) });
+  const withLead = await ok(`/api/queue?board=${encodeURIComponent(boardId)}`);
+  const leadRow = withLead.leads.find((l) => l.ticket === lead.id);
+  assert.ok(leadRow, `queue names the live lead: ${JSON.stringify(withLead.leads)}`);
+  assert.equal(leadRow.scope, `run:${lead.id}`, 'lead scope is run:<id>');
+  assert.equal(leadRow.session, sessA, 'lead names the holder session');
+  assert.equal(withLead.leads.some((l) => l.ticket === orphan.id), false, 'an unclaimed run ticket is not a lead');
+  assert.equal(withLead.items.find((r) => r.id === lead.id)?.session?.idle, false, 'queue session carries idle');
+
+  // open children: a parent is a coordination node until its split is done
+  const parent = await mk('Parent');
+  const kid1 = await mk('Kid one', { parent: parent.id });
+  const kid2 = await mk('Kid two', { parent: parent.id });
+  const rowOf = async (id) => (await ok(`/api/queue?board=${encodeURIComponent(boardId)}`)).items.find((r) => r.id === id);
+  let prow = await rowOf(parent.id);
+  assert.equal(prow.openChildren, 2, 'parent counts its open children');
+  assert.equal(prow.ready, false, 'a parent with open children is not ready');
+  await ok(`/api/items/${encodeURIComponent(kid1.id)}`, { method: 'PATCH', body: { status: 'done' } });
+  assert.equal((await rowOf(parent.id)).openChildren, 1, 'a finished child is no longer open');
+  await ok(`/api/items/${encodeURIComponent(kid2.id)}`, { method: 'PATCH', body: { status: 'canceled' } });
+  prow = await rowOf(parent.id);
+  assert.equal(prow.openChildren, 0, 'no open children left');
+  assert.equal(prow.ready, true, 'the parent returns to the queue for the whole-task check');
+
+  // queue note: the holder's newest STATUS since the claim
+  await ok('/api/context', { method: 'POST', body: { scope: `board:${boardId}`, kind: 'STATUS', text: 'attempting\nthe lead split', refs: [lead.id], session: sessA } }, sessA);
+  assert.equal((await rowOf(lead.id)).note, 'attempting the lead split', 'claimed row carries the STATUS note');
+
+  // context read: ref and open
+  const scope = `run:${lead.id}`;
+  const failA = await ok('/api/context', { method: 'POST', body: { scope, kind: 'FAIL', text: 'approach A fails', refs: [kid1.id], session: sessA } }, sessA);
+  const failB = await ok('/api/context', { method: 'POST', body: { scope, kind: 'FAIL', text: 'approach B fails', refs: [kid2.id], session: sessA } }, sessA);
+  await ok('/api/context', { method: 'POST', body: { scope, kind: 'FACT', text: 'a fact about kid one', refs: [kid1.id], session: sessA } }, sessA);
+  const openBefore = await ok(`/api/context?scope=${encodeURIComponent(scope)}&open=1`, {}, sessB);
+  assert.deepEqual(openBefore.entries.map((e) => e.id), [failA.id, failB.id], 'open read returns unresolved FAILs oldest-first');
+  const cursorBefore = openBefore.cursor;
+  const byRef = await ok(`/api/context?scope=${encodeURIComponent(scope)}&ref=${encodeURIComponent(kid1.id)}&since=0`);
+  assert.deepEqual(byRef.entries.map((e) => e.kind), ['FAIL', 'FACT'], 'ref keeps only entries that reference the ticket');
+  await ok('/api/context', { method: 'POST', body: { scope, kind: 'FACT', text: 'A no longer applies', corrects: failA.id, refs: [kid1.id], session: sessA } }, sessA);
+  const openAfter = await ok('/api/context/read', { method: 'POST', body: { scope, open: true, session: sessB } }, sessB);
+  assert.deepEqual(openAfter.entries.map((e) => e.id), [failB.id], 'a corrected FAIL is no longer open');
+  assert.equal(openAfter.cursor, cursorBefore, 'open read never moves the cursor');
+  const openRef = await ok('/api/context/read', { method: 'POST', body: { scope, open: true, ref: kid1.id, session: sessB } }, sessB);
+  assert.equal(openRef.entries.length, 0, 'open plus ref keeps only that ticket\'s open FAILs');
+  const badOpen = await req('/api/context/read', { method: 'POST', body: { scope, open: 'yes' } });
+  assert.equal(badOpen.res.status, 400, 'open must be a boolean');
+  const badRef = await req('/api/context/read', { method: 'POST', body: { scope, ref: 5 } });
+  assert.equal(badRef.res.status, 400, 'ref must be a string');
+  const cliOpen = JSON.parse(await cli(['context', 'read', '--scope', scope, '--open', '--ref', kid2.id, '--json'], { HUD_SESSION: sessB }));
+  assert.deepEqual(cliOpen.entries.map((e) => e.id), [failB.id], 'CLI context read --open --ref');
+  const mcpOpen = await mcpText('hud_context', { action: 'read', scope, open: true });
+  assert.match(mcpOpen, /approach B fails/, 'MCP context read open shows the unresolved FAIL');
+  assert.doesNotMatch(mcpOpen, /approach A fails/, 'MCP context read open hides the corrected FAIL');
+  const mcpRef = await mcpText('hud_context', { action: 'read', scope, ref: kid2.id, since: 0 });
+  assert.match(mcpRef, /approach B fails/);
+  assert.doesNotMatch(mcpRef, /a fact about kid one/, 'MCP context read ref filters by ticket');
+
+  // queue text on MCP and CLI: lead line, open children, note
+  const mcpQ = await mcpText('hud_queue', { board: boardId });
+  assert.match(mcpQ, new RegExp(`Lead: .+ "Lead run ${nonce}" held by ${sessA}; scope run:${lead.id}`), 'MCP queue names the lead');
+  assert.match(mcpQ, /\| Note \|/, 'MCP queue has a Note column');
+  assert.match(mcpQ, /attempting the lead split/, 'MCP queue shows the claimed row note');
+  const cliQ = await cli(['queue', boardId]);
+  assert.match(cliQ, new RegExp(`Lead: .+ "Lead run ${nonce}" held by ${sessA}`), 'CLI queue names the lead');
+  assert.match(cliQ, /note: attempting the lead split/, 'CLI queue shows the note');
+  const quiet = await ok('/api/boards', { method: 'POST', body: { name: `No lead ${nonce}` } });
+  assert.match(await mcpText('hud_queue', { board: quiet.id }), /No live lead/, 'MCP queue says there is no live lead');
+  assert.match(await cli(['queue', quiet.id]), /No live lead/, 'CLI queue says there is no live lead');
+  await ok(`/api/boards/${encodeURIComponent(quiet.id)}`, { method: 'DELETE' });
+
+  // CLI default session comes from CLAUDE_PID, so a CLI agent and its MCP share one session
+  const derived = await mk('Derived session');
+  const derivedClaim = JSON.parse(await cli(['claim', derived.id, '--json'], { CLAUDE_PID: '4242', HUD_ACTOR: 'derive-check', HUD_SESSION: undefined }));
+  assert.equal(derivedClaim.session, 'derive-check-4242', 'CLI session is <actor>-<CLAUDE_PID>');
+  const other = await req(`/api/items/${encodeURIComponent(derived.id)}/claim`, { method: 'POST', body: { session: `derive-check-4343` } });
+  assert.equal(other.res.status, 409, 'a different CLAUDE_PID is a different session');
+  const sameAgain = JSON.parse(await cli(['claim', derived.id, '--json'], { CLAUDE_PID: '4242', HUD_ACTOR: 'derive-check', HUD_SESSION: undefined }));
+  assert.equal(sameAgain.session, 'derive-check-4242', 'the same CLAUDE_PID renews its own lease');
+  const secondCli = await cli(['claim', derived.id, '--json'], { CLAUDE_PID: '4343', HUD_ACTOR: 'derive-check', HUD_SESSION: undefined }).then(() => null, (e) => e);
+  assert.match(String(secondCli?.message), /claimed/, 'a second CLI agent cannot take a held ticket');
+  const hbOut = JSON.parse(await cli(['session', 'heartbeat', `beat-cli-${nonce}`, '--json']));
+  assert.equal(hbOut.started, true, 'CLI heartbeat reports a re-created session');
+  assert.match(await cli(['session', 'heartbeat', `beat-cli-${nonce}`]), /live; 0 claims renewed/);
+  await ok(`/api/sessions/${encodeURIComponent(`beat-cli-${nonce}`)}`, { method: 'DELETE' });
+  for (const id of [sessA, sessB, 'derive-check-4242']) await req(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
   // cleanup
   await ok(`/api/attachments/${a1.id}?force=1`, { method: 'DELETE' });
