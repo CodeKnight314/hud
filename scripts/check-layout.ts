@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store, STATE_VERSION } from '../src/store.ts';
 import { layout, canvasItems, BOARD_WIDTH, BOARD_HEIGHT } from '../src/layout.ts';
 import type { Item } from '../src/types.ts';
 
+const appSource = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
+assert(!/const MENU = \[[^\]]*'ticket'/.test(appSource), 'the canvas menu does not create tickets');
 const dir = mkdtempSync(join(tmpdir(), 'hud-layout-'));
 const store = new Store(join(dir, 'state.json'));
 const actor = 'layout-check';
@@ -50,8 +52,16 @@ store.update(ticket.id, { status: 'doing' }, actor);
 await new Promise(r => setTimeout(r, 350));
 assert.deepEqual(geometry(), before, 'readings and status preserve layout');
 store.setBoard('main', { autoOrganize: false }, actor);
-store.update(ticket.id, { x: -1000, y: 10000, w: 5000, h: 5000 }, actor);
-assert.deepEqual([ticket.x, ticket.y, ticket.w, ticket.h], [0, 0, 1600, 900]);
+const note = store.create({ type: 'note', title: 'placed' }, actor);
+store.update(note.id, { x: -1000, y: 10000, w: 5000, h: 5000 }, actor);
+assert.deepEqual([note.x, note.y, note.w, note.h], [0, 0, 1600, 900], 'canvas objects clamp to the board');
+// tasks are tree objects: they take no coordinates and never land on the canvas
+assert.deepEqual([ticket.x, ticket.y], [0, 0], 'a ticket has no canvas position');
+assert.throws(() => store.update(ticket.id, { x: 20, y: 20 }, actor), /lives in the ticket tree/, 'moving a ticket on the canvas is refused');
+assert.throws(() => store.create({ type: 'ticket', title: 'placed', x: 20, y: 20 }, actor), /lives in the ticket tree/);
+assert.throws(() => store.create({ type: 'project', title: 'placed', x: 20, y: 20 }, actor), /lives in the ticket tree/);
+assert.throws(() => store.create({ type: 'ticket', title: 'sized', w: 300, h: 200 }, actor), /lives in the ticket tree/);
+assert(canvasItems(all()).every((i) => i.type !== 'ticket' && i.type !== 'project'), 'the canvas holds no tasks');
 const uuid = ticket.uuid;
 store.remove(ticket.id, actor);
 store.restore(ticket.id, actor);

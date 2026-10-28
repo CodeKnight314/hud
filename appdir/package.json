@@ -1,7 +1,7 @@
 {
   "name": "hud",
   "productName": "hud",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Local live canvas of tickets and status monitors, drivable by humans and any agent (MCP, CLI, HTTP).",
   "main": "main.mjs",
   "private": true,

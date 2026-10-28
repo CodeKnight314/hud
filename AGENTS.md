@@ -118,6 +118,9 @@ bundle/, dist/   build output (git-ignored)
 - **Frame membership is the stored `group` field** (the frame's title), never position. Untitled frames are the
   one exception: they hold whatever ungrouped item sits inside them. Use `membersOf()` (UI) or the group
   comparisons in `store.ts`. Don't infer membership with `contains()` alone.
+- **Canvas and tree carry different objects.** The canvas holds monitors (plus the frames, notes and utilities that
+  group or annotate them); tickets and projects are tree objects with no position. `Store` rejects `x`/`y`/`w`/`h`
+  on a ticket or project with a 400 (`assertUnplaced`), and the canvas menu / `t` shortcut create tickets in the list.
 - **Ticket structure is store state, not free text.** A `project` item owns the `KEY` that gives its tickets their
   `KEY-n` ident (`Store.ident`), and `parent` / `blockedBy` / `refs` are the edges between tickets. Every write goes
   through `Store.link()`, which validates board and rejects cycles *before* anything changes; `Store.resolveId()`
@@ -310,8 +313,8 @@ smoke-tests the installer against that tarball. A tag must be a stable `vX.Y.Z` 
 and `install.ps1`, and CI creates a draft release. A person reviews and publishes that draft; `hud update` ignores
 drafts and prereleases.
 
-The package version is 0.3.2 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
-Leave published stable releases unchanged. A person publishes 0.3.2 by pushing the tag `v0.3.2`, reviewing the draft
+The package version is 0.3.3 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+Leave published stable releases unchanged. A person publishes 0.3.3 by pushing the tag `v0.3.3`, reviewing the draft
 CI creates (the tarball, its checksums and the two install scripts), and publishing that draft by hand.
 Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual dispatch build temporary artifacts but do not create a release.
 

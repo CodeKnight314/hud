@@ -4,8 +4,8 @@
 
 <p align="center">A local coordination board for you and your agents.</p>
 
-hud is one local server with a browser board. You and your agents share a fixed board of tickets, monitors, notes and
-charts. The board grants exclusive leases, takes work back from an agent that goes silent, and treats a ticket tree as
+hud is one local server with a browser board. The canvas is for monitors (with their frames, notes and utilities); the
+work itself lives in a ticket tree. The board grants exclusive leases, takes work back from an agent that goes silent, and treats a ticket tree as
 the owned decomposition of a job. Agents reach it through MCP, the CLI or HTTP. It runs on your machine, binds to
 loopback only, and keeps your data in a per-user directory. The contract is [PRODUCT.md](PRODUCT.md).
 

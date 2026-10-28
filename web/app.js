@@ -2617,12 +2617,22 @@ canvas.addEventListener('gesturechange', (e) => {
 
 // ---------------------------------------------------------------- create menu
 const MENU = [
-  ['ticket', 't'],
   ['monitor', 'm'],
   ['note', 'n'],
   ['frame', 'f'],
   ['util', 'w'],
 ];
+const TREE_TYPES = new Set(['ticket', 'project']);
+/** tasks are tree objects: the canvas hands off to the list instead of placing a card */
+function newTicketInList(status = 'todo') {
+  if (S.mode !== 'list') setMode('list');
+  const head = $('#list .lhead');
+  if (!head) return;
+  const existing = head.parentElement?.querySelector('.trow.creating');
+  if (existing) return existing.querySelector('input').focus();
+  newTicketInline(head, '', status);
+}
+
 function openMenu(cx, cy, w) {
   const m = $('#menu');
   m.innerHTML = MENU.map(([t, k]) => `<div data-type="${t}"><span class="k">${k}</span>${t}</div>`).join('');
@@ -2653,7 +2663,7 @@ async function createAt(type, pos, extra = {}) {
     body.w = 300;
     body.h = 190;
   }
-  if (pos) {
+  if (pos && !TREE_TYPES.has(type)) {
     body.x = snap(pos.x);
     body.y = snap(pos.y);
   }
@@ -3914,6 +3924,7 @@ async function runCmd(line) {
     const tail = c === 'new' ? rest.slice(1) : rest;
     const kind = type === 'util' && UTIL_KINDS.includes(tail[0]) ? tail.shift() : undefined;
     const title = tail.join(' ');
+    if (TREE_TYPES.has(type)) return newTicketInList(); // tasks belong to the tree, not the canvas
     const frame = [...S.sel].map((id) => S.items.get(id)).find((i) => i?.type === 'frame');
     return createAt(type, frame ? null : center(), { title, kind, ...(frame ? { frame: frame.id } : {}) });
   }
@@ -4399,13 +4410,18 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return $('#list [data-f="q"]')?.focus();
   }
-  if (S.mode === 'list' && !['a', 'u', 'T', '?', ':', ';', '[', ']'].includes(k)) return;
+  if (S.mode === 'list' && !['a', 'u', 't', 'T', '?', ':', ';', '[', ']'].includes(k)) return;
   if (k === ':' || k === ';') {
     e.preventDefault();
     return openCmd();
   }
   if (k === '?') return toggleHelp();
-  if (['t', 'm', 'n', 'f', 'w'].includes(k)) {
+  if (k === 't') {
+    e.preventDefault();
+    if (e.repeat) return;
+    return newTicketInList();
+  }
+  if (['m', 'n', 'f', 'w'].includes(k)) {
     e.preventDefault();
     if (e.repeat) return;
     return createAt(k === 'w' ? 'util' : TYPE_ALIAS[k], S.mouse);

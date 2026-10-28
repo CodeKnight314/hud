@@ -54,6 +54,17 @@ const SIZE: Record<ItemType, [number, number]> = {
   util: [300, 190],
   project: [360, 200],
 };
+/** Tasks are tree objects, never canvas objects: they carry no position and cannot be dropped on one. */
+const TREE_ONLY: ItemType[] = ['ticket', 'project'];
+const PLACEMENT_KEYS = ['x', 'y', 'w', 'h'] as const;
+
+function assertUnplaced(type: ItemType, input: Record<string, unknown>): void {
+  if (!TREE_ONLY.includes(type)) return;
+  const given = PLACEMENT_KEYS.filter((k) => input[k] !== undefined);
+  if (!given.length) return;
+  throw new HudError(400, `a ${type} lives in the ticket tree, not on the canvas; remove ${given.map((k) => `"${k}"`).join(', ')}`);
+}
+
 const ID_RE = /^[a-zA-Z0-9][\w.-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** names every plain object inherits (`__proto__`, `constructor`, `toString`, …): never valid ids */
@@ -2233,6 +2244,7 @@ export class Store extends EventEmitter {
     if (!isObj(input)) throw new HudError(400, 'item must be an object');
     const type = input.type as ItemType;
     if (!TYPES.includes(type)) throw new HudError(400, `type must be one of ${TYPES.join('|')}`);
+    assertUnplaced(type, input);
     // ---- validate everything first: a rejected create must change nothing (no frame, no burned counters) ----
     const id = this.checkNewId(input.id, type);
     const frameRef = (input.frame ?? input.in) as string | undefined;
@@ -2278,7 +2290,11 @@ export class Store extends EventEmitter {
     item.board = board;
     const rec = item as unknown as Record<string, unknown>;
     for (const k of Object.keys(rec)) if (rec[k] === undefined || (rec[k] === null && (k === 'project' || k === 'parent'))) delete rec[k];
-    if (fields.x === undefined || fields.y === undefined) {
+    // a ticket or project has no canvas home, so it never consumes a placement slot either
+    if (TREE_ONLY.includes(type)) {
+      item.x = 0;
+      item.y = 0;
+    } else if (fields.x === undefined || fields.y === undefined) {
       const p = this.place(board, w, h, frame, item.id);
       item.x = fields.x ?? p.x;
       item.y = fields.y ?? p.y;
@@ -2371,6 +2387,7 @@ export class Store extends EventEmitter {
   update(id: string, patch: Record<string, unknown>, actor: string, opts: { silent?: boolean } = {}): Item {
     let item = this.get(id);
     if (!isObj(patch)) throw new HudError(400, 'patch must be an object');
+    assertUnplaced(item.type, patch);
     const fields = this.clean(item.type, patch, true) as Record<string, any>;
     if (item.type === 'monitor' && fields.observedAt !== undefined && item.observation?.observedAt != null && fields.observedAt < item.observation.observedAt)
       throw new HudError(409, 'older observation cannot replace the current value');
