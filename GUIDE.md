@@ -1076,56 +1076,39 @@ dir (`hud.lock`); a second one refuses to start.
 
 ## Install and connect
 
-Humans install the desktop app and use Settings, Attention and Tickets from [QUICKSTART.md](QUICKSTART.md). This
-file is the agent contract. The app ships the quickstart next to this guide and serves it at `GET /api/quickstart`
-(`hud quickstart`, `hud_quickstart`). `GET /api/guide` and `hud guide` rewrite the relative links in this file to
-that URL, so a reader of the served contract is not sent to a missing file.
+Humans install hud from a terminal and use the board, Attention and Tickets in a browser — see
+[QUICKSTART.md](QUICKSTART.md). This file is the agent contract. The install serves the quickstart at
+`GET /api/quickstart` (`hud quickstart`, `hud_quickstart`); `GET /api/guide` and `hud guide` rewrite the relative links
+in this file to that URL.
 
-The packaged app runs the same local server the CLI and MCP use. It keeps data in the per-user directory
+Releases live on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest).
+`scripts/install.sh` (POSIX) and `scripts/install.ps1` (Windows) fetch the latest stable release tarball, check it against that
+release's `SHA256SUMS`, and write `~/.hud/app` (the bundle) plus `~/.hud/bin/hud` (the launcher). Node.js 18 or newer
+is the only prerequisite. Nothing is code-signed and no app bundle is shipped, so there is no Gatekeeper or SmartScreen
+step and no installer to trust.
+
+    hud                                start the server if needed, open the board in the browser
+    hud status                         pid, port, mode, data dir, save health
+    hud stop | reveal                  stop the server / open the data dir
+    hud update [--check]               verified in-place update of ~/.hud/app
+    hud mcp install | status | print | uninstall
+    hud serve                          run the server in the foreground
+    hud quickstart | hud guide [--section anchor | decentralized | lead]
+
+The installed bundle runs the same local server the CLI and MCP use. It keeps data in the per-user directory
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
-(one board, one server). `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. On startup, a newer packaged
-app backs up the board and replaces only its own older packaged server in that directory. It refuses to replace a
-source or other installation, a newer server, or a server reporting a save error. **Quit HUD for update** backs up the
-board and stops that server, including when **Keep server running after quit** is on. Reconnect existing clients after
-an update. Publishing a release is described in `AGENTS.md`.
-
-Prebuilt downloads for the latest stable release are on [GitHub Releases](https://github.com/CodeKnight314/hud/releases/latest):
-macOS arm64/x64 DMGs, a Windows x64 installer and Linux x64 AppImage/deb. This tree's app version is 0.2.0
-(`package.json`, `appdir/package.json`, and both version fields in `package-lock.json`); Settings shows that same version.
-A signed macOS release is Developer ID–signed and notarized, and a signed Windows installer is Authenticode-signed;
-open those normally. An unsigned build (a release made without the signing secrets, or a package you build yourself)
-still needs a first-launch bypass. On macOS 15 and later Gatekeeper says it cannot verify the app: open
-**System Settings → Privacy & Security**, choose **Open Anyway** for hud, or run
-`xattr -dr com.apple.quarantine /Applications/hud.app` once the app is in `/Applications`. Older macOS accepts
-right-click → **Open**. Windows may show a SmartScreen prompt: choose **More info → Run anyway**. Each OS builds its own artifact, and macOS signing only works on macOS. The secret names are in AGENTS.md.
-`dist/` output is produced by `electron-builder` from `electron-builder.yml`; `npm run bundle` alone just rebuilds
-`bundle/hud.mjs` (the CLI + server) with esbuild.
-
-A packaged app keeps its data in the per-user dir (`~/Library/Application Support/hud`, `%APPDATA%\hud`,
-`$XDG_DATA_HOME/hud`) and seeds the example probes and renderers into `<data>/probes` and `<data>/views` on first
-run. The port and data dir are fixed (one board, one server); the `HUD_*` path/port overrides only apply with `HUD_SCRATCH=1`.
-
-Open **Settings** from the app menu with ⌘, on macOS or File → Settings (Ctrl+,) on Windows/Linux; it is also available
-from the tray menu. Connections and update checks are native app features. Saved boards and their backups remain in the
-per-user data directory. On startup, a newer app backs up and replaces only its own older packaged server using that
-same directory. It refuses to replace a source or other installation, a newer server, or a server reporting a save
-error.
+(one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
+directory. This tree's version is 0.3.0 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+`hud version` prints it.
 
 ### Connections
 
-Settings → **Connections** shows status glyphs for Claude Code, Codex and OpenCode. **Registered** means
-the `hud` MCP entry is saved; it does not mean a client session is currently connected. Connecting or repairing from
-the packaged app installs or refreshes its managed stable `hud` command shim, then registers that command in the
-client's user-level configuration. Repair also fixes a stale registration that still points to a source checkout.
-Disconnect removes only hud's registration. Configuration files are backed up before writes, and existing client
-sessions must be restarted or reconnected to load changes.
-
-Use **Copy MCP configuration** for other clients or for manual setup. OpenCode JSONC is detected and left untouched so
-its comments are preserved; Settings provides copy/manual instructions. The **Install command** action requires the
-packaged app; a source checkout cannot install the app command. Linux AppImage and `.deb` builds both install a stable
-`hud` command: the AppImage shim stores the `.AppImage` path (the mount path changes on every launch) and resolves the
-CLI inside the fresh mount. Move the AppImage and run **Install command** again. The source CLI also supports:
+`hud mcp install` registers the installed launcher (`~/.hud/bin/hud`) with Claude Code, Codex and OpenCode, so a client
+never depends on `PATH`. `hud mcp status` is read-only: saved registrations, not live sessions. `hud mcp repair`
+refreshes an entry, including one that still points at a source checkout, and `hud mcp uninstall` removes only hud's
+entry. Configuration files are backed up before writes, and existing client sessions must be restarted or reconnected
+to load changes.
 
     hud mcp status [--json]
     hud mcp install [clients...] [--json]
@@ -1133,53 +1116,32 @@ CLI inside the fresh mount. Move the AppImage and run **Install command** again.
     hud mcp uninstall [clients...] [--json]
     hud mcp reconnect [--dry-run] [--json]
 
-`status` is read-only and checks saved registrations; it does not start or handshake with an MCP server. `--json`
-returns machine-readable status. Config backups are retained beside the config file.
+`--json` prints machine-readable status. Config backups stay beside the config file.
 
 ### Updates
 
-Settings → **Updates** shows the installed version and can check GitHub for the latest stable release. It offers the
-matching installer for the app's OS and architecture when that asset exists. **Install update** downloads that installer
-and checks its SHA256 against `SHA256SUMS` from the same GitHub release over HTTPS. That is a checksum check, not a
-developer signature or notarization. HUD asks before replacing this app and reopening it. **Not now** leaves the
-installed app unchanged and deletes the download. HUD never downloads or installs an update by itself: **Check when
-HUD opens** only looks for a release. **Download in browser** and **Quit HUD for update** remain for a manual replace.
-Quitting for an update backs up the board and stops the background server even when Keep server running after quit is
-enabled. An in-app install does the same backup, writes `reconnect.json` beside the board (the running version and the
-clients connected at that moment), stops the server, and keeps it stopped until this process quits. It then replaces a
-packaged `hud.app`, `hud.exe`, the running AppImage file, or `/opt/hud` and opens the new version. An AppImage is
-replaced in place, so a command shim that execs that same file keeps working, and the child that kept the server running
-is stopped before the file is replaced. On macOS the replaced `hud.app` has the download's quarantine attribute removed
-so it can launch; that removal is not a Gatekeeper or notarization check.
-The next hud build compares its version with those clients and with any later `x-hud-client-version`. A missing version
-or `0.0.0` is not a different build.
-When the server is newer, the app shows a one-shot reconnect checklist and `hud status` prints it. Dismiss it in
-Settings → Updates, or run `hud mcp reconnect` (add `--dry-run` to print it without clearing the reminder).
-In Claude Code the step is `/mcp`, then reconnect hud. Restart Codex and OpenCode so they respawn the MCP process. A client
-already running this server's version drops off the list. Reopening the same build does not show the checklist again.
-The update checker has existed since 0.1.1. Version 0.1.0 has none, so the first upgrade from 0.1.0 is a manual
-installer download.
+    hud update --check    report the latest stable release without changing anything
+    hud update            download, verify SHA256SUMS, swap ~/.hud/app, restart a running server
 
-The native workflow runs for pushes to `release/**` branches and manual dispatches, which build installers on native
-OS runners and upload seven-day workflow artifacts. When the signing secrets in AGENTS.md are configured, the macOS
-DMGs are Developer ID–signed and notarized and the Windows installer is Authenticode-signed. When those secrets are
-absent, the same jobs publish unsigned installers and the macOS app is ad-hoc signed so it is not reported as damaged.
-A stable `vX.Y.Z` tag push runs the same four native build jobs after checking the tag against `package.json`,
-`appdir/package.json` and both version fields in `package-lock.json`. After every build, signature check and
-packaged-runtime check passes, CI gathers exactly five named installers (two macOS DMGs, the Windows installer, Linux
-AppImage and Linux `.deb`), validates them, writes `SHA256SUMS`, and creates a GitHub draft release. It does not
-publish the draft. The update checker ignores drafts and prereleases, so a release appears to users only after someone
-reviews and manually publishes it.
+Drafts and prereleases are ignored, so a version appears only after a person publishes it. The swap keeps the old tree
+until the new one is in place, and the data directory is untouched. An update writes `reconnect.json` beside the board
+with the clients connected at that moment, so the next start offers a one-shot reconnect checklist: `hud status` prints
+it, and `hud mcp reconnect` prints it and clears the reminder (`--dry-run` prints it and keeps the reminder). In Claude
+Code the step is `/mcp`; restart Codex and OpenCode so they respawn the MCP process. A missing client version or `0.0.0`
+is not a different build, and a client already on the server's version drops off the list.
 
-For v0.2.0, leave every published stable release unchanged. The four version fields already agree at 0.2.0.
+The release workflow runs `npm test` on Linux, macOS and Windows, then builds one tarball (`scripts/pack-cli.mjs`: the
+esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `SHA256SUMS`, and smoke-tests the installer
+against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
+`install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
+
+For v0.3.0, leave every published stable release unchanged. The four version fields already agree at 0.3.0.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.2.0`. CI verifies that tag against the four version fields, then runs the four
-   native build jobs.
-2. After every build, signature check and packaged-runtime check passes, CI gathers the five installers, validates them, writes
-   `SHA256SUMS`, and creates a draft. It does not publish the draft.
-3. Review the draft's five installers, `SHA256SUMS` and generated notes, then publish it manually. Only then can Settings
-   find 0.2.0 as the latest stable release.
+1. A person pushes the stable tag `v0.3.0`. CI verifies the tag against the four version fields, runs the test
+   matrix, and builds the tarball.
+2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.3.0.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder
@@ -1195,9 +1157,8 @@ Merging does not create a tag or a GitHub release.
 and backed up before any write, and only the `hud` entry is ever touched. Backups stay beside the config file.
 Disconnect removes that entry and nothing else. OpenCode JSONC is detected and left untouched so its comments survive;
 use `hud mcp print` and edit it by hand. `--json` on `status`, `install`, `repair` and `uninstall` prints
-machine-readable status. When run from a packaged binary, install registers `<hud> mcp`, so nothing else needs to be
-on `PATH`. Connecting or repairing from the packaged app also refreshes the managed `hud` command shim, then registers
-that command. Existing client sessions must be restarted or reconnected after a change.
+machine-readable status. Install registers the absolute launcher path, so nothing needs to be on `PATH`. Existing client sessions must be
+restarted or reconnected after a change.
 
 In the packaged desktop app, Settings → Connections → **Install command** (or `hud cli install`) puts the `hud` command
 on your `PATH`; the managed shim points at the app binary, so the CLI and MCP server use the same program. The app

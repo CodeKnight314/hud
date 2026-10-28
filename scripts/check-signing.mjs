@@ -172,16 +172,13 @@ if (savedMode === undefined) delete process.env.HUD_SIGNING_MODE;
 else process.env.HUD_SIGNING_MODE = savedMode;
 
 const workflow = readFileSync(join(root, '.github/workflows/build.yml'), 'utf8');
-const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
 const builder = readFileSync(join(root, 'electron-builder.yml'), 'utf8');
 const entitlements = readFileSync(join(root, 'build/entitlements.mac.plist'), 'utf8');
-for (const name of SIGNING_SECRETS) {
-  ok(workflow.includes(`secrets.${name}`), `build workflow passes secrets.${name}`);
-  ok(agents.includes(name), `AGENTS.md documents ${name}`);
-}
-ok(workflow.includes('scripts/signing.mjs prepare'), 'build workflow prepares signing before electron-builder');
-ok(workflow.includes('scripts/signing.mjs verify'), 'build workflow verifies the signature');
-ok(!workflow.includes('CSC_IDENTITY_AUTO_DISCOVERY'), 'auto-discovery is decided by the signing plan');
+// The release ships the CLI tarball, which never touches a certificate: signing stays a local app-build concern.
+for (const name of SIGNING_SECRETS) ok(!workflow.includes(`secrets.${name}`), `release workflow passes no ${name}`);
+ok(!workflow.includes('scripts/signing.mjs'), 'release workflow does not prepare signing');
+ok(!workflow.includes('electron-builder'), 'release workflow does not build app installers');
+ok(workflow.includes('node scripts/pack-cli.mjs'), 'release workflow builds the CLI tarball');
 ok(builder.includes('hardenedRuntime: true') && builder.includes('notarize: true'), 'macOS signing enables hardened runtime and notarization');
 ok(builder.includes('build/entitlements.mac.plist') && builder.includes('build/entitlements.mac.inherit.plist'), 'macOS signing points at the entitlements');
 ok(builder.includes('sign: true') && builder.includes('scripts/notarize-dmg.mjs'), 'DMGs are signed and notarized');

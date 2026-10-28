@@ -59,14 +59,8 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv = process.e
 }
 
 try {
-  const guide = readFileSync(join(repo, 'GUIDE.md'), 'utf8');
-  const readme = readFileSync(join(repo, 'README.md'), 'utf8');
-  assert.equal(guide.includes('AppImage command integration is unsupported'), false);
-  assert.equal(guide.includes('AppImage builds do not support'), false);
-  assert.match(guide, /AppImage shim stores the `\.AppImage` path/);
-  assert.match(readme, /Settings → Connections → \*\*Install command\*\*/);
-  assert.match(readme, /If you move an\nAppImage, run that action again/);
-  assert.equal(readme.split('\n').length <= 100, true);
+  // The Electron app shim is development-only now; the shipped CLI is the curl install
+  // (scripts/check-install.ts covers it). These checks exercise the shim itself.
 
   const execPath = join('/opt', 'mount', 'hud');
   const resourcesPath = join('/opt', 'mount', 'resources');

@@ -9,7 +9,7 @@ import { actorAllowed, boardCookie, isBoardRequest } from './actor.ts';
 import { summarize, ticketsView } from './summary.ts';
 import type { Alert, HudEvent, Item, SearchQuery } from './types.ts';
 import { spawn } from 'node:child_process';
-import { asset, assetKeys, isPackaged } from './assets.ts';
+import { asset, assetKeys, isBundle, isPackaged } from './assets.ts';
 import { quickstartText } from './docs.ts';
 import { coordinationDoc, GuideError, renderGuide } from './guide.ts';
 import { ROOT, config } from './config.ts';
@@ -409,7 +409,8 @@ route('GET', '/api/health', () => ({
   stateVersion: STATE_VERSION,
   pid: process.pid,
   port: PORT,
-  mode: isPackaged() ? 'packaged' : 'source',
+  // packaged = the Electron app; bundle = the curl install; source = a checkout (npm run dev)
+  mode: isPackaged() ? 'packaged' : isBundle() ? 'bundle' : 'source',
   dataDir,
 }));
 

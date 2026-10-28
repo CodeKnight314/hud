@@ -1,21 +1,17 @@
-// v0.2.0 is the release prepared for a later manual tag. Publication stays a draft until a person publishes it.
+// The release is a terminal install: one CLI tarball, its checksum and the two install scripts.
+// A vX.Y.Z tag is still the only trigger, and the release stays a draft until a person publishes it.
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const release = '0.2.0';
+const release = '0.3.0';
 const tag = `v${release}`;
-const installers = [
-  `hud-${release}-linux-amd64.deb`,
-  `hud-${release}-linux-x86_64.AppImage`,
-  `hud-${release}-mac-arm64.dmg`,
-  `hud-${release}-mac-x64.dmg`,
-  `hud-${release}-win-x64.exe`,
-];
+const tarball = `hud-${release}.tar.gz`;
+const members = ['hud.mjs', 'package.json', 'web/index.html', 'GUIDE.md', 'QUICKSTART.md', 'views/README.md', 'PLAYBOOKS.md', 'STYLE.md', 'PRODUCT.md'];
 
 let failures = 0;
 const ok = (cond, msg) => {
@@ -24,137 +20,140 @@ const ok = (cond, msg) => {
   console.error(`FAIL ${msg}`);
 };
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
-}
+const read = (path) => readFileSync(join(root, path), 'utf8');
+const readJson = (path) => JSON.parse(read(path));
+const tempDir = () => mkdtempSync(join(tmpdir(), 'hud-release-'));
 
 function runRelease(args) {
-  return spawnSync(process.execPath, [join(root, 'scripts/release-assets.mjs'), ...args], {
-    cwd: root,
-    encoding: 'utf8',
-  });
+  return spawnSync(process.execPath, [join(root, 'scripts/release-assets.mjs'), ...args], { cwd: root, encoding: 'utf8' });
 }
 
-function installerBytes(name, { magic = true } = {}) {
-  const size = 1_000_001;
-  const buf = Buffer.alloc(size);
-  if (!magic) {
-    buf.write('????');
-    return buf;
+/** A release folder shaped like the one the cli job uploads. */
+function writeRelease(dir, { omit = [], tamper = false, weakScript = null } = {}) {
+  const tree = join(dir, 'tree');
+  for (const member of members) {
+    const path = join(tree, member);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, member === 'package.json' ? JSON.stringify({ version: release }) : `${member}\n`);
   }
-  if (name.endsWith('.dmg')) buf.write('koly', size - 512);
-  else if (name.endsWith('.exe')) buf.write('MZ');
-  else if (name.endsWith('.AppImage')) buf.set([0x7f, 0x45, 0x4c, 0x46]);
-  else if (name.endsWith('.deb')) buf.write('!<arch>\n');
-  else throw new Error(`unexpected installer name ${name}`);
-  return buf;
-}
-
-function writeInstallers(dir, names, options) {
-  const bytes = new Map();
-  for (const name of names) {
-    const buf = installerBytes(name, options);
-    bytes.set(name, buf);
-    writeFileSync(join(dir, name), buf);
+  const built = join(dir, tarball);
+  const tar = spawnSync('tar', ['-czf', built, '-C', tree, '.'], { encoding: 'utf8' });
+  if (tar.status !== 0) throw new Error(tar.stderr);
+  rmSync(tree, { recursive: true, force: true });
+  const digest = createHash('sha256').update(readFileSync(built)).digest('hex');
+  writeFileSync(join(dir, 'SHA256SUMS'), `${tamper ? 'f'.repeat(64) : digest}  ${tarball}\n`);
+  for (const script of ['install.sh', 'install.ps1']) {
+    writeFileSync(join(dir, script), weakScript === script ? '#!/bin/sh\necho install\n' : `# verify\nSHA256SUMS\n`);
   }
-  return bytes;
+  for (const name of omit) rmSync(join(dir, name), { force: true });
 }
 
-function tempDir() {
-  return mkdtempSync(join(tmpdir(), 'hud-release-'));
-}
-
-const lock = readJson(join(root, 'package-lock.json'));
-const versions = [
-  ['package.json', readJson(join(root, 'package.json')).version],
-  ['appdir/package.json', readJson(join(root, 'appdir/package.json')).version],
+// ---- versions ---------------------------------------------------------------------------------
+const lock = readJson('package-lock.json');
+for (const [source, version] of [
+  ['package.json', readJson('package.json').version],
+  ['appdir/package.json', readJson('appdir/package.json').version],
   ['package-lock.json', lock.version],
   ['package-lock.json packages[""]', lock.packages?.['']?.version],
-];
-for (const [source, version] of versions) ok(version === release, `${source} is ${version}; expected ${release}`);
+]) {
+  ok(version === release, `${source} is ${version}; expected ${release}`);
+}
 
 const agreed = runRelease(['--check-version', tag]);
 ok(agreed.status === 0, `version check for ${tag} failed: ${agreed.stderr || agreed.stdout}`);
-const mismatched = runRelease(['--check-version', 'v0.2.1']);
-ok(mismatched.status !== 0 && /does not match package version 0\.2\.0/.test(mismatched.stderr), 'a newer tag is rejected');
+const mismatched = runRelease(['--check-version', 'v0.3.1']);
+ok(mismatched.status !== 0 && /does not match package version 0\.3\.0/.test(mismatched.stderr), 'a newer tag is rejected');
 const bare = runRelease(['--check-version']);
-ok(bare.status === 0 && bare.stdout.includes('0.2.0'), 'package versions agree without a tag');
+ok(bare.status === 0 && bare.stdout.includes(release), 'package versions agree without a tag');
 
-const validDir = tempDir();
+// ---- release folder ---------------------------------------------------------------------------
+const valid = tempDir();
 try {
-  const bytes = writeInstallers(validDir, installers);
-  const wrongTag = runRelease([validDir, 'v0.1.3']);
-  ok(wrongTag.status !== 0 && /does not match package version/.test(wrongTag.stderr), 'v0.1.3 does not match the prepared version');
-  const prepared = runRelease([validDir, tag]);
-  ok(prepared.status === 0, `installer validation failed: ${prepared.stderr || prepared.stdout}`);
-  const sums = readFileSync(join(validDir, 'SHA256SUMS'), 'utf8');
-  const expectedSums = `${installers.map((name) => `${createHash('sha256').update(bytes.get(name)).digest('hex')}  ${name}`).join('\n')}\n`;
-  ok(sums === expectedSums, 'SHA256SUMS lists the five installers with two-space checksums');
-  const again = runRelease([validDir, tag]);
-  ok(again.status !== 0 && /unexpected: SHA256SUMS/.test(again.stderr), 'checksum file is not treated as an installer');
+  writeRelease(valid);
+  const wrongTag = runRelease([valid, 'v0.2.0']);
+  ok(wrongTag.status !== 0 && /does not match package version/.test(wrongTag.stderr), 'an older tag does not match the prepared version');
+  const prepared = runRelease([valid, tag]);
+  ok(prepared.status === 0, `release validation failed: ${prepared.stderr || prepared.stdout}`);
+  ok(/Validated hud-0\.3\.0\.tar\.gz/.test(prepared.stdout), 'the validator names the tarball it checked');
 } finally {
-  rmSync(validDir, { recursive: true, force: true });
+  rmSync(valid, { recursive: true, force: true });
 }
 
-const brokenDir = tempDir();
+const tampered = tempDir();
 try {
-  writeInstallers(brokenDir, installers, { magic: false });
-  const broken = runRelease([brokenDir, tag]);
-  ok(broken.status !== 0 && /file signature|koly trailer/.test(broken.stderr), 'installers with the wrong signature are rejected');
+  writeRelease(tampered, { tamper: true });
+  const bad = runRelease([tampered, tag]);
+  ok(bad.status !== 0 && /does not match SHA256SUMS/.test(bad.stderr), 'a tarball that does not match its checksum is rejected');
 } finally {
-  rmSync(brokenDir, { recursive: true, force: true });
+  rmSync(tampered, { recursive: true, force: true });
 }
 
-const partialDir = tempDir();
+const missing = tempDir();
 try {
-  writeInstallers(partialDir, installers.slice(0, 4));
-  writeFileSync(join(partialDir, 'notes.txt'), 'not an installer\n');
-  const partial = runRelease([partialDir, tag]);
-  ok(partial.status !== 0 && /missing:/.test(partial.stderr) && /unexpected: notes\.txt/.test(partial.stderr), 'the release folder must be exactly the five installers');
+  writeRelease(missing, { omit: ['install.ps1'] });
+  const bad = runRelease([missing, tag]);
+  ok(bad.status !== 0 && /missing: install\.ps1/.test(bad.stderr), 'both install scripts must be present');
 } finally {
-  rmSync(partialDir, { recursive: true, force: true });
+  rmSync(missing, { recursive: true, force: true });
 }
 
+const weak = tempDir();
+try {
+  writeRelease(weak, { weakScript: 'install.sh' });
+  const bad = runRelease([weak, tag]);
+  ok(bad.status !== 0 && /install\.sh does not verify SHA256SUMS/.test(bad.stderr), 'an installer that skips the checksum is rejected');
+} finally {
+  rmSync(weak, { recursive: true, force: true });
+}
+
+// ---- workflow ---------------------------------------------------------------------------------
 function pushBranchEntries(text) {
   const match = text.match(/^on:\n {2}push:\n {4}branches:\n((?: {6}- .+\n)*)/m);
   if (!match) return null;
   return [...match[1].matchAll(/^ {6}- (.+)$/gm)].map((item) => item[1]);
 }
 
-const workflow = readFileSync(join(root, '.github/workflows/build.yml'), 'utf8');
+const workflow = read('.github/workflows/build.yml');
 const branches = pushBranchEntries(workflow);
 ok(Array.isArray(branches), 'on.push.branches is a list');
-ok(branches?.length === 1 && branches[0] === "'release/**'", `native-build branches are only release/** (found ${(branches || []).join(', ')})`);
-ok(!branches?.some((entry) => entry.includes('main') || entry.includes('0.2.0')), 'the branches list does not release on main or 0.2.0');
-ok(workflow.includes("tags:\n      - 'v*'"), 'version tags start native builds');
+ok(branches?.length === 1 && branches[0] === "'release/**'", `release branches are only release/** (found ${(branches || []).join(', ')})`);
+ok(workflow.includes("tags:\n      - 'v*'"), 'version tags start the release build');
 ok(workflow.includes('workflow_dispatch:'), 'manual dispatch can build artifacts');
+ok(workflow.includes('node scripts/pack-cli.mjs'), 'the workflow builds the CLI tarball');
+ok(workflow.includes('dist-cli/install.sh'), 'the workflow smoke-tests the installer');
+ok(!/electron-builder|scripts\/signing\.mjs|--mac dmg|--win nsis/.test(workflow), 'the release workflow no longer builds or signs app installers');
+
 const draftAt = workflow.indexOf('\n  draft-release:');
 ok(draftAt > 0, 'draft-release job exists');
 const draft = draftAt > 0 ? workflow.slice(draftAt) : '';
 ok(draft.includes("if: startsWith(github.ref, 'refs/tags/v')"), 'the draft job runs only for a version tag');
-ok(draft.includes('node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"'), 'the draft job validates installers and writes checksums');
+ok(draft.includes('node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"'), 'the draft job validates the tarball, checksums and scripts');
 ok(draft.includes('gh release create') && draft.includes('--draft') && draft.includes('--verify-tag'), 'the workflow creates a verified draft release');
 ok(!/gh release edit/.test(draft) && !/--draft=false/.test(draft), 'the workflow does not publish the draft');
 
-const guide = readFileSync(join(root, 'GUIDE.md'), 'utf8');
-const agents = readFileSync(join(root, 'AGENTS.md'), 'utf8');
-ok(guide.includes("This tree's app version is 0.2.0"), 'GUIDE states the app version is 0.2.0');
-ok(guide.includes('`v0.2.0`'), 'GUIDE names the manual tag');
-ok(guide.includes('leave every published stable release unchanged'), 'GUIDE uses the shared release phrase');
-ok(guide.includes('update checker has existed since 0.1.1') && guide.includes('0.1.0 has none'), 'GUIDE keeps the 0.1.0 upgrade note');
-ok(guide.includes('Merging does not create a tag or a GitHub release.'), 'GUIDE keeps publication manual');
-ok(!/releases\/tag\/v\d/.test(guide), 'GUIDE does not pin a download tag');
-ok(agents.includes('The package version is 0.2.0'), 'AGENTS states the package version');
-ok(agents.includes('published stable releases unchanged'), 'AGENTS uses the shared release phrase');
-ok(!/v0\.1\.0/.test(agents), 'AGENTS does not treat v0.1.0 as the standing release');
-ok(agents.includes('tag `v0.2.0`'), 'AGENTS names the manual tag');
+// ---- docs -------------------------------------------------------------------------------------
+const readme = read('README.md');
+const guide = read('GUIDE.md');
+const agents = read('AGENTS.md');
+const quickstart = read('QUICKSTART.md');
+ok(readme.includes('install.sh'), 'README installs from the terminal');
+ok(readme.includes('hud update'), 'README documents hud update');
+ok(!/\.dmg|SmartScreen|Open Anyway/.test(readme), 'README no longer describes app installers or Gatekeeper');
+ok(quickstart.includes('install.sh') && quickstart.includes('hud update'), 'QUICKSTART covers install and update');
+ok(guide.includes("This tree's version is 0.3.0"), 'GUIDE states the version');
+ok(guide.includes('hud update'), 'GUIDE documents updates');
+ok(guide.includes('tag `v0.3.0`'), 'GUIDE names the manual tag');
+ok(guide.includes('leave every published stable release unchanged'), 'GUIDE keeps the shared release phrase');
+ok(agents.includes('package version is 0.3.0'), 'AGENTS states the package version');
+ok(agents.includes('published stable releases unchanged'), 'AGENTS keeps the shared release phrase');
 ok(agents.includes('Do not create the tag, publish the release, or run a release on merge'), 'AGENTS forbids automatic publication');
+ok(!/v0\.1\.0/.test(agents), 'AGENTS does not treat v0.1.0 as the standing release');
 
-const settingsJs = readFileSync(join(root, 'web/settings.js'), 'utf8');
-const main = readFileSync(join(root, 'electron/main.ts'), 'utf8');
-const server = readFileSync(join(root, 'src/server.ts'), 'utf8');
+// ---- version surfaces -------------------------------------------------------------------------
+const settingsJs = read('web/settings.js');
+const main = read('electron/main.ts');
+const server = read('src/server.ts');
 ok(settingsJs.includes("app-version').textContent = state.version"), 'Settings sidebar shows the app version');
-ok(settingsJs.includes("current-version').textContent = u.currentVersion || appState?.version"), 'Settings updates page shows the app version');
 ok(!/\b0\.1\.\d+\b/.test(settingsJs), 'Settings has no hard-coded 0.1.x version');
 ok(main.includes("asset('package.json')") && /desktopSettings\(\{\s*version,/.test(main), 'Settings receives the package.json version');
 ok(server.includes("asset('package.json'") && server.includes('version: VERSION'), 'health reports the package.json version');
@@ -163,4 +162,4 @@ if (failures) {
   console.error(`FAIL ${failures} release check(s)`);
   process.exit(1);
 }
-console.log('PASS release: v0.2.0 versions, installer checksums, and a manual draft');
+console.log('PASS release: 0.3.0 versions, CLI tarball + checksums + install scripts, and a manual draft');

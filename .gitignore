@@ -10,3 +10,4 @@ appdir/main.mjs
 *.p8
 *.p12
 *.pfx
+dist-cli/

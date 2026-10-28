@@ -2,7 +2,8 @@ import { accessSync, chmodSync, closeSync, constants, existsSync, lstatSync, mkd
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { appImageBootstrapPath, appImageBootstrapSource, appImageTarget, ensureAppImageBootstrap, resolveAppImageCliEntry } from './appimage-cli.ts';
-import { isElectron } from './assets.ts';
+import { isBundle, isElectron } from './assets.ts';
+import { launcherPath } from './install.ts';
 import { config } from './config.ts';
 import { bundledCli } from './electron-runtime.ts';
 
@@ -221,6 +222,11 @@ function isExecutable(path: string): boolean {
 
 /** Structured, read-only state for the installed command shim. */
 export function cliInfo(): CommandInfo {
+  if (!isElectron() && isBundle()) {
+    const launcher = launcherPath();
+    const ready = existsSync(launcher);
+    return { installed: ready, ready, path: ready ? launcher : null, detail: ready ? `curl install: ${launcher}` : `missing: ${launcher}` };
+  }
   const path = installedShim();
   if (!isElectron()) {
     return {

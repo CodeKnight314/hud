@@ -1,4 +1,4 @@
-name: native builds
+name: cli release
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-build-${{ github.ref }}
+  group: hud-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -34,31 +34,15 @@ jobs:
             node scripts/release-assets.mjs --check-version
           fi
 
-  build:
-    name: ${{ matrix.platform }} / ${{ matrix.arch }}
+  test:
+    name: test / ${{ matrix.os }}
     needs: version
-    timeout-minutes: 60
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            platform: macos
-            arch: arm64
-            args: --mac dmg --arm64
-          - runner: macos-15-intel
-            platform: macos
-            arch: x64
-            args: --mac dmg --x64
-          - runner: windows-2025
-            platform: windows
-            arch: x64
-            args: --win nsis --x64
-          - runner: ubuntu-24.04
-            platform: linux
-            arch: x64
-            args: --linux AppImage deb --x64
-    runs-on: ${{ matrix.runner }}
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
@@ -69,73 +53,54 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
-      - name: Build native installers
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          CSC_NAME: ${{ secrets.CSC_NAME }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: node scripts/signing.mjs prepare --platform "${{ matrix.platform }}" --exec -- npm run dist -- --publish never --config.directories.output=dist/release ${{ matrix.args }}
-      - name: Verify code signature
-        run: node scripts/signing.mjs verify --platform "${{ matrix.platform }}" dist/release
-      - name: Check packaged runtime
-        run: node scripts/check-packaged.mjs dist/release ${{ matrix.arch }}
-      - name: Normalize installer filenames
-        env:
-          PLATFORM: ${{ matrix.platform }}
-          ARCH: ${{ matrix.arch }}
+      - name: Install Electron's shared libraries (Linux UI check)
+        if: runner.os == 'Linux'
         run: |
-          node --input-type=module <<'NODE'
-          import { readFile, readdir, rename, stat } from 'node:fs/promises';
-          import { resolve } from 'node:path';
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libgbm1 libgtk-3-0 libasound2t64
+      - run: npm test
 
-          const version = JSON.parse(await readFile('package.json', 'utf8')).version;
-          const entries = await readdir('dist/release');
-          const plans = process.env.PLATFORM === 'macos'
-            ? [{ extension: '.dmg', suffix: `mac-${process.env.ARCH}.dmg` }]
-            : process.env.PLATFORM === 'windows'
-              ? [{ extension: '.exe', suffix: `win-${process.env.ARCH}.exe` }]
-              : [
-                  { extension: '.AppImage', suffix: 'linux-x86_64.AppImage' },
-                  { extension: '.deb', suffix: 'linux-amd64.deb' },
-                ];
-
-          for (const { extension, suffix } of plans) {
-            const matches = entries.filter((name) => name.endsWith(extension));
-            if (matches.length !== 1) {
-              throw new Error(`expected one ${extension} installer, found ${matches.length}`);
-            }
-            const source = resolve('dist/release', matches[0]);
-            if (!(await stat(source)).isFile()) throw new Error(`${matches[0]} is not a regular file`);
-            const target = resolve('dist/release', `hud-${version}-${suffix}`);
-            if (source !== target) await rename(source, target);
-          }
-          NODE
-      - name: Upload installers
+  cli:
+    name: cli bundle
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Build the release tarball and checksums
+        run: node scripts/pack-cli.mjs
+      - name: Smoke-test the tarball as a user would
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          work=$(mktemp -d)
+          tar -xzf "dist-cli/hud-$version.tar.gz" -C "$work"
+          test -f "$work/hud.mjs"
+          test -d "$work/web"
+          node "$work/hud.mjs" version --json | grep -F "\"version\": \"$version\""
+          node "$work/hud.mjs" --help > /dev/null
+          HUD_HOME="$work/home" HUD_ASSET_DIR="$PWD/dist-cli" HUD_NO_PATH_HINT=1 sh dist-cli/install.sh
+          "$work/home/bin/hud" version --json | grep -F "\"version\": \"$version\""
+          test -x "$work/home/bin/hud"
+      - name: Upload the CLI release assets
         uses: actions/upload-artifact@v4
         with:
-          name: hud-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            dist/release/*.dmg
-            dist/release/*.exe
-            dist/release/*.AppImage
-            dist/release/*.deb
+          name: hud-cli
+          path: dist-cli/*
           if-no-files-found: error
           retention-days: 7
 
-  # A version tag is the only release trigger. Branch pushes, including 0.2.0, and
-  # workflow_dispatch upload build artifacts and stop. Do not publish from a merge.
+  # A version tag is the only release trigger. Branch pushes and workflow_dispatch build the
+  # tarball and stop. Do not publish from a merge.
   draft-release:
     name: Create draft release
-    needs: build
+    needs: cli
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -149,13 +114,12 @@ jobs:
           ref: ${{ github.ref }}
       - uses: actions/download-artifact@v4
         with:
-          pattern: hud-*
+          name: hud-cli
           path: release-assets
-          merge-multiple: true
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Validate installers and write checksums
+      - name: Validate the tarball, checksums and install scripts
         run: node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"
       - name: Create GitHub draft release
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "macOS DMGs are Developer ID–signed and notarized, and the Windows installer is Authenticode-signed, when the signing secrets in AGENTS.md are configured. Otherwise these installers are unsigned; see the README and GUIDE for the first-launch difference. Review the assets before publishing." --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "hud is installed from a terminal: no app bundle and no code signing. The tarball is verified against SHA256SUMS by install.sh / install.ps1, and \`hud update\` fetches the next release the same way. Review the assets before publishing." --generate-notes

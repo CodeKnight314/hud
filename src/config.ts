@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SOURCE_ROOT, isPackaged } from './assets.ts';
+import { SOURCE_ROOT, isBundle, isPackaged } from './assets.ts';
 
 /** @deprecated alias of SOURCE_ROOT, kept for importers; assets.ts is the one place that knows */
 export const ROOT = SOURCE_ROOT;
@@ -31,14 +31,16 @@ function parsePort(raw: string | undefined): number {
 
 export function config() {
   const packaged = isPackaged();
+  // an installed CLI keeps its mutable probes/views beside the user's data, exactly like the app
+  const writable = packaged || isBundle();
   const dataDir = resolve(env('HUD_DATA') || userDataDir());
   return {
     port: parsePort(env('HUD_PORT')),
     dataDir,
     // packaged: probes live beside the user's data (seeded from the shipped defaults on first run)
-    probesDir: resolve(env('HUD_PROBES') || (packaged ? join(dataDir, 'probes') : join(SOURCE_ROOT, 'probes'))),
+    probesDir: resolve(env('HUD_PROBES') || (writable ? join(dataDir, 'probes') : join(SOURCE_ROOT, 'probes'))),
     // agent-authored chart renderers, loaded by the web UI; same layout rule as probes
-    viewsDir: resolve(env('HUD_VIEWS') || (packaged ? join(dataDir, 'views') : join(SOURCE_ROOT, 'views'))),
+    viewsDir: resolve(env('HUD_VIEWS') || (writable ? join(dataDir, 'views') : join(SOURCE_ROOT, 'views'))),
     packaged,
   };
 }

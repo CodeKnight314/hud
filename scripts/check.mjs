@@ -30,6 +30,7 @@ const suites = [
   'scripts/check-guide-slices.ts',
   'scripts/check-connections.ts',
   'scripts/check-cliinstall.ts',
+  'scripts/check-install.ts',
   'scripts/check-updates.ts',
   'scripts/check-persistence.ts',
   'scripts/check-persistence-banner.mjs',

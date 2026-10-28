@@ -31,19 +31,18 @@ ok(existsSync(join(root, 'build/icon.svg')), 'build/icon.svg exists');
 ok(!/npm run dist/.test(readme), 'README leaves release mechanics to AGENTS.md');
 ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT/.test(readme), 'README leaves dev env vars to AGENTS.md');
 ok(readme.includes('GUIDE.md'), 'README links the guide');
-ok(readme.includes('Developer ID') && readme.includes('notarized'), 'README says signed macOS releases are Developer ID-signed and notarized');
-ok(readme.includes('Authenticode'), 'README says signed Windows installers are Authenticode-signed');
-const signedReadme = readme.split(/Unsigned/)[0];
-ok(!/right-click/.test(signedReadme), 'signed-release instructions do not use the right-click workaround');
-ok(/Unsigned[\s\S]{0,400}Open Anyway/.test(readme), 'the unsigned first-launch bypass stays attached to unsigned builds');
-ok(guide.includes('Developer ID') && guide.includes('Authenticode'), 'GUIDE distinguishes signed macOS and Windows releases');
+ok(readme.includes('scripts/install.sh'), 'README installs from the terminal');
+ok(readme.includes('SHA256SUMS'), 'README says the install is checksum-verified');
+ok(readme.includes('hud update'), 'README documents hud update');
+ok(!/\.dmg|SmartScreen|Open Anyway|notarized/.test(readme), 'README ships no signed app installers');
+ok(guide.includes('scripts/install.sh') && guide.includes('hud update'), 'GUIDE documents the terminal install and updates');
 ok(readme.includes('QUICKSTART.md'), 'README links the human quickstart');
 ok(quickLines <= 120, `QUICKSTART is ${quickLines} lines; keep the human quickstart under 120`);
 ok(quickstart.includes('/releases/latest'), 'QUICKSTART links to /releases/latest');
 ok(!/releases\/tag\/v\d/.test(quickstart), 'QUICKSTART must not pin an old release tag');
 ok(!/\b0\.1\.[01]\b/.test(quickstart), 'QUICKSTART must not hard-code an old version');
 ok(!/npm run dist/.test(quickstart), 'QUICKSTART leaves release mechanics to AGENTS.md');
-ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT/.test(quickstart), 'QUICKSTART leaves dev env vars to AGENTS.md');
+ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT|HUD_HOME/.test(quickstart), 'QUICKSTART leaves dev env vars to AGENTS.md');
 for (const id of ['install', 'settings', 'attention', 'tickets']) {
   ok(new RegExp(`^## ${id[0].toUpperCase()}${id.slice(1)}$`, 'm').test(quickstart), `QUICKSTART has a ${id} section`);
 }
@@ -198,8 +197,8 @@ if (ways) {
 ok(guide.includes('/releases/latest'), 'GUIDE links downloads to /releases/latest');
 ok(guide.includes('latest stable release'), 'GUIDE names the latest stable release');
 ok(!/releases\/tag\/v\d/.test(guide), 'GUIDE must not pin a release tag for downloads');
-ok(guide.includes('update checker has existed since 0.1.1'), 'GUIDE keeps the update-checker version gate');
-ok(guide.includes('0.1.0 has none'), 'GUIDE keeps the 0.1.0 manual-upgrade gate');
+ok(guide.includes('hud update --check') && guide.includes('hud update'), 'GUIDE keeps the update commands');
+ok(guide.includes('ignores drafts and prereleases') || guide.includes('Drafts and prereleases are ignored'), 'GUIDE keeps the prerelease gate');
 ok(guide.includes('leave every published stable release unchanged'), 'GUIDE does not freeze one historical release');
 ok(!/v0\.1\.0/.test(agents), 'AGENTS.md must not treat v0.1.0 as the standing release');
 ok(agents.includes('published stable releases unchanged'), 'AGENTS.md leaves published releases unchanged');
