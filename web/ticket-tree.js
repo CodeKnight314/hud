@@ -193,7 +193,7 @@ export function createTicketTree({ onOpen } = {}) {
       r.x.t = p.x;
       r.y.t = p.y;
       r.s.t = 1;
-      r.o.t = FINISHED.has(n.status) ? 0.72 : 1;
+      r.o.t = n.status === 'canceled' ? 0.6 : 1;
       r.ringO.t = n.claimer ? 1 : 0;
       paintNode(r);
     }

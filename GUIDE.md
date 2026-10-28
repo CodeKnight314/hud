@@ -330,8 +330,8 @@ The human reads the same structure in the **Tickets view** (or press `l` on a bo
 list/tree/board, the completed filter — is [Tickets](QUICKSTART.md#tickets). Project chips switch
 the view to one project (or all of them); the project filter does the same. **list** groups by status, **tree**
 draws the ticket tree live (each node is an ident and a status glyph; elbows are `parent`, arrows are `blockedBy`,
-siblings run left to right in dependency order; a claimed node wears a ring, and context entries ripple from the
-tickets they ref), and **board** is a column per status. In list and board every task shows its assignee
+siblings run left to right in dependency order; gray is todo, yellow in progress, green done, red blocked; done work
+stays in the tree; a claimed node wears a ring, and context entries ripple from the tickets they ref), and **board** is a column per status. In list and board every task shows its assignee
 (`→name`) and its live claimer (`⊕name`); a dash means that side is unset. In the tree they are in the node's tooltip. `＋` beside a status adds a ticket
 inline. `hud ls tickets` prints the same ownership on each line. Filter that list with `project` and `owner`:
 `owner` is the claimer while a lease is held, otherwise the assignee, and `owner=none` (or `-`) matches tickets

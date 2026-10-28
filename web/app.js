@@ -2166,8 +2166,6 @@ function onEvent(e) {
       Object.assign(e.item, { x, y, w, h });
     }
     S.items.set(e.item.id, e.item);
-    const finished = (t) => t?.status === 'done' || t?.status === 'canceled';
-    if (e.item.type === 'ticket' && prev && !finished(prev) && finished(e.item)) noteFinished(e.item.id);
     if (e.item.board === S.board) {
       renderItem(e.item);
       refreshDerived();
@@ -4136,14 +4134,15 @@ function renderList() {
   const f = lfGet();
   const active = lfActive(f);
   const projectsById = new Map(projects.map((p) => [p.id, p]));
-  const tickets = allTickets.filter((t) => lfMatch(t, f, projectsById));
+  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  // the tree keeps finished work in place: a green branch is progress, not clutter to tuck away
+  const tickets = allTickets.filter((t) => lfMatch(t, shape === 'tree' ? { ...f, completed: true } : f, projectsById));
   const ticketIds = new Set(tickets.map((t) => t.id));
   const kidMap = new Map();
   for (const c of tickets) if (c.parent && ticketIds.has(c.parent)) (kidMap.get(c.parent) || kidMap.set(c.parent, []).get(c.parent)).push(c);
   const kidsOf = (id) => kidMap.get(id) || [];
   const isRoot = (t) => !t.parent || !ticketIds.has(t.parent);
 
-  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
   const rowHTML = (t, depth) => {
     const kids = kidsOf(t.id);
     const folded = S.open.has(t.id);
@@ -4228,16 +4227,12 @@ function renderList() {
     host.innerHTML = out;
     applyReadonlyControls(host);
   }
-  syncTrees(host, shape === 'tree' ? [...groups.map((g) => [g.project.id, g.list]), ...(loose.length ? [['', loose]] : [])] : [], allTickets);
+  syncTrees(host, shape === 'tree' ? [...groups.map((g) => [g.project.id, g.list]), ...(loose.length ? [['', loose]] : [])] : []);
 }
 
 /** one animated tree per project group, kept across renders so its nodes move instead of being rebuilt */
 const trees = new Map();
-/** ticket id -> time until a just-finished ticket leaves a tree that hides completed work */
-const justFinished = new Map();
-const FINISHED_LINGER_MS = 5000;
-function syncTrees(host, groups, allTickets) {
-  const now = Date.now();
+function syncTrees(host, groups) {
   const live = new Set();
   for (const [key, list] of groups) {
     const slot = host.querySelector(`.ttree-host[data-tree-key="${CSS.escape(key)}"]`);
@@ -4246,19 +4241,13 @@ function syncTrees(host, groups, allTickets) {
     let tree = trees.get(key);
     if (!tree) trees.set(key, (tree = createTicketTree({ onOpen: (id) => openDrawer(id) })));
     if (tree.el.parentNode !== slot) slot.appendChild(tree.el);
-    const shown = new Set(list.map((t) => t.id));
-    const lingering = allTickets.filter((t) => !shown.has(t.id) && (justFinished.get(t.id) ?? 0) > now && (key ? t.project === key : !t.project));
     const notes = new Map((S.queue?.items || []).map((r) => [r.id, r.note]));
-    tree.update([...list, ...lingering].map((t) => ({
+    tree.update(list.map((t) => ({
       id: t.id, ident: identOf(t), title: t.title || '', status: t.status || 'todo', parent: t.parent || null,
       blockedBy: t.blockedBy || [], assignee: t.assignee || null, claimer: S.claims.get(t.id)?.actor || null, decision: needsDecision(t), note: notes.get(t.id) || null,
     })));
   }
   for (const [key, tree] of trees) if (!live.has(key)) { tree.destroy(); trees.delete(key); }
-}
-function noteFinished(id) {
-  justFinished.set(id, Date.now() + FINISHED_LINGER_MS);
-  setTimeout(() => { justFinished.delete(id); scheduleList(); }, FINISHED_LINGER_MS + 50);
 }
 
 /** inline "new ticket" row — title, ⏎ to create, esc to cancel. No canvas coordinates involved. */

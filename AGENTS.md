@@ -219,8 +219,9 @@ Comments are the shape to copy. A new verb replaces `comment` in every row befor
 - UI: vanilla JS, no framework or bundler. The visual language is the dark desktop system in
   `STYLE.md`: layered surfaces, a sans-serif UI, monospace only for identifiers and measurements,
   rounded solid borders, and an accent reserved for selection. State is still shown by glyphs
-  (● ▲ ✕ ○ ◐ ✓). Exactly two status colours are allowed: **red** (`--red`) for a ticket that is blocked
-  or awaiting a decision, and for a monitor in error; **green** (`--green`) for done/ok. `--accent` is
+  (● ▲ ✕ ○ ◐ ✓). Exactly three status colours are allowed: **red** (`--red`) for a ticket that is blocked
+  or awaiting a decision, and for a monitor in error; **yellow** (`--yellow`) for a ticket in progress
+  (`doing` or `review`); **green** (`--green`) for done/ok. `todo` and `backlog` stay gray. `--accent` is
   chrome, not status. Colour never encodes anything a glyph doesn't also say. Light mode is deferred.
   All colours are CSS variables in `web/style.css`.
 - Match the surrounding code's density and naming. Keep comments short and only where the *why* isn't obvious.
