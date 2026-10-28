@@ -50,7 +50,10 @@ try {
   $old = Join-Path $Home_ 'app.old'
   Remove-Item -Recurse -Force $appNew, $old -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force -Path $appNew, (Join-Path $Home_ 'bin') | Out-Null
-  & tar -xzf (Join-Path $Tmp $name) -C $appNew
+  Copy-Item (Join-Path $Tmp $name) (Join-Path $appNew 'bundle.tar.gz')
+  Push-Location $appNew
+  try { & tar -xzf bundle.tar.gz } finally { Pop-Location }
+  Remove-Item -Force (Join-Path $appNew 'bundle.tar.gz')
   if ($LASTEXITCODE -ne 0) { Die 'could not unpack the download' }
   if (-not (Test-Path (Join-Path $appNew 'hud.mjs')) -or -not (Test-Path (Join-Path $appNew 'web'))) { Die 'the download is not a hud CLI bundle' }
 

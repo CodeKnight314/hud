@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bundleName, checksumFor, fetchBundle, installRoot, installedVersion, launcherPath, releaseInfo, sha256, swapApp, unpackBundle } from '../src/install.ts';
@@ -78,8 +78,9 @@ function makeBundle(dir: string, marker: string): string {
   writeFileSync(join(tree, 'web', 'index.html'), marker);
   writeFileSync(join(tree, 'package.json'), JSON.stringify({ version: '0.3.0' }));
   const tarball = join(dir, 'bundle.tar.gz');
-  const tar = spawnSync('tar', ['-czf', tarball, '-C', tree, '.'], { encoding: 'utf8' });
+  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: dir, encoding: 'utf8' });
   assert.equal(tar.status, 0, tar.stderr);
+  renameSync(join(dir, 'bundle.tar.gz'), tarball);
   return tarball;
 }
 
@@ -94,7 +95,8 @@ const nestedTree = join(root, 'nested', 'hud-0.3.0');
 mkdirSync(join(nestedTree, 'web'), { recursive: true });
 writeFileSync(join(nestedTree, 'hud.mjs'), '// nested\n');
 writeFileSync(join(nestedTree, 'web', 'index.html'), 'nested');
-spawnSync('tar', ['-czf', nestedTarball, '-C', join(root, 'nested'), 'hud-0.3.0'], { encoding: 'utf8' });
+spawnSync('tar', ['-czf', 'nested.tar.gz', 'hud-0.3.0'], { cwd: join(root, 'nested'), encoding: 'utf8' });
+renameSync(join(root, 'nested', 'nested.tar.gz'), nestedTarball);
 assert.match(unpackBundle(nestedTarball, join(root, 'nested-out')), /hud-0\.3\.0$/);
 
 const target = join(root, 'install', 'app');
@@ -109,7 +111,8 @@ const junk = join(root, 'junk');
 mkdirSync(join(junk, 'nested'), { recursive: true });
 writeFileSync(join(junk, 'nested', 'README.md'), 'hi');
 const junkTarball = join(root, 'junk.tar.gz');
-spawnSync('tar', ['-czf', junkTarball, '-C', junk, 'nested'], { encoding: 'utf8' });
+spawnSync('tar', ['-czf', 'junk.tar.gz', 'nested'], { cwd: junk, encoding: 'utf8' });
+renameSync(join(junk, 'junk.tar.gz'), junkTarball);
 assert.throws(() => unpackBundle(junkTarball, join(root, 'junk-out2')), /not a hud CLI bundle/);
 
 // ---- paths -----------------------------------------------------------------------------------

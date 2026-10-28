@@ -1,7 +1,7 @@
 // The release is a terminal install: one CLI tarball, its checksum and the two install scripts.
 // A vX.Y.Z tag is still the only trigger, and the release stays a draft until a person publishes it.
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -37,8 +37,11 @@ function writeRelease(dir, { omit = [], tamper = false, weakScript = null } = {}
     writeFileSync(path, member === 'package.json' ? JSON.stringify({ version: release }) : `${member}\n`);
   }
   const built = join(dir, tarball);
-  const tar = spawnSync('tar', ['-czf', built, '-C', tree, '.'], { encoding: 'utf8' });
+  // archive from the parent: the output must not land inside the tree being read, and Windows tar
+  // rejects an absolute C:\ output path
+  const tar = spawnSync('tar', ['-czf', 'bundle.tar.gz', '-C', 'tree', '.'], { cwd: dir, encoding: 'utf8' });
   if (tar.status !== 0) throw new Error(tar.stderr);
+  renameSync(join(dir, 'bundle.tar.gz'), built);
   rmSync(tree, { recursive: true, force: true });
   const digest = createHash('sha256').update(readFileSync(built)).digest('hex');
   writeFileSync(join(dir, 'SHA256SUMS'), `${tamper ? 'f'.repeat(64) : digest}  ${tarball}\n`);
