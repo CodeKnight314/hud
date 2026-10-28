@@ -122,4 +122,9 @@ jobs:
       - name: Validate the tarball, checksums and install scripts
         run: node scripts/release-assets.mjs release-assets "$GITHUB_REF_NAME"
       - name: Create GitHub draft release
-        run: gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft --title "HUD $GITHUB_REF_NAME" --notes "hud is installed from a terminal: no app bundle and no code signing. The tarball is verified against SHA256SUMS by install.sh / install.ps1, and \`hud update\` fetches the next release the same way. Review the assets before publishing." --generate-notes
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft \
+            --title "HUD $GITHUB_REF_NAME" \
+            --notes "hud installs from a terminal: one verified tarball, no app bundle and no code signing. Review the assets before publishing." \
+            --generate-notes
