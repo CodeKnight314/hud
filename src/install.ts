@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { SOURCE_ROOT, asset, isBundle } from './assets.ts';
@@ -119,8 +119,12 @@ export function bundleRoot(dir: string): string | null {
 /** Unpack a verified tarball and refuse anything that is not the CLI bundle. */
 export function unpackBundle(tarball: string, into: string): string {
   mkdirSync(into, { recursive: true });
-  // Windows tar treats an absolute "C:\..." archive as host:path, so run from its directory
-  const result = spawnSync('tar', ['-xzf', basename(tarball), '-C', into], { cwd: dirname(tarball), encoding: 'utf8' });
+  // Windows tar reads an absolute "C:\..." argument as host:path, so copy the archive beside the
+  // target and unpack it by a relative name from there.
+  const local = join(into, '.hud-bundle.tar.gz');
+  copyFileSync(tarball, local);
+  const result = spawnSync('tar', ['-xzf', basename(local)], { cwd: into, encoding: 'utf8' });
+  rmSync(local, { force: true });
   if (result.error) throw new Error(`could not run tar: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`tar failed: ${(result.stderr || '').trim() || `exit ${result.status}`}`);
   const root = bundleRoot(into);
