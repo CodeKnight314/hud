@@ -47,6 +47,7 @@ async function seed() {
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FAIL', text: 'retrying the printer path failed on empty input', session: 'peer' } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'SUMMARY', text: 'handoff: parser fix is in', session: 'peer' } });
   await jsonRequest('/api/context', { method: 'POST', body: { scope: `project:${project.id}`, kind: 'SUMMARY', text: 'project handoff is ready for review', session: 'peer' } });
+  await jsonRequest('/api/context', { method: 'POST', body: { scope: `run:${run.id}`, kind: 'FACT', text: 'the held task needs the parser fix first', refs: [held.id], session: 'peer' } });
   return { board, run, project, open, held, nonce };
 }
 
@@ -71,45 +72,56 @@ async function runUI(seedData) {
   });
   try {
     await win.loadURL(`${base.href}#${encodeURIComponent(seedData.board.id)}`);
-    await waitForDOM(win, `(() => document.querySelector('#board-list .board-row.on .name')?.textContent?.includes(${JSON.stringify(seedData.nonce)}))()`, 'seeded board');
-    const peerName = JSON.stringify(`Peer ${seedData.nonce}`);
-    await waitForDOM(win, `(() => {
-      const el = document.querySelector('#claim-widget');
-      if (!el || el.hidden) return false;
-      const text = el.textContent || '';
-      const ttl = el.querySelector('[data-claim-ttl]')?.getAttribute('data-claim-ttl') || '';
-      return text.includes(${peerName}) && text.includes('2 ready') && /^(\\d+h( \\d+m)?|\\d+m( \\d+s)?|\\d+s)$/.test(ttl);
-    })()`, 'claim widget on the canvas');
-    assert.equal(await browserEval(win, `document.querySelector('#claim-widget [data-claim-session]')?.getAttribute('data-claim-session')`), `Peer ${seedData.nonce}`, 'widget shows the session name');
-    assert.equal(await browserEval(win, `document.querySelector('#claim-widget [data-ready]')?.getAttribute('data-ready')`), '2', 'widget shows the ready count');
-    assert.match(await browserEval(win, `document.querySelector('#claim-widget [data-claim-ttl]')?.getAttribute('data-claim-ttl')`), /^\d+m(?: \d+s)?$|^\d+s$/, 'widget shows the claim TTL');
-    assert.equal(await browserEval(win, `document.body.classList.contains('supervision')`), false, 'claim glance stays on the canvas');
-    await click(win, '#claim-widget [data-claim-focus]');
-    await waitForDOM(win, `(() => document.querySelector('#drawer.open') && !document.body.classList.contains('supervision') && document.querySelector('#claim-widget') && !document.querySelector('#claim-widget').hidden)()`, 'claim opens on the canvas');
-    // sessions popover
+    await waitForDOM(win, `(() => document.querySelector('#board-name')?.textContent?.includes(${JSON.stringify(seedData.nonce)}))()`, 'seeded workspace in the picker');
+    const nodeFor = (title) => `[...document.querySelectorAll('#list .tt-node')].find((n) => n.querySelector('title')?.textContent.includes(${JSON.stringify(title)}))`;
+    const heldTitle = `Held task ${seedData.nonce}`;
+    const openTitle = `Open task ${seedData.nonce}`;
+    // a claimed ticket's tree node carries the claimed ring; an unclaimed one does not
+    await waitForDOM(win, `(() => { const held = ${nodeFor(heldTitle)}; const open = ${nodeFor(openTitle)}; return document.body.classList.contains('list') && held?.classList.contains('claimed') && open && !open.classList.contains('claimed'); })()`, 'claimed ring on the held ticket node');
+    assert.match(await browserEval(win, `${nodeFor(heldTitle)}.querySelector('title').textContent`), /claimed by ui-coordination-check/, 'held node names its claimer');
+    assert.match(await browserEval(win, `${nodeFor(heldTitle)}.getAttribute('aria-label')`), /claimed by ui-coordination-check/, 'held node announces its claimer');
+    assert.equal(await browserEval(win, `document.querySelector('#claim-widget, #supervision, #btn-runs, [data-sup-tab]')`), null, 'no canvas queue widget, Runs page or queue tab');
+
+    // the peer's lease reads in the drawer: who holds it, and (on hover) which session and how long is left
+    await browserEval(win, `(${nodeFor(heldTitle)}).dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await waitForDOM(win, `(() => { const box = document.querySelector('#drawer.open #claim-box'); return (box?.textContent || '').includes('⊕ ui-coordination-check is on it'); })()`, 'peer claim in the drawer');
+    assert.match(await browserEval(win, `document.querySelector('#claim-box .claim-state.held')?.title || ''`), new RegExp(`^session peer-${seedData.nonce} · lease \\d+s left$`), 'the lease names its session and the time left');
+    assert.equal(await browserEval(win, `document.querySelector('#claim-box [data-release], #claim-box [data-claim]')`), null, 'a peer lease offers neither release nor claim to the human');
+    // a ticket's findings come from every scope that refs it
+    await waitForDOM(win, `(() => { const t = document.querySelector('#context-box')?.textContent || ''; return t.includes('the held task needs the parser fix first') && t.includes('about this ticket') && t.includes('every scope') && !t.includes('the parser drops trailing commas'); })()`, 'ticket findings from every scope');
+    await click(win, '#drawer [data-act="close"]');
+    await waitForDOM(win, `!document.querySelector('#drawer.open')`, 'drawer closes');
+
+    // sessions popover, now under ⋯ → agents
+    await click(win, '#btn-more');
+    await waitForDOM(win, `(() => { const m = document.querySelector('#more-menu'); return m && !m.hidden && document.querySelector('#btn-more')?.getAttribute('aria-expanded') === 'true'; })()`, 'more menu');
+    assert.equal(await browserEval(win, `document.querySelector('#more-menu #btn-sessions') !== null`), true, 'agents lives in the more menu');
+    await waitForDOM(win, `/^agents · [1-9]\\d* live$/.test(document.querySelector('#btn-sessions')?.textContent || '')`, 'agents entry counts live sessions');
     await click(win, '#btn-sessions');
-    await waitForDOM(win, `(() => !document.querySelector('#sessions').hidden && document.querySelector('#sessions').textContent.includes('user'))()`, 'sessions popover');
+    await waitForDOM(win, `(() => !document.querySelector('#sessions').hidden && document.querySelector('#sessions').textContent.includes('user') && document.querySelector('#sessions').textContent.includes(${JSON.stringify(`peer-${seedData.nonce}`)}))()`, 'sessions popover');
+    await waitForDOM(win, `document.querySelector('#more-menu').hidden`, 'picking agents closes the more menu');
     const scrollBefore = await browserEval(win, `document.querySelector('#sessions').textContent`);
     assert.match(scrollBefore, /human/, 'human session is registered');
+    assert.match(scrollBefore, /agents/, 'popover is titled agents');
     await browserEval(win, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
     await waitForDOM(win, `document.querySelector('#sessions').hidden`, 'esc closes sessions');
 
-    // queue
-    await click(win, '#btn-runs');
-    await waitForDOM(win, `document.querySelector('#supervision-head h1')?.textContent === 'runs'`, 'runs page');
-    await click(win, '[data-sup-tab="queue"]');
-    await waitForDOM(win, `(() => document.querySelector('.queue-table')?.textContent?.includes(${JSON.stringify('Open task ' + seedData.nonce)}))()`, 'queue rows');
-    const rowCount = await browserEval(win, `document.querySelectorAll('.queue-table tbody tr').length`);
-    assert.ok(rowCount >= 2, 'queue lists open work');
-    await click(win, `[data-claim="${seedData.open.id}"]`);
-    await waitForDOM(win, `(() => { const row = [...document.querySelectorAll('.queue-table tbody tr')].find(r => r.textContent.includes(${JSON.stringify('Open task ' + seedData.nonce)})); return row && row.textContent.includes('user') && row.textContent.includes('release'); })()`, 'claim reflected in queue');
+    // claim and release through the drawer's claim box
+    await browserEval(win, `(${nodeFor(openTitle)}).dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await waitForDOM(win, `(() => { const box = document.querySelector('#drawer.open #claim-box'); return box?.textContent.includes('⊕ unclaimed') && box.querySelector(${JSON.stringify(`[data-claim="${seedData.open.id}"]`)}); })()`, 'unclaimed open ticket in the drawer');
+    await waitForDOM(win, `(() => { const t = document.querySelector('#context-box')?.textContent || ''; return t.includes('findings') && t.includes('No FACT, FAIL or STATUS refers to this ticket yet.'); })()`, 'empty ticket findings');
+    await click(win, `#claim-box [data-claim="${seedData.open.id}"]`);
+    await waitForDOM(win, `(() => { const box = document.querySelector('#claim-box'); return box?.textContent.includes('⊕ user is on it') && /^session user · lease \\d+s left$/.test(box.querySelector('.claim-state.held')?.title || '') && box.querySelector(${JSON.stringify(`[data-release="${seedData.open.id}"]`)}); })()`, 'claim reflected in the drawer');
     const claimed = await jsonRequest(`/api/items/${encodeURIComponent(seedData.open.id)}/claim`);
-    assert.equal(claimed.session, 'user', 'queue claim records the human session');
-    await click(win, `[data-release="${seedData.open.id}"]`);
-    await waitForDOM(win, `(() => ![...document.querySelectorAll('.queue-table tbody tr')].find(r => r.textContent.includes(${JSON.stringify('Open task ' + seedData.nonce)}))?.textContent.includes('user'))()`, 'release reflected in queue');
+    assert.equal(claimed.session, 'user', 'drawer claim records the human session');
+    assert.equal((await jsonRequest(`/api/items/${encodeURIComponent(seedData.open.id)}`)).status, 'doing', 'drawer claim starts the ticket');
+    await waitForDOM(win, `${nodeFor(openTitle)}?.classList.contains('claimed')`, 'claimed ring on the newly claimed node');
+    await click(win, `#claim-box [data-release="${seedData.open.id}"]`);
+    await waitForDOM(win, `(() => { const box = document.querySelector('#claim-box'); return box?.textContent.includes('⊕ unclaimed') && box.querySelector(${JSON.stringify(`[data-claim="${seedData.open.id}"]`)}); })()`, 'release reflected in the drawer');
     assert.equal(await jsonRequest(`/api/items/${encodeURIComponent(seedData.open.id)}/claim`), null, 'release clears the claim');
+    await waitForDOM(win, `${nodeFor(openTitle)} && !${nodeFor(openTitle)}.classList.contains('claimed')`, 'release clears the claimed ring');
 
-    // inspector: one scroll, claim and context blocks
+    // inspector: a run ticket reads its run scope; claim, context and folds in one scroll
     await win.loadURL(`${base.href}#item=${encodeURIComponent(seedData.run.id)}`);
     await waitForDOM(win, `(() => document.querySelector('#drawer.open') && document.querySelector('#context-box')?.textContent.includes('the parser drops trailing commas'))()`, 'context in inspector');
     const timeline = await browserEval(win, `document.querySelector('#context-box')?.textContent || ''`);
@@ -121,13 +133,19 @@ async function runUI(seedData) {
     await waitForDOM(win, `(() => { const box = document.querySelector('#context-box'); const on = box?.querySelector('[data-v="FACT"]')?.classList.contains('on'); return on && box.textContent.includes('the parser drops trailing commas') && !box.textContent.includes('retrying the printer path failed'); })()`, 'FACT filter hides other kinds');
     await click(win, '#context-box [data-chips="context-kind"] [data-v="all"]');
     await waitForDOM(win, `(() => document.querySelector('#context-box')?.textContent.includes('retrying the printer path failed on empty input'))()`, 'all filter restores the timeline');
-    const sections = await browserEval(win, `[...document.querySelectorAll('#drawer [data-section]')].map(el => el.dataset.section)`);
-    assert.deepEqual(sections, ['overview', 'activity', 'settings'], 'one inspector with three sections');
-    assert.equal(await browserEval(win, `document.querySelectorAll('#drawer [data-dtab]').length`), 0, 'no tab UI');
-    assert.ok(await browserEval(win, `document.querySelector('#claim-box')?.textContent.includes('unclaimed')`), 'claim box present');
-    assert.ok(await browserEval(win, `document.querySelectorAll('#drawer [data-jump]').length >= 3`), 'jump links present');
+    assert.match(timeline, /this run/, 'a run ticket reads its run scope');
+    const folds = await browserEval(win, `[...document.querySelectorAll('#drawer details[data-fold]')].map(el => el.dataset.fold + ':' + el.open).join(',')`);
+    assert.equal(folds, 'edit:false,history:false,more:false', 'a ticket keeps edit, history and more in closed folds');
+    assert.equal(await browserEval(win, `document.querySelectorAll('#drawer [data-section], #drawer .inspector-jump, #drawer [data-dtab]').length`), 0, 'a ticket inspector has no sections, jump nav or tabs');
+    await waitForDOM(win, `document.querySelector('#claim-box')?.textContent.includes('unclaimed')`, 'claim box present');
+    await click(win, '#drawer details[data-fold="edit"] > summary');
+    await waitForDOM(win, `document.querySelector('#drawer details[data-fold="edit"]')?.open && document.querySelector('#drawer details[data-fold="edit"] [data-k="title"]')?.getBoundingClientRect().width > 0`, 'edit fold opens the settings form');
     await win.loadURL(`${base.href}#item=${encodeURIComponent(seedData.project.id)}`);
     await waitForDOM(win, `(() => { const box = document.querySelector('#context-box'); return box && box.textContent.includes('project handoff is ready for review') && box.textContent.includes('this project') && box.textContent.includes('copy for handoff'); })()`, 'project inspector timeline');
+    const sections = await browserEval(win, `[...document.querySelectorAll('#drawer [data-section]')].map(el => el.dataset.section)`);
+    assert.deepEqual(sections, ['overview', 'activity', 'settings'], 'a project inspector is one scroll with three sections');
+    assert.equal(await browserEval(win, `document.querySelectorAll('#drawer [data-dtab]').length`), 0, 'no tab UI');
+    assert.ok(await browserEval(win, `document.querySelectorAll('#drawer [data-jump]').length >= 3`), 'jump links present');
     assert.equal(errors.length, 0, `no console errors: ${errors.join(' | ')}`);
     if (artifactDir) {
       await mkdir(artifactDir, { recursive: true });
@@ -145,7 +163,7 @@ app.on('ready', async () => {
   const seedData = await seed();
   try {
     const result = await runUI(seedData);
-    console.log(`PASS: coordination UI on ${base.href} (canvas claim widget, sessions, queue claim/release, inspector context, one-scroll sections)`);
+    console.log(`PASS: coordination UI on ${base.href} (claimed tree nodes, peer lease in the drawer, agents under the more menu, drawer claim/release, ticket and run/project context, ticket folds, project sections)`);
     if (artifactDir) console.log(`artifacts: ${artifactDir}/coordination.png`);
     assert.deepEqual(result.sections, ['overview', 'activity', 'settings']);
   } catch (e) {

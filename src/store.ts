@@ -1052,10 +1052,10 @@ export class Store extends EventEmitter {
 
   reviewAttention(id: string, input: { action: string; revision?: string; until?: number }, actor: string): AttentionRecord {
     const record = this.state.attention[id];
-    if (!record || record.resolvedAt) throw new HudError(409, 'this issue is no longer active; refresh Attention');
-    if (input.revision !== record.revision) throw new HudError(409, 'this issue has changed; refresh Attention before reviewing');
+    if (!record || record.resolvedAt) throw new HudError(409, 'this issue is no longer active; refresh "needs you"');
+    if (input.revision !== record.revision) throw new HudError(409, 'this issue has changed; refresh "needs you" before reviewing');
     if (!['review', 'unreview', 'snooze'].includes(input.action)) throw new HudError(400, 'action must be review, unreview or snooze');
-    if (record.kind === 'command' && input.action !== 'snooze') throw new HudError(400, 'reviewing does not approve a command; approve it in Attention');
+    if (record.kind === 'command' && input.action !== 'snooze') throw new HudError(400, 'reviewing does not approve a command; approve it under "needs you" in the browser');
     const t = now();
     if (input.action === 'snooze') {
       if (!Number.isFinite(input.until) || input.until! <= t || input.until! > t + 7 * 86400_000) throw new HudError(400, 'until must be a future timestamp within seven days');
@@ -1072,7 +1072,7 @@ export class Store extends EventEmitter {
     return { ...record };
   }
 
-  /** The browser actor `user` allows the command currently shown in Attention. Agents cannot approve their own shell. */
+  /** The browser actor `user` allows the command currently shown under "needs you". Agents cannot approve their own shell. */
   approveCommand(id: string, revision: string, actor: string): Item {
     if (actor !== 'user') throw new HudError(403, 'only the browser at the board can approve a command monitor');
     // The actor name is only trusted together with the board session it belongs to: an agent that
@@ -1083,10 +1083,10 @@ export class Store extends EventEmitter {
     if (item.type !== 'monitor' || item.source?.kind !== 'command') throw new HudError(400, 'only a command monitor can be approved');
     this.normalizeCommandApproval(item);
     const record = this.state.attention[id];
-    if (!record || record.resolvedAt || record.kind !== 'command') throw new HudError(409, 'this command is not waiting for approval; refresh Attention');
-    if (revision !== record.revision) throw new HudError(409, 'this command has changed; refresh Attention before approving');
+    if (!record || record.resolvedAt || record.kind !== 'command') throw new HudError(409, 'this command is not waiting for approval; refresh "needs you"');
+    if (revision !== record.revision) throw new HudError(409, 'this command has changed; refresh "needs you" before approving');
     const fingerprint = commandFingerprint(item.source);
-    if (item.commandApproval?.fingerprint !== fingerprint || item.commandApproval.status !== 'pending') throw new HudError(409, 'this command has changed; refresh Attention before approving');
+    if (item.commandApproval?.fingerprint !== fingerprint || item.commandApproval.status !== 'pending') throw new HudError(409, 'this command has changed; refresh "needs you" before approving');
     const t = now();
     item.commandApproval = {
       fingerprint,

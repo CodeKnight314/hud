@@ -14,7 +14,7 @@ Tokens live on `:root` in `web/style.css`. Use the tokens; do not invent a secon
 | Token | Role |
 |---|---|
 | `--bg` | Board canvas and page background |
-| `--chrome` | Top bar, sidebar and status bar |
+| `--chrome` | Top bar |
 | `--panel` | Drawers, menus and popovers |
 | `--card` | Cards and rows that sit on the canvas |
 | `--raised` | Hover and pressed fills |
@@ -23,6 +23,7 @@ Tokens live on `:root` in `web/style.css`. Use the tokens; do not invent a secon
 | `--line` `--line2` | Hairline and stronger borders |
 | `--accent` `--accent-dim` | Selection, focus and active chrome. Not a status |
 | `--red` `--red-dim` | Blocked ticket, pending decision, or monitor error |
+| `--yellow` `--yellow-dim` | Ticket in progress (`doing` or `review`) |
 | `--green` `--green-dim` | Done ticket or `ok` / done monitor |
 | `--font` `--font-mono` | UI sans-serif, and monospace for data |
 | `--radius` `--shadow` `--shadow-pop` | Corners and elevation |
@@ -34,17 +35,18 @@ with `--hi` text, or a 2px `--accent` focus ring. Do not invert a control to a l
 ## Type
 
 - UI chrome, tickets, notes and Settings use `--font`. Inter is preferred when it is installed; otherwise the system sans is used. Do not ship a webfont.
-- Identifiers, measurements, code, the command line and chart labels use `--font-mono`.
+- Identifiers, measurements, code, command text and chart labels use `--font-mono`.
 - Section labels may be small and uppercase. Keep tracking tight. Do not set the whole UI in a monospace face.
 
 ## Status
 
-- Red marks a blocked ticket, a pending decision or a monitor in error. Green marks done or `ok`.
+- Red marks a blocked ticket, a pending decision or a monitor in error. Yellow marks a ticket in progress (`doing`
+  or `review`). Green marks done or `ok`. A `todo` or `backlog` ticket stays gray.
 - `--accent` is chrome only. It must not mean warning, progress or health. Progress meters use `--hi` on an `--inset` track.
 - A status color always appears with a glyph or label. Color never carries meaning by itself.
 - Show blocked, decision and error states as a tinted header or inset bar (`--red-dim` / `--green-dim`), not a
   solid banner of inverted text.
-- Warning and stale stay neutral: the `▲` glyph, a stronger border, or a dimmed card. Do not add a third status hue.
+- Warning and stale stay neutral: the `▲` glyph, a stronger border, or a dimmed card. Do not add a fourth status hue.
 - Chart series stay neutral (light strokes and opacity). Distinguish series with line pattern, markers or labels.
 
 Status glyphs: `●` ok, `▲` warning, `✕` error, `○` unknown, `◐` running, `✓` done. A custom view may choose another

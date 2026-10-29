@@ -217,5 +217,25 @@ export function lintBoard(state: State, board: Board) {
     if (!program.bindings.length) add(String(id), 'unbound-program', 'Custom program has no live bindings; rendered numbers cannot be verified by lint.');
     for (const binding of program.bindings) if (!Object.hasOwn(state.items, binding)) add(String(id), 'missing-binding', `Custom program cannot resolve ${binding}.`, 'error');
   }
+  // Ticket structure: a child is part of its parent's deliverable; blockedBy is order only.
+  const ident = (t: Item) => { // Store.ident without the store (store.ts imports this module)
+    if (t.num == null) return t.id;
+    const key = t.project ? state.items[t.project]?.key : undefined;
+    return key ? `${key}-${t.num}` : `#${t.num}`;
+  };
+  const open = items.filter(i => i.type === 'ticket' && i.status !== 'done' && i.status !== 'canceled')
+    .sort((a, b) => (a.num ?? 0) - (b.num ?? 0) || a.id.localeCompare(b.id));
+  const siblingKey = (t: Item) => t.parent ?? `project:${t.project ?? ''}`; // roots are siblings within their project
+  const groups = new Map<string, Item[]>();
+  for (const t of open) groups.get(siblingKey(t))?.push(t) ?? groups.set(siblingKey(t), [t]);
+  for (const t of open) {
+    const kids = groups.get(t.id)?.length ?? 0;
+    if (kids > 7) add(t.id, 'wide-parent', `${ident(t)} has ${kids} open children; group them under tickets whose check is a real decision, at most 7 per parent.`);
+    if (!t.blockedBy?.length) continue;
+    const peers = groups.get(siblingKey(t))!.filter(s => s !== t);
+    const waits = peers.filter(s => t.blockedBy!.includes(s.id));
+    if (waits.length >= 3 && waits.length * 2 >= peers.length)
+      add(t.id, 'integration-sibling', `${ident(t)} waits on ${waits.length} of its ${peers.length} siblings (${waits.map(ident).join(', ')}), so it integrates them: make it their parent with hud_link {id: "<blocker>", parent: "${ident(t)}"} for each.`);
+  }
   return { board: board.id, findings, errors: findings.filter(f => f.severity === 'error').length, warnings: findings.filter(f => f.severity === 'warning').length };
 }

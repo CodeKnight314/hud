@@ -1,5 +1,6 @@
-// Headless tickets view: project chips stay in sync with the project filter, list/tree/board
-// each show assignee (→) and claimer (⊕), and loadClaims fills the claimer without a reload.
+// Headless Tasks view: it opens on the tree, the tree/list switch swaps shapes, the filter disclosure folds the
+// advanced filters, project chips stay in sync with the project filter, tree and list each show assignee (→)
+// and claimer (⊕), and loadClaims fills the claimer without a reload.
 //   ./node_modules/.bin/electron scripts/check-tickets-ui.mjs http://127.0.0.1:7411 /tmp/hud-tickets-ui-check
 import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
@@ -54,14 +55,6 @@ async function waitForDOM(win, expression, label, timeout = 15_000) {
 }
 async function click(win, selector) { await browserEval(win, `document.querySelector(${JSON.stringify(selector)})?.click()`); }
 
-function rowPad(title) {
-  return `(() => {
-    const row = [...document.querySelectorAll('.trow')].find((r) => r.textContent.includes(${JSON.stringify(title)}));
-    if (!row) return 0;
-    return Number.parseFloat(getComputedStyle(row).paddingLeft) || 0;
-  })()`;
-}
-
 async function runUI(seedData) {
   const errors = [];
   const win = new BrowserWindow({ show: false, width: 1440, height: 960, backgroundColor: '#000000', webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, partition: `ui-tickets-${Date.now()}` } });
@@ -75,12 +68,43 @@ async function runUI(seedData) {
   const other = `Other ${seedData.nonce}`;
   try {
     await win.loadURL(`${base.href}#${encodeURIComponent(seedData.board.id)}`);
-    await waitForDOM(win, `document.body.classList.contains('list') && document.querySelector('.lwrap.shape-list')`, 'tickets list');
+    // a workspace with tickets opens on Tasks, and Tasks opens on the tree
+    await waitForDOM(win, `document.body.classList.contains('list') && document.querySelector('.lwrap.shape-tree .ttree .tt-node')`, 'Tasks opens on the tree');
+    assert.equal(await browserEval(win, `document.querySelector('#view-toggle [data-view="list"]')?.getAttribute('aria-selected')`), 'true', 'the Tasks toggle is selected');
+    assert.equal(await browserEval(win, `document.querySelector('#view-toggle [data-view="canvas"]')?.getAttribute('aria-selected')`), 'false', 'the Monitors toggle is not selected');
     await waitForDOM(win, `(() => {
       const chips = [...document.querySelectorAll('[data-proj-switch]')].map((b) => b.textContent);
       return chips.includes('all') && chips.includes('ENG') && chips.includes('HUD');
     })()`, 'project chips');
-    await waitForDOM(win, `(() => ['list', 'tree', 'board'].every((s) => document.querySelector('[data-shape="' + s + '"]')))()`, 'shape buttons');
+    const shapeButtons = await browserEval(win, `[...document.querySelectorAll('#list [data-shape]')].map((b) => b.dataset.shape + ':' + b.getAttribute('aria-selected')).join(',')`);
+    assert.equal(shapeButtons, 'tree:true,list:false', 'Tasks offers tree (selected) and list, and no kanban board shape');
+    assert.equal(await browserEval(win, `document.querySelector('[data-shape="board"], .lwrap.shape-board, .kcard') === null`), true, 'the kanban board shape is gone');
+
+    // filter disclosure: the advanced filters fold behind one button but stay in the DOM
+    const disclosure = `(() => {
+      const bar = document.querySelector('#list .lfbar');
+      const toggle = bar?.querySelector('[data-f-toggle]');
+      const shown = (sel) => (bar?.querySelector(sel)?.getBoundingClientRect().width || 0) > 0;
+      return JSON.stringify({
+        open: bar?.classList.contains('lf-open'), expanded: toggle?.getAttribute('aria-expanded'),
+        inDom: ['status', 'assignee', 'project', 'priority', 'tag', 'sort'].every((k) => bar?.querySelector('.lf-adv [data-f="' + k + '"]')) && !!bar?.querySelector('.lf-adv [data-f-overdue]') && !!bar?.querySelector('.lf-adv [data-f-completed]'),
+        status: shown('[data-f="status"]'), sort: shown('[data-f="sort"]'), completed: shown('[data-f-completed]'),
+        search: shown('[data-f="q"]'), chips: shown('[data-proj-switch]'), shapes: shown('[data-shape="tree"]'),
+      });
+    })()`;
+    const folded = JSON.parse(await browserEval(win, disclosure));
+    assert.deepEqual(folded, { open: false, expanded: 'false', inDom: true, status: false, sort: false, completed: false, search: true, chips: true, shapes: true }, 'advanced filters start folded; search, chips and the shape switch stay visible');
+    await click(win, '#list [data-f-toggle]');
+    await waitForDOM(win, `document.querySelector('#list .lfbar')?.classList.contains('lf-open')`, 'filter disclosure opens');
+    const unfolded = JSON.parse(await browserEval(win, disclosure));
+    assert.deepEqual(unfolded, { open: true, expanded: 'true', inDom: true, status: true, sort: true, completed: true, search: true, chips: true, shapes: true }, 'the filter button reveals status, sort and completed');
+    await click(win, '#list [data-f-toggle]');
+    await waitForDOM(win, `!document.querySelector('#list .lfbar')?.classList.contains('lf-open')`, 'filter disclosure folds again');
+    assert.deepEqual(JSON.parse(await browserEval(win, disclosure)), folded, 'a second click folds the advanced filters');
+
+    // tree → list
+    await click(win, '[data-shape="list"]');
+    await waitForDOM(win, `document.querySelector('.lwrap.shape-list .trow') && !document.querySelector('#list .ttree') && document.querySelector('[data-shape="list"]')?.getAttribute('aria-selected') === 'true' && document.querySelector('[data-shape="tree"]')?.getAttribute('aria-selected') === 'false'`, 'list shape draws rows, not the tree');
     await waitForDOM(win, `(() => {
       const text = document.querySelector('#list')?.textContent || '';
       return text.includes(${JSON.stringify(ship)}) && text.includes('→alice') && text.includes('⊕—') && text.includes(${JSON.stringify(claimed)}) && text.includes('⊕ui-tickets-check') && !text.includes('⊕…');
@@ -91,13 +115,21 @@ async function runUI(seedData) {
     }))()`, 'claims request omits session so every lease is loaded');
 
     await click(win, '[data-shape="tree"]');
-    await waitForDOM(win, `document.querySelector('.lwrap.shape-tree') && !document.querySelector('.tstat')`, 'tree drops status groups');
-    const pads = await browserEval(win, `JSON.stringify({ parent: ${rowPad(ship)}, child: ${rowPad(nested)} })`);
-    const { parent, child } = JSON.parse(pads);
-    assert.ok(child > parent, `nested row is indented (${child} > ${parent})`);
-    const treeText = await browserEval(win, `document.querySelector('#list').textContent`);
-    assert.match(treeText, /→bob/);
-    assert.match(treeText, /⊕—/);
+    await waitForDOM(win, `document.querySelector('.lwrap.shape-tree .ttree .tt-node') && !document.querySelector('.tstat') && !document.querySelector('#list .trow') && document.querySelector('[data-shape="tree"]')?.getAttribute('aria-selected') === 'true'`, 'tree draws nodes, not rows');
+    await new Promise((r) => setTimeout(r, 1200)); // let the springs settle
+    const ys = await browserEval(win, `JSON.stringify((() => {
+      const y = (t) => {
+        const g = [...document.querySelectorAll('.tt-node')].find((n) => n.querySelector('title').textContent.includes(t));
+        const m = g && /translate\\(([-\\d.]+) ([-\\d.]+)\\)/.exec(g.getAttribute('transform'));
+        return m ? Number(m[2]) : null;
+      };
+      return { parent: y(${JSON.stringify(ship)}), child: y(${JSON.stringify(nested)}) };
+    })())`);
+    const { parent, child } = JSON.parse(ys);
+    assert.ok(parent !== null && child !== null && child > parent, `nested node sits below its parent (${child} > ${parent})`);
+    const tips = await browserEval(win, `[...document.querySelectorAll('.tt-node title')].map((t) => t.textContent).join(' | ')`);
+    assert.match(tips, /assignee bob/);
+    assert.match(tips, /claimed by ui-tickets-check/);
 
     await click(win, `[data-proj-switch="${seedData.hud.id}"]`);
     await waitForDOM(win, `(() => {
@@ -115,22 +147,22 @@ async function runUI(seedData) {
     })()`, 'project filter syncs the chip');
 
     await click(win, `[data-proj-switch="${seedData.hud.id}"]`);
-    await click(win, '[data-shape="board"]');
+    await click(win, '[data-shape="list"]');
     await waitForDOM(win, `(() => {
-      const cards = [...document.querySelectorAll('.kcard')];
-      return document.querySelector('.lwrap.shape-board') && cards.length === 1 && cards[0].textContent.includes(${JSON.stringify(other)}) && cards[0].textContent.includes('→alice') && cards[0].textContent.includes('⊕—');
-    })()`, 'HUD board card');
+      const rows = [...document.querySelectorAll('.lwrap.shape-list .trow')];
+      return rows.length === 1 && rows[0].textContent.includes(${JSON.stringify(other)}) && rows[0].textContent.includes('→alice') && rows[0].textContent.includes('⊕—');
+    })()`, 'HUD list row');
 
     await click(win, '[data-proj-switch="*"]');
     await waitForDOM(win, `(() => {
-      const cards = [...document.querySelectorAll('.kcard')];
-      const text = cards.map((c) => c.textContent).join('\\n');
+      const rows = [...document.querySelectorAll('.lwrap.shape-list .trow')];
+      const text = rows.map((c) => c.textContent).join('\\n');
       const select = document.querySelector('[data-f="project"]');
-      return document.querySelector('[data-proj-switch="*"].on') && select?.value === '' && cards.length === 4
+      return document.querySelector('[data-proj-switch="*"].on') && select?.value === '' && rows.length === 4
         && text.includes(${JSON.stringify(ship)}) && text.includes(${JSON.stringify(nested)})
         && text.includes(${JSON.stringify(claimed)}) && text.includes('⊕ui-tickets-check')
         && text.includes(${JSON.stringify(other)}) && !text.includes('⊕…');
-    })()`, 'all-projects board');
+    })()`, 'all-projects list');
     assert.equal(errors.length, 0, `no console errors: ${errors.join(' | ')}`);
 
     // A claim event that arrives while /api/claims is in flight must survive the older snapshot.
@@ -162,21 +194,21 @@ async function runUI(seedData) {
     await waitForDOM(win, `window.__claimsHeld === true`, 'claims snapshot held');
     await jsonRequest(`/api/items/${encodeURIComponent(late.id)}/claim`, { method: 'POST', body: { session: `ui-late-${seedData.nonce}` } });
     await waitForDOM(win, `(() => {
-      const card = [...document.querySelectorAll('.kcard, .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
+      const card = [...document.querySelectorAll('.lwrap.shape-list .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
       return card && card.textContent.includes('⊕ui-tickets-check');
     })()`, 'SSE claim before the snapshot returns');
     await browserEval(win, `window.__releaseClaims()`);
     await waitForDOM(win, `window.__claimsFetches >= 2`, 'stale snapshot retries claimsList');
     await wait(400);
     const lateText = await browserEval(win, `(() => {
-      const card = [...document.querySelectorAll('.kcard, .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
+      const card = [...document.querySelectorAll('.lwrap.shape-list .trow')].find((el) => el.textContent.includes(${JSON.stringify('Late ' + seedData.nonce)}));
       return card ? card.textContent : '';
     })()`);
     assert.match(lateText, /⊕ui-tickets-check/, 'older claims snapshot must not clear the SSE claimer');
     if (artifactDir) {
       await mkdir(artifactDir, { recursive: true });
       const { writeFile } = await import('node:fs/promises');
-      await writeFile(`${artifactDir}/tickets-board.png`, (await win.capturePage()).toPNG());
+      await writeFile(`${artifactDir}/tickets-list.png`, (await win.capturePage()).toPNG());
     }
   } finally {
     win.destroy();
@@ -188,8 +220,8 @@ app.on('ready', async () => {
   const seedData = await seed();
   try {
     await runUI(seedData);
-    console.log(`PASS: tickets UI on ${base.href} (project chips, list/tree/board, assignee and claimer)`);
-    if (artifactDir) console.log(`artifacts: ${artifactDir}/tickets-board.png`);
+    console.log(`PASS: tickets UI on ${base.href} (opens on the tree, tree/list switch, filter disclosure, project chips, assignee and claimer)`);
+    if (artifactDir) console.log(`artifacts: ${artifactDir}/tickets-list.png`);
   } catch (e) {
     code = 1;
     console.error(`FAIL: tickets UI — ${e?.stack || e}`);

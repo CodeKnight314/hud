@@ -45,7 +45,20 @@ assert.ok(decentralized.includes('takeover: true'));
 assert.ok(decentralized.includes('board:main'));
 const RUN_UUID = '3f2a9c1e-7b4d-4e8a-9c21-0b6d5e4a1f80';
 const NO_LEAD = 'A `run` ticket with no live claim is not a lead.';
-order(decentralized, ['### 0. Queue', '### 1. Read before you choose', '### 2. Claim', '### 3. Announce', '### 4. Split', '### 5. Work and share early', '### 6. Wait only after independent work', '### 7. Finish', '### 8. Whole-task check', '### Lost lease', '### Expired lease'], 'decentralized steps');
+order(decentralized, ['### 0. Queue', '### 1. Read before you choose', '### 2. Claim', '### 3. Worktree', '### 4. Announce', '### 5. Split', '### 6. Work and share early', '### 7. Wait only after independent work', '### 8. Finish', '### 9. Whole-task check', '### Lost lease', '### Expired lease'], 'decentralized steps');
+// A claim does not separate files: each claimed ticket gets its own worktree, and the integrator merges the branches.
+const SUBAGENTS = "An MCP client's subagents share its session, so they cannot each hold a claim.";
+for (const [name, text, step] of [['decentralized', decentralized, '### 3. Worktree'], ['lead', lead.slice(lead.indexOf('### Worker loop')), '#### 2. Worktree']] as const) {
+  const at = text.indexOf(step);
+  assert.ok(at > text.indexOf('Claim') && at < text.indexOf('kind: "SUMMARY"'), `${name}: the worktree step follows the claim`);
+  const body = text.slice(at, text.indexOf('\n#', at + step.length));
+  for (const bit of ['worktree: true}', '--worktree', 'git worktree add ../<repo>-', ' -b <branch>', 'cd <path>', 'Name the branch in your SUMMARY', 'merges the children\'s branches', SUBAGENTS]) {
+    assert.ok(body.includes(bit), `${name} worktree step missing ${bit}`);
+  }
+  assert.match(text, /kind: "SUMMARY", text: "EGO-\d done on branch ego-\d-/, `${name}: the SUMMARY example names the branch`);
+}
+assert.ok(decentralized.slice(decentralized.indexOf('### 9. Whole-task check')).includes("merges each child's branch"));
+assert.ok(lead.slice(0, lead.indexOf('### Worker loop')).includes("merge each child's branch"));
 assert.ok(decentralized.includes('hud_queue {}') && decentralized.includes('hud queue'));
 assert.ok(decentralized.includes('hud guide lead'));
 assert.ok(decentralized.includes(NO_LEAD));

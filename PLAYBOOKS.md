@@ -73,7 +73,25 @@ hud claim EGO-3 --start
 
 Take the first ready row whose Owner is blank or your actor. In the queue JSON that field is `assignee`. A parent with open children is not ready. `start: true` moves the ticket to `doing`. The lease is 120 seconds and the holder renews it. Pass `ttl` between 15 and 900 to change it. Claim the same ticket again to renew.
 
-### 3. Announce
+### 3. Worktree
+
+A claim stops two agents taking the same ticket. It does not stop them editing the same files. Work in your own git worktree. Claim the ticket again with the flag, or add it to the claim in step 2:
+
+```
+hud_claim {ticket: "EGO-3", worktree: true}
+```
+
+```
+hud claim EGO-3 --worktree
+```
+
+hud runs git in your process, not on the server. It creates `../<repo>-ego-3` on the ticket's `branch` (from `hud_get`), reuses it on a later claim, and prints `cd <path>`. MCP uses the directory its client started in. The CLI uses your shell's, so run it from the main checkout. A git failure is reported and the claim stands. By hand, from the repo root: `git worktree add ../<repo>-ego-3 -b <branch>`.
+
+Work and commit there. Name the branch in your SUMMARY. The agent that runs the parent's whole-task check merges the children's branches.
+
+An MCP client's subagents share its session, so they cannot each hold a claim. Each agent is its own top-level session with its own worktree.
+
+### 4. Announce
 
 Publish a STATUS that refs the ticket and says what you are attempting. Peers see it in the queue Note column.
 
@@ -85,7 +103,7 @@ hud_context {action: "publish", scope: "board:main", kind: "STATUS", text: "EGO-
 hud context publish --scope board:main --kind STATUS --text "EGO-3: checking trailing commas in tests/parse.json" --refs EGO-3
 ```
 
-### 4. Split when the ticket is more than one agent's work
+### 5. Split when the ticket is more than one agent's work
 
 Create children with `parent` set to the ticket, unassigned, with `blockedBy` where order matters. Publish a FACT naming them, release the parent, and claim one child.
 
@@ -94,7 +112,7 @@ hud_create {type: "ticket", title: "Parse trailing commas", project: "EGO", pare
 hud_create {type: "ticket", title: "Parse quoted commas", project: "EGO", parent: "EGO-3", blockedBy: ["EGO-4"]}
 hud_context {action: "publish", scope: "board:main", kind: "FACT", text: "EGO-3 split into EGO-4 (trailing commas) and EGO-5 (quoted commas, after EGO-4)", refs: ["EGO-3", "EGO-4", "EGO-5"]}
 hud_claim {action: "release", ticket: "EGO-3"}
-hud_claim {ticket: "EGO-4", start: true}
+hud_claim {ticket: "EGO-4", start: true, worktree: true}
 ```
 
 ```
@@ -104,12 +122,28 @@ hud add ticket "Parse quoted commas" --project EGO
 hud link EGO-5 parent=EGO-3 blockedBy=EGO-4
 hud context publish --scope board:main --kind FACT --text "EGO-3 split into EGO-4 (trailing commas) and EGO-5 (quoted commas, after EGO-4)" --refs EGO-3,EGO-4,EGO-5
 hud release EGO-3
-hud claim EGO-4 --start
+hud claim EGO-4 --start --worktree
 ```
 
 Add a ticket only for required implementation, the repair of a demonstrated defect, or a concrete open question.
 
-### 5. Work and share early
+Nest by deliverable:
+
+- A child is part of its parent's deliverable. Order between tickets is `blockedBy`.
+- Keep at most 7 children per parent. Beyond that, group them under a ticket whose check is a real decision, for example "pick the tracks to advance".
+- A ticket that waits on most of its siblings integrates them. Make it their parent: `hud_link {id: "<sibling>", parent: "<integrator>"}`, `hud link <sibling> parent=<integrator>`.
+- Create later-phase tickets when the earlier phase reports, not up front.
+- Run lint after splitting. It warns `wide-parent` and `integration-sibling`.
+
+```
+hud_lint {board: "main"}
+```
+
+```
+hud lint main
+```
+
+### 6. Work and share early
 
 Publish a FACT as soon as you have measured something: the inputs, the result, and what is still unverified. Publish a FAIL as soon as an approach is contradicted, with the conditions. Publish a STATUS when you switch hypothesis. Read the scope delta before each new subproblem.
 
@@ -127,7 +161,7 @@ hud context read --scope board:main --since 14
 
 A FACT or FAIL is the record a peer uses. Keep it under 4 KB. A lease stops renewing after 15 minutes without hud calls, so publish or renew within that.
 
-### 6. Wait only after independent work
+### 7. Wait only after independent work
 
 When you need a peer's result, do the work that does not depend on it first. Then wait, bounded, with the cursor.
 
@@ -147,19 +181,19 @@ hud_wait {ticket: "EGO-4", timeoutSeconds: 20}
 
 If the owner's session ends without finishing, build it yourself and reuse what they shared.
 
-### 7. Finish
+### 8. Finish
 
 Read the open FAILs that ref your ticket. Fix each one, or publish an entry that `corrects` it and says why it no longer applies. Then publish a SUMMARY and finish. Finish releases the lease.
 
 ```
 hud_context {action: "read", scope: "board:main", open: true, ref: "EGO-4"}
-hud_context {action: "publish", scope: "board:main", kind: "SUMMARY", text: "EGO-4 done: trailing commas kept; quoted commas still open", refs: ["EGO-4"]}
+hud_context {action: "publish", scope: "board:main", kind: "SUMMARY", text: "EGO-4 done on branch ego-4-parse-trailing-commas: trailing commas kept; quoted commas still open", refs: ["EGO-4"]}
 hud_finish {ids: ["EGO-4"], note: "done", organize: false}
 ```
 
 ```
 hud context read --scope board:main --open --ref EGO-4
-hud context publish --scope board:main --kind SUMMARY --text "EGO-4 done: trailing commas kept; quoted commas still open" --refs EGO-4
+hud context publish --scope board:main --kind SUMMARY --text "EGO-4 done on branch ego-4-parse-trailing-commas: trailing commas kept; quoted commas still open" --refs EGO-4
 hud finish EGO-4 --note "done" --no-organize
 ```
 
@@ -173,9 +207,9 @@ hud_claim {action: "release", ticket: "EGO-4"}
 hud release EGO-4
 ```
 
-### 8. Whole-task check
+### 9. Whole-task check
 
-When a parent becomes ready (every child done), the agent that claims it checks the parent's full description against the children's SUMMARYs and open FAILs. Then it finishes the parent, or adds a repair child.
+When a parent becomes ready (every child done), the agent that claims it checks the parent's full description against the children's SUMMARYs and open FAILs. It claims the parent with `worktree: true` and merges each child's branch, named in the child's SUMMARY, into the parent's worktree first. Then it finishes the parent, or adds a repair child.
 
 ```
 hud_context {action: "read", scope: "board:main", open: true, ref: "EGO-3"}
@@ -299,6 +333,22 @@ hud link EGO-3 parent=EGO-1 blockedBy=EGO-2
 
 Leave a ticket with no fixed owner unassigned so any worker can pull it. The lead keeps the claim on the run ticket and leaves the children in the queue.
 
+Nest by deliverable:
+
+- A child is part of its parent's deliverable. Order between tickets is `blockedBy`.
+- Keep at most 7 children per parent. Beyond that, group them under a ticket whose check is a real decision, for example "pick the tracks to advance".
+- A ticket that waits on most of its siblings integrates them. Make it their parent: `hud_link {id: "<sibling>", parent: "<integrator>"}`, `hud link <sibling> parent=<integrator>`.
+- Create later-phase tickets when the earlier phase reports, not up front.
+- Run lint after splitting. It warns `wide-parent` and `integration-sibling`.
+
+```
+hud_lint {board: "main"}
+```
+
+```
+hud lint main
+```
+
 #### 2. Publish a FACT
 
 The FACT is the plan. Include the scope string, who owns what, and which tickets wait.
@@ -331,7 +381,7 @@ On `no matching event within 20s`, read again and wait with the new cursor. A wo
 
 #### 4. Finish
 
-When the children are done, publish the run outcome and finish the run ticket. Finish releases the lead's claim. The lead's finish includes the whole-task check: read the open FAILs on the run scope and compare the children's SUMMARYs to the run ticket's description, then finish it or add a repair child.
+When the children are done, publish the run outcome and finish the run ticket. Finish releases the lead's claim. The lead's finish includes the whole-task check. First merge each child's branch, named in its SUMMARY, into the run ticket's branch. Then read the open FAILs on the run scope and compare the children's SUMMARYs to the run ticket's description. Finish it, or add a repair child.
 
 ```
 hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-1 done: trailing commas kept; EGO-2 and EGO-3 closed", refs: ["EGO-1"]}
@@ -379,7 +429,25 @@ hud claim EGO-2 --start
 
 Take a ready row whose Owner is blank or your actor. A parent with open children is not ready. Leave rows owned by someone else, and leave blocked rows until they are ready.
 
-#### 2. Publish a FACT
+#### 2. Worktree
+
+A claim stops two workers taking the same ticket. It does not stop them editing the same files. Work in your own git worktree. Claim the ticket again with the flag, or add it to the claim in step 1:
+
+```
+hud_claim {ticket: "EGO-2", worktree: true}
+```
+
+```
+hud claim EGO-2 --worktree
+```
+
+hud runs git in your process, not on the server. It creates `../<repo>-ego-2` on the ticket's `branch` (from `hud_get`), reuses it on a later claim, and prints `cd <path>`. MCP uses the directory its client started in. The CLI uses your shell's, so run it from the main checkout. A git failure is reported and the claim stands. By hand, from the repo root: `git worktree add ../<repo>-ego-2 -b <branch>`.
+
+Work and commit there. Name the branch in your SUMMARY. The lead merges the children's branches.
+
+An MCP client's subagents share its session, so they cannot each hold a claim. Each worker is its own top-level session with its own worktree.
+
+#### 3. Publish a FACT
 
 ```
 hud_context {action: "read", scope: "run:<uuid>"}
@@ -393,7 +461,7 @@ hud context publish --scope run:<uuid> --kind FACT --text "EGO-2: trailing comma
 
 A contradicted approach is `kind: "FAIL"` with the conditions. Hold the read's `cursor`.
 
-#### 3. Wait
+#### 4. Wait
 
 Wait when you need a peer's entry or a blocker to finish. When the ticket is otherwise ready to close, go to finish.
 
@@ -407,17 +475,17 @@ hud wait --scope run:<uuid> --since 14 --timeout 20
 
 `no matching event within 20s`: read again, then wait with the new cursor. To watch the blocker itself, `hud_wait {ticket: "EGO-2", timeoutSeconds: 20}`.
 
-#### 4. Finish
+#### 5. Finish
 
 Read the open FAILs that ref your ticket (`hud_context {action: "read", scope: "run:<uuid>", open: true, ref: "EGO-2"}`, `hud context read --scope run:<uuid> --open --ref EGO-2`). Fix each one, or publish an entry that `corrects` it and says why it no longer applies.
 
 ```
-hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-2 done: trailing commas kept; quoted commas still open", refs: ["EGO-2"]}
+hud_context {action: "publish", scope: "run:<uuid>", kind: "SUMMARY", text: "EGO-2 done on branch ego-2-parse-trailing-commas: trailing commas kept; quoted commas still open", refs: ["EGO-2"]}
 hud_finish {ids: ["EGO-2"], note: "done", organize: false}
 ```
 
 ```
-hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-2 done: trailing commas kept; quoted commas still open" --refs EGO-2
+hud context publish --scope run:<uuid> --kind SUMMARY --text "EGO-2 done on branch ego-2-parse-trailing-commas: trailing commas kept; quoted commas still open" --refs EGO-2
 hud finish EGO-2 --note "done" --no-organize
 ```
 
