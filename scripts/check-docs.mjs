@@ -43,8 +43,8 @@ ok(!/releases\/tag\/v\d/.test(quickstart), 'QUICKSTART must not pin an old relea
 ok(!/\b0\.1\.[01]\b/.test(quickstart), 'QUICKSTART must not hard-code an old version');
 ok(!/npm run dist/.test(quickstart), 'QUICKSTART leaves release mechanics to AGENTS.md');
 ok(!/HUD_SCRATCH|HUD_SOURCE_ROOT|HUD_HOME/.test(quickstart), 'QUICKSTART leaves dev env vars to AGENTS.md');
-for (const id of ['install', 'settings', 'attention', 'tickets']) {
-  ok(new RegExp(`^## ${id[0].toUpperCase()}${id.slice(1)}$`, 'm').test(quickstart), `QUICKSTART has a ${id} section`);
+for (const heading of ['Install', 'Settings', 'Needs you', 'Tasks and Monitors']) {
+  ok(new RegExp(`^## ${heading}$`, 'm').test(quickstart), `QUICKSTART has a ${heading} section`);
 }
 
 function slug(heading) {

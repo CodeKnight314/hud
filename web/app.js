@@ -1,6 +1,5 @@
 // hud — canvas client. No build step; plain ES module.
-import { claimWidgetHTML } from './claim-widget.js';
-import { createTicketTree } from './ticket-tree.js';
+import { createTicketTree, TREE_GLYPH } from './ticket-tree.js';
 import { persistenceBannerHTML, persistenceNotice, restoreTarget } from './persistence-banner.js';
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
@@ -58,15 +57,12 @@ const S = {
   captureNow: null,
   captureErrors: [],
   views: [], // renderer modules from GET /api/views, used to cache-bust dynamic imports
-  page: 'board', // attention | runs | board
+  page: 'board', // the workspace is the only page; kept so older checks read the same
   attention: { items: [], now: Date.now() },
-  attentionExpanded: { reviewed: false, snoozed: false },
   runs: { items: [], showCompleted: false },
   sessions: { items: [], now: Date.now() },
   sessionsOpen: false,
   queue: null,
-  runsTab: 'runs',
-  changes: { since: 0, now: 0, complete: false, events: [] },
   claimCache: new Map(),
   claims: new Map(), // ticket id → live claim, for list/tree/board ownership
   claimsNow: 0, // latest applied claimsList snapshot; an older snapshot is dropped
@@ -86,7 +82,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-runs, #btn-board, #btn-search, #btn-view, #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket], [data-proj-switch], [data-shape]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-board, #btn-search, #btn-more, [data-view], [data-needs-open], #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket], [data-proj-switch], [data-shape]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -1194,65 +1190,15 @@ function renderAll() {
 const renderFrames = refreshDerived;
 
 function updateChrome() {
-  const n = canvasItems().length;
-  document.body.classList.toggle('blank', n === 0 && !boardProgramActive());
-  renderTabs();
-  const counts = { ticket: 0, monitor: 0, note: 0, frame: 0, util: 0, project: 0 };
-  let open = 0, bad = 0;
-  for (const it of boardItems()) {
-    counts[it.type] = (counts[it.type] || 0) + 1;
-    if (it.type === 'ticket' && it.status !== 'done') open++;
-      if (it.type === 'monitor' && (monitorState(it) === 'error' || monitorState(it) === 'warn')) bad++;
-  }
-  const utilPart = counts.util ? ` · ${counts.util} tools` : '';
-  $('#pos').textContent = `${counts.ticket} tickets (${open} open) · ${counts.monitor} monitors${bad ? ` (${bad} ▲✕)` : ''} · ${counts.note} notes${utilPart}`;
-  $('#btn-view').textContent = S.mode === 'list' ? `board ${canvasItems().filter(i => i.type !== 'frame').length}` : `tickets ${counts.ticket}`;
-  renderMonitorAttentionStrip();
-  renderClaimWidget();
+  document.body.classList.toggle('blank', canvasItems().length === 0 && !boardProgramActive());
+  renderBoardButtons();
+  renderViewToggle();
+  renderNeeds();
   renderProgramInspector();
-  setModeHint();
   if (S.mode === 'list') scheduleList();
 }
 
-function comparisonRows(board) {
-  return board?.comparisonResults || S.readoutBoards.get(board?.id)?.comparisons || S.readoutBoards.get(board?.id)?.comparisonResults || [];
-}
-function comparisonFocusId(board, result) {
-  const rule = (board?.comparisons || []).find((r) => r.id === result.id);
-  const ids = [result.itemId, result.monitorId, result.left?.id, result.right?.id, result.left, result.right, rule?.left, rule?.right];
-  return ids.map((id) => typeof id === 'string' ? id : '').find((id) => S.items.get(id)?.board === S.board) || '';
-}
-function renderMonitorAttentionStrip() {
-  const host = $('#monitor-attention-strip');
-  if (!host) return;
-  if (S.page !== 'board') { host.hidden = true; document.body.classList.remove('monitor-attention'); return; }
-  const pending = boardItems().filter((it) => commandPending(it));
-  const pendingIds = new Set(pending.map((it) => it.id));
-  const monitors = boardItems().filter((it) => it.type === 'monitor' && !pendingIds.has(it.id) && (monitorState(it) === 'error' || isStale(it)));
-  const board = activeBoard();
-  const comparisons = comparisonRows(board).filter((r) => r && r.state && r.state !== 'ok');
-  const rows = [
-    ...pending.map((it) => ({ id: it.id, kind: 'command', text: `▸ ${it.title || it.id} awaiting approval` })),
-    ...monitors.map((it) => ({ id: it.id, kind: monitorState(it) === 'error' ? 'error' : 'stale', text: `${monitorState(it) === 'error' ? '✕' : '◌'} ${it.title || it.id}` })),
-    ...comparisons.map((r) => ({ id: comparisonFocusId(board, r), kind: r.state === 'conflict' ? 'conflict' : r.state === 'pending' ? 'pending' : 'unknown', text: `⇔ ${r.state}: ${r.reason || r.id}` })),
-  ];
-  const wasHidden = host.hidden;
-  host.hidden = !rows.length;
-  document.body.classList.toggle('monitor-attention', !host.hidden);
-  if (wasHidden !== host.hidden && S.mode === 'canvas') requestAnimationFrame(applyView);
-  const html = rows.length ? `<span class="strip-label">attention ${rows.length}</span>${rows.map((r) => `<button class="strip-${esc(r.kind)}" data-strip-focus="${esc(r.id)}" title="${esc(r.text)}">${esc(r.text)}</button>`).join('')}` : '';
-  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
-}
 
-function renderClaimWidget(now = Date.now()) {
-  const host = $('#claim-widget');
-  if (!host) return;
-  const current = S.page === 'board' && S.queue && S.queue.board === S.board;
-  const html = current ? claimWidgetHTML({ queue: S.queue, sessions: S.sessions, now }) : '';
-  host.hidden = !html;
-  document.body.classList.toggle('claim-widget', !!html);
-  if (host.dataset.sig !== html) { host.dataset.sig = html; host.innerHTML = html; }
-}
 
 function programBindings(program) {
   return Array.isArray(program?.bindings) ? program.bindings : [];
@@ -1349,40 +1295,17 @@ function select(ids, add = false) {
   if (!add) S.sel.clear();
   for (const id of ids) S.sel.add(id);
   for (const [id, el] of els) el.classList.toggle('sel', S.sel.has(id));
-  setModeHint();
 }
 
-function setModeHint() {
-  const n = S.sel.size;
-  $('#mode').textContent = document.body.classList.contains('cmd') ? 'COMMAND' : n ? `SEL ${n}` : 'NORMAL';
-  $('#hint').textContent = S.page !== 'board' ? 'click to inspect · ⌘/Ctrl+K search · review keeps issues active · esc closes details' : n
-    ? 'drag move · ⏎ open · ⌫ delete · arrows nudge · esc clear'
-    : S.mode === 'list' ? 'click a ticket · project chips switch · list, tree or board · / search · l canvas'
-    : 'dbl-click details · drag pan · ⌘/ctrl+scroll zoom · shift+drag select · : command · ? help';
-}
 
 // ---------------------------------------------------------------- rail / boards
-function renderTabs() {
-  renderBoardButtons();
-  const list = $('#board-list');
-  if (!list || list.querySelector('input')) return;
-  const counts = boardCounts();
-  const attCounts = {};
-  for (const a of activeAttention().filter((x) => !x.reviewedAt)) attCounts[a.board] = (attCounts[a.board] || 0) + 1;
-  const html = S.boards.map((b) => `<div class="board-row ${b.id === S.board ? 'on' : ''}" role="option" tabindex="0" aria-selected="${b.id === S.board}" data-board="${esc(b.id)}" title="double-click to rename"><span class="name">${esc(b.name)}</span><span class="count">${attCounts[b.id] ? `▲${attCounts[b.id]} ` : ''}${counts[b.id] || 0}</span></div>`).join('');
-  // rewriting identical markup would drop a click whose mousedown and mouseup straddle an SSE-driven rebuild
-  if (list.dataset.sig === html) return;
-  list.dataset.sig = html;
-  list.innerHTML = html;
-  list.querySelector('.board-row.on')?.scrollIntoView?.({ block: 'nearest' });
-}
 
 function switchBoard(id, opts = {}) {
-  if (!id || !S.boards.some((b) => b.id === id)) return toast(`no board ${id}`);
+  if (!id || !S.boards.some((b) => b.id === id)) return toast(`no workspace ${id}`);
   S.board = id;
   S.sel.clear();
   if (!CAPTURE_READONLY) try { localStorage.setItem('hud.board', id); } catch {}
-  if (opts.hash !== false) setNavHash(opts.page === 'attention' || opts.page === 'runs' ? opts.page : 'board', id);
+  if (opts.hash !== false) setNavHash('board', id);
   // Close first, without refitting, so the saved camera is judged against the full window.
   // A later z-matching refit would replace a kept pan with the centered letterbox.
   dismissDrawer();
@@ -1392,93 +1315,28 @@ function switchBoard(id, opts = {}) {
   try { mode = localStorage.getItem('hud.mode.' + id); } catch {}
   const hasCanvas = canvasItems().some((i) => i.type !== 'frame');
   const hasTickets = boardItems().some((i) => i.type === 'ticket' || i.type === 'project');
-  setMode(mode === 'canvas' && !hasCanvas && hasTickets ? 'list' : (mode || (hasTickets && !hasCanvas ? 'list' : 'canvas')));
+  // a workspace with tickets opens on Tasks unless the person chose Monitors there
+  setMode(mode === 'canvas' && !hasCanvas && hasTickets ? 'list' : (mode || (hasTickets ? 'list' : 'canvas')));
   renderAll();
   renderActivity();
   renderTrash();
-  if (opts.page && opts.page !== 'board') setPage(opts.page, { hash: false });
-  else if (opts.page !== false) setPage('board', { hash: false });
+  if (opts.page !== false) setPage(opts.page || 'board', { hash: false });
   if (!CAPTURE_READONLY) loadReadout(id);
   loadClaims();
 }
 
-function inlineBoardInput(initial, onDone) {
-  const host = $('#board-list');
-  const inp = document.createElement('input');
-  inp.value = initial;
-  inp.className = 'board-input';
-  let done = false;
-  const finish = (ok) => {
-    if (done) return;
-    done = true;
-    inp.remove();
-    host.dataset.sig = '';
-    renderTabs();
-    if (ok && inp.value.trim()) onDone(inp.value.trim());
-  };
-  inp.addEventListener('keydown', (e) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') finish(true);
-    if (e.key === 'Escape') finish(false);
-  });
-  inp.addEventListener('blur', () => finish(true));
-  return inp;
-}
 
-$('#board-list').addEventListener('click', (e) => {
-  const row = e.target.closest('.board-row');
-  if (row) switchBoard(row.dataset.board);
-});
-$('#board-list').addEventListener('keydown', (e) => {
-  const rows = $$('.board-row', $('#board-list'));
-  const i = rows.indexOf(document.activeElement);
-  if (e.key === 'Enter' || e.key === ' ') {
-    if (i >= 0) { e.preventDefault(); switchBoard(rows[i].dataset.board); }
-  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    if (!rows.length) return;
-    e.preventDefault();
-    const next = clamp((i < 0 ? -1 : i) + (e.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1);
-    rows[next]?.focus();
-  } else if (e.key === 'Home' || e.key === 'End') {
-    if (!rows.length) return;
-    e.preventDefault();
-    rows[e.key === 'Home' ? 0 : rows.length - 1]?.focus();
-  }
-});
-$('#board-list').addEventListener('dblclick', (e) => {
-  const row = e.target.closest('.board-row');
-  if (!row) return;
-  const b = S.boards.find((x) => x.id === row.dataset.board);
-  if (!b) return;
-  const inp = inlineBoardInput(b.name, (name) => api('PATCH', `/api/boards/${encodeURIComponent(b.id)}`, { name }));
-  row.replaceWith(inp);
-  inp.focus();
-  inp.select();
-});
-$('#btn-new-board').addEventListener('click', () => {
-  if ($('#board-list input')) return;
-  const inp = inlineBoardInput('', async (name) => {
-    const b = await api('POST', '/api/boards', { name });
-    upsertBoard(b);
-    switchBoard(b.id);
-  });
-  inp.placeholder = 'board name';
-  $('#board-list').prepend(inp);
-  inp.focus();
-});
 
 function upsertBoard(b) {
   const i = S.boards.findIndex((x) => x.id === b.id);
   if (i >= 0) S.boards[i] = b;
   else S.boards.push(b);
-  renderTabs();
-  if (b.id === S.board) { renderMonitorAttentionStrip(); renderProgramInspector(); queueProgramsMount(); }
+  renderBoardButtons();
+  if (b.id === S.board) { renderProgramInspector(); queueProgramsMount(); }
   if (!$('#board-menu').hidden && document.activeElement?.dataset?.boardQuery === undefined) renderBoardMenu();
 }
 
 // ---------------------------------------------------------------- supervision: attention, runs, global navigation
-const ATTENTION_LABEL = { command: 'command', decision: 'decision', error: 'error', stale: 'stale', warn: 'warn', blocked: 'blocked' };
-const ATTENTION_GLYPH = { command: '▸', decision: '?', error: '✕', stale: '○', warn: '▲', blocked: '!' };
 const localKey = (k) => `hud.${k}`;
 function rememberBoard(id) {
   if (CAPTURE_READONLY) return;
@@ -1488,126 +1346,27 @@ function rememberBoard(id) {
   ids = [id, ...ids.filter((x) => x !== id)].slice(0, 8);
   try { localStorage.setItem(localKey('recent-boards'), JSON.stringify(ids)); } catch {}
 }
+/** The workspace is the only page. An old #attention link opens "needs you" over it; #runs lands here. */
 function setPage(page, opts = {}) {
-  const next = ['attention', 'runs', 'board'].includes(page) ? page : 'attention';
-  S.page = next;
-  document.body.classList.toggle('supervision', next !== 'board');
-  $('#btn-attention').classList.toggle('on', next === 'attention');
-  $('#btn-runs').classList.toggle('on', next === 'runs');
-  $('#btn-board').classList.toggle('on', next === 'board');
-  if (opts.hash !== false) setNavHash(next, next === 'board' ? S.board : '');
-  if (next === 'attention') {
-    renderAttention();
-    if (!CAPTURE_READONLY) { loadAttention(); loadChanges(); }
-  } else if (next === 'runs') {
-    renderRuns();
-    if (!CAPTURE_READONLY) { loadRuns(); loadQueue(); loadSessions(); }
-  } else {
-    renderAll();
-    if (S.mode === 'list') renderList();
-    else requestAnimationFrame(() => settleCamera());
-    if (!CAPTURE_READONLY) loadQueue();
-  }
+  S.page = 'board';
+  if (opts.hash !== false) setNavHash('board', S.board);
+  renderAll();
+  if (S.mode === 'list') renderList();
+  else requestAnimationFrame(() => settleCamera());
+  if (!CAPTURE_READONLY) loadQueue();
   updateChrome();
+  if (page === 'attention') toggleNeeds(true);
 }
 function activeAttention(now = Date.now()) {
   return (S.attention.items || []).filter((a) => !a.snoozedUntil || Number(a.snoozedUntil) <= now);
-}
-function snoozedAttention(now = Date.now()) {
-  return (S.attention.items || []).filter((a) => Number(a.snoozedUntil) > now);
-}
-function attentionByBoard(list) {
-  const groups = new Map();
-  for (const a of list) {
-    const k = a.board || 'unknown';
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(a);
-  }
-  return [...groups.entries()].sort((a, b) => Math.min(...a[1].map(i => i.priority)) - Math.min(...b[1].map(i => i.priority)) || a[0].localeCompare(b[0]));
-}
-function attentionCardHTML(a, now = Date.now()) {
-  const item = itemFor(a.itemId || a.id);
-  const title = a.title || item?.title || a.itemId || a.id;
-  const kind = ATTENTION_LABEL[a.kind] || a.kind || 'attention';
-  const when = a.lastUpdate || a.openedAt;
-  const review = a.reviewedAt ? `reviewed ${ago(a.reviewedAt)} ago` : 'unreviewed';
-  const snooze = a.snoozedUntil ? `snoozed until ${localDT(a.snoozedUntil)}` : review;
-  const command = a.kind === 'command';
-  const body = command
-    ? `<pre class="ac-command">${esc(a.message || '')}</pre>`
-    : (a.message ? `<div class="ac-message">${reportPreview(a.message, a.messageFormat || 'plain', 4, `attention-${a.id}`)}</div>` : '');
-  const primary = command
-    ? `<button class="btn sm" data-attention-approve>approve</button>`
-    : `<button class="btn sm" data-attention-review>${a.reviewedAt ? 'unreview' : 'review'}</button>`;
-  return `<article class="attention-card kind-${esc(kind)}" data-attention-id="${esc(a.id)}">
-    <div class="ac-head"><span class="ac-kind">${ATTENTION_GLYPH[kind] || '▲'} ${esc(kind)}</span><button class="ac-open ac-title" data-attention-open="${esc(a.itemId || '')}" title="open without acknowledging">${esc(title)}</button></div>
-    <div class="ac-meta">${esc(boardName(a.board))}${a.owner ? ` · @${esc(a.owner)}` : ''}${when ? ` · ${ago(when)} ago` : ''}</div>
-    ${body}
-    <div class="ac-foot">${a.runId ? `<button class="btn sm" data-attention-run="${esc(a.runId)}">open run</button>` : ''}<span class="dim">${esc(snooze)}</span><span class="sp"></span>${primary}<button class="btn sm" data-attention-snooze="15" title="snooze 15 minutes">15m</button><button class="btn sm" data-attention-snooze="60" title="snooze one hour">1h</button><button class="btn sm" data-attention-snooze="tomorrow" title="snooze until tomorrow at 09:00">tomorrow</button></div>
-  </article>`;
-}
-function attentionBoardHTML(list, now) {
-  return attentionByBoard(list).map(([board, rows]) => {
-    const runs = new Map();
-    for (const a of rows) {
-      const key = a.runId || `board:${board}`;
-      if (!runs.has(key)) runs.set(key, []);
-      runs.get(key).push(a);
-    }
-    const runBlocks = [...runs.entries()].sort((a, b) => Math.min(...a[1].map(i => i.priority)) - Math.min(...b[1].map(i => i.priority))).map(([key, issues]) => {
-      const runId = key.startsWith('board:') ? '' : key;
-      const runTitle = issues.find((a) => a.runTitle)?.runTitle || (runId && (S.runs.items || []).find((r) => r.id === runId || r.uuid === runId)?.title) || (runId ? `run ${runId}` : 'board issues');
-      const open = runId ? `<button class="btn sm" data-attention-run="${esc(runId)}">open run</button>` : '';
-      return `<div class="attention-run"><div class="attention-run-head"><span>${esc(runTitle)}</span><span class="dim">${issues.length}</span><span class="sp"></span>${open}</div><div class="attention-groups">${issues.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || (b.openedAt || 0) - (a.openedAt || 0)).map((a) => attentionCardHTML(a, now)).join('')}</div></div>`;
-    }).join('');
-    return `<div class="sup-section"><h2>${esc(boardName(board))} <span class="dim">${rows.length}</span></h2>${runBlocks}</div>`;
-  }).join('');
-}
-function renderChanges() {
-  const host = $('#since-last-visit');
-  if (!host) return;
-  const changes = S.changes;
-  if (!S.lastVisit) {
-    host.innerHTML = '<div class="sup-empty">No previous visit checkpoint yet.</div>';
-    return;
-  }
-  const rows = (changes.events || []).slice().reverse().map((a) => `<div class="change-row"><span class="change-time">${esc(localDT(a.t))}</span><span class="change-text"><span class="dim">@${esc(a.actor || '—')}</span> ${esc(a.text || a.kind || 'changed')} ${a.itemId && S.items.has(a.itemId) ? `<button class="btn sm" data-change-open="${esc(a.itemId)}">open</button>` : ''}</span></div>`).join('');
-  host.innerHTML = `<div class="sup-meta">${changes.complete ? `${changes.events?.length || 0} recorded change${changes.events?.length === 1 ? '' : 's'} since ${esc(localDT(S.lastVisit))}` : 'Change history is incomplete; showing the records returned by the server.'}</div>${rows || '<div class="sup-empty">No recorded changes since your last visit.</div>'}`;
-}
-function renderAttention() {
-  if (S.page !== 'attention') return;
-  const now = Number(S.attention.now) || Date.now();
-  const active = activeAttention(now);
-  const pending = active.filter((a) => !a.reviewedAt);
-  const current = pending;
-  const reviewed = active.filter((a) => a.reviewedAt);
-  const snoozed = snoozedAttention(now);
-  const head = $('#supervision-head');
-  const body = $('#supervision-body');
-  head.innerHTML = `<div class="sup-title"><h1>attention</h1><span class="sup-meta">${pending.length} unreviewed · ${active.length} current</span><span class="sp"></span><span class="sup-meta">${esc(localDT(now))}</span></div><div class="sup-actions"><button class="btn" data-attention-refresh>refresh</button><button class="btn" data-mark-read>mark since last visit read</button></div>`;
-  body.innerHTML = `<section class="sup-section"><h2>current · unreviewed <span class="dim">${current.length}</span></h2>${current.length ? attentionBoardHTML(current, now) : '<div class="sup-empty">No current unreviewed attention records.</div>'}</section>
-    <section class="sup-section ${S.attentionExpanded.reviewed ? '' : 'sup-collapsed'}" data-sup-section="reviewed"><h2>reviewed <span class="dim">${reviewed.length}</span><button class="btn sm" data-sup-toggle="reviewed">${S.attentionExpanded.reviewed ? 'hide' : 'show'}</button></h2><div class="sup-section-body">${reviewed.length ? attentionBoardHTML(reviewed, now) : '<div class="sup-empty">No reviewed records.</div>'}</div></section>
-    <section class="sup-section ${S.attentionExpanded.snoozed ? '' : 'sup-collapsed'}" data-sup-section="snoozed"><h2>snoozed <span class="dim">${snoozed.length}</span><button class="btn sm" data-sup-toggle="snoozed">${S.attentionExpanded.snoozed ? 'hide' : 'show'}</button></h2><div class="sup-section-body">${snoozed.length ? attentionBoardHTML(snoozed, now) : '<div class="sup-empty">No snoozed records.</div>'}</div></section>
-    <section class="sup-section"><h2>since your last visit</h2><div id="since-last-visit"></div></section>`;
-  applyReadonlyControls(head);
-  applyReadonlyControls(body);
-  renderChanges();
 }
 async function loadAttention() {
   if (CAPTURE_READONLY) return;
   const data = await optionalGET('/api/attention');
   if (!data) return;
   S.attention = { items: Array.isArray(data.items) ? data.items : [], now: data.now || Date.now() };
-  const n = activeAttention(S.attention.now).filter((a) => !a.reviewedAt).length;
-  $('#attention-count').textContent = n ? `(${n})` : '';
-  if (S.page === 'attention') renderAttention();
+  renderNeeds();
   if (!$('#board-menu').hidden) renderBoardMenu();
-}
-function tomorrowNine() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(9, 0, 0, 0);
-  return d.getTime();
 }
 async function approveDrawerCommand(it) {
   let record = (S.attention.items || []).find((a) => (a.itemId || a.id) === it.id && a.kind === 'command');
@@ -1620,76 +1379,19 @@ async function approveDrawerCommand(it) {
     await api('POST', `/api/monitors/${encodeURIComponent(it.id)}/approve`, { revision: record.revision });
     toast('approved ' + it.id);
   } catch (e) {
-    toast(e.status === 409 ? 'this command changed; refresh Attention' : e.message, 5000);
+    toast(e.status === 409 ? 'this command changed; refresh "needs you"' : e.message, 5000);
     if (e.status === 409) await loadAttention();
-  }
-}
-async function approveAttentionCommand(card) {
-  const a = S.attention.items.find((x) => x.id === card?.dataset.attentionId);
-  if (!a) return;
-  try {
-    await api('POST', `/api/monitors/${encodeURIComponent(a.itemId || a.id)}/approve`, { revision: a.revision });
-    await loadAttention();
-  } catch (e) {
-    toast(e.status === 409 ? 'this command changed; refresh Attention' : e.message, 5000);
-    if (e.status === 409) await loadAttention();
-  }
-}
-async function attentionAction(card, action, until) {
-  const a = S.attention.items.find((x) => x.id === card?.dataset.attentionId);
-  if (!a) return;
-  try {
-    await api('POST', `/api/attention/${encodeURIComponent(a.id)}`, { action, revision: a.revision, ...(until ? { until } : {}) });
-    await loadAttention();
-  } catch (e) {
-    if (e.status === 409) {
-      toast('attention changed elsewhere; refreshing');
-      await loadAttention();
-    }
   }
 }
 function runStatus(run) { return String(run.status || 'unknown').toLowerCase(); }
 function runDone(run) { return ['done', 'completed', 'canceled', 'cancelled'].includes(runStatus(run)); }
 function boardName(id) { return S.boards.find((b) => b.id === id)?.name || id || ''; }
-function runCardHTML(run) {
-  const progress = run.progress == null ? null : clamp(Number(run.progress), 0, 100);
-  const summary = typeof run.summaryMonitor === 'string' ? itemFor(run.summaryMonitor) : run.summaryMonitor;
-  return `<article class="run-card run-${esc(runStatus(run))}" data-run-id="${esc(run.id || run.uuid || '')}">
-    <div class="run-head"><button class="run-title" data-run-open="${esc(run.id || run.uuid || '')}">${esc(run.title || run.ident || run.id || 'run')}</button><div class="run-context">${esc(run.status || 'unknown')} · ${esc(boardName(run.board))}</div></div>
-    ${summary ? `<div class="run-summary">${esc(summary.label || summary.title || '')}</div>` : '<div class="run-summary">No summary monitor linked</div>'}
-    ${progress != null ? `<div class="run-progress" aria-label="${progress}%"><i style="width:${progress}%"></i></div>` : ''}
-    <div class="run-meta">${progress != null ? `<span>${Math.round(progress)}%</span>` : ''}${run.eta ? `<span>ETA ${esc(run.eta)}</span>` : ''}${run.lastUpdate ? `<span>${ago(run.lastUpdate)} ago</span>` : ''}${run.owner ? `<span>@${esc(run.owner)}</span>` : ''}${run.issues ? `<span class="run-issues">${run.issues} issue${run.issues === 1 ? '' : 's'}</span>` : ''}</div>
-    <div class="run-links"><button data-run-open="${esc(run.id)}">${(run.monitors || []).length} monitors · ${(run.tickets || []).length} tickets →</button></div>
-  </article>`;
-}
-function renderRuns() {
-  if (S.page !== 'runs') return;
-  const all = S.runs.items || [];
-  const shown = S.runs.showCompleted ? all : all.filter((r) => !runDone(r));
-  const tabs = `<div class="sup-tabs"><button class="sup-tab ${S.runsTab === 'runs' ? 'on' : ''}" data-sup-tab="runs">runs</button><button class="sup-tab ${S.runsTab === 'queue' ? 'on' : ''}" data-sup-tab="queue">queue</button></div>`;
-  $('#supervision-head').innerHTML = `<div class="sup-title"><h1>${S.runsTab === 'queue' ? 'queue' : 'runs'}</h1><span class="sup-meta">${S.runsTab === 'queue' ? (S.queue ? `${S.queue.counts.ready} ready · ${S.queue.counts.open} open` : 'loading') : `${shown.length} shown · ${all.length} total`}</span><span class="sp"></span><span class="sup-meta">${esc(localDT(Date.now()))}</span></div>${tabs}<div class="sup-actions"><button class="btn" data-runs-refresh>refresh</button>${S.runsTab === 'runs' ? `<button class="btn ${S.runs.showCompleted ? 'on' : ''}" data-runs-completed aria-pressed="${S.runs.showCompleted}">${S.runs.showCompleted ? 'hide' : 'show'} completed</button>` : ''}</div>`;
-  $('#supervision-body').innerHTML = S.runsTab === 'queue'
-    ? queueHTML()
-    : (shown.length ? `<div class="run-grid">${shown.map(runCardHTML).join('')}</div>` : '<div class="sup-empty">No runs match this view. Runs are ticket trees tagged <code>run</code>.</div>');
-  applyReadonlyControls($('#supervision-head'));
-  applyReadonlyControls($('#supervision-body'));
-}
 async function loadRuns() {
   if (CAPTURE_READONLY) return;
   const data = await optionalGET('/api/runs');
   if (!data) return;
   S.runs.items = Array.isArray(data.items) ? data.items : [];
-  $('#runs-count').textContent = S.runs.items.filter((r) => !runDone(r)).length ? `(${S.runs.items.filter((r) => !runDone(r)).length})` : '';
-  if (S.page === 'runs' && S.runsTab === 'runs') renderRuns();
   if (S.drawer && runForItem(S.drawer)) renderDrawer();
-}
-async function loadChanges() {
-  if (CAPTURE_READONLY) return;
-  if (!S.lastVisit) return renderChanges();
-  const data = await optionalGET(`/api/changes?since=${encodeURIComponent(S.lastVisit)}`);
-  if (!data) return;
-  S.changes = { since: data.since || S.lastVisit, now: data.now || Date.now(), complete: !!data.complete, events: Array.isArray(data.events) ? data.events : [] };
-  if (S.page === 'attention') renderChanges();
 }
 
 // ---------------------------------------------------------------- presence + queue
@@ -1699,18 +1401,17 @@ async function loadSessions() {
   if (!data) return;
   S.sessions = { items: Array.isArray(data.items) ? data.items : [], now: data.now || Date.now() };
   renderSessions();
-  renderClaimWidget();
 }
 function renderSessions() {
   const live = S.sessions.items.filter((s) => s.live);
   const btn = $('#btn-sessions');
-  if (btn) btn.textContent = `● ${live.length} session${live.length === 1 ? '' : 's'}`;
+  if (btn) btn.textContent = `agents · ${live.length} live`;
   const pop = $('#sessions');
   if (!pop) return;
   if (!S.sessionsOpen) { pop.hidden = true; return; }
   pop.hidden = false;
   const rows = S.sessions.items.map((s) => `<div class="session-row"><span>${s.live ? '●' : '○'}</span><span class="id">${esc(s.id)}</span><span class="dim">${esc(s.kind)} · ${s.live ? `${ago(s.lastSeenAt)} ago` : 'ended'}${(s.claims || []).length ? ` · ${s.claims.map((c) => esc(c.ident)).join(', ')}` : ''}</span></div>`).join('');
-  pop.innerHTML = `<div class="phd"><span>sessions</span><span class="sp"></span><button data-sessions-close aria-label="close">×</button></div>${rows || '<div class="sup-empty">No sessions. MCP clients register on connect.</div>'}`;
+  pop.innerHTML = `<div class="phd"><span>agents</span><span class="sp"></span><button data-sessions-close aria-label="close">×</button></div>${rows || '<div class="sup-empty">No sessions. MCP clients register on connect.</div>'}`;
 }
 async function heartbeatSelf() {
   try { await api('POST', '/api/sessions/user/heartbeat'); } catch {}
@@ -1723,21 +1424,6 @@ async function loadQueue() {
   const data = await optionalGET(`/api/queue?board=${encodeURIComponent(board)}`);
   if (gen !== queueGen || S.board !== board || !data) return;
   S.queue = data;
-  renderClaimWidget();
-  if (S.page === 'runs' && S.runsTab === 'queue') renderRuns();
-}
-function queueHTML() {
-  const q = S.queue;
-  if (!q) return '<div class="sup-empty">Loading the queue…</div>';
-  const rows = q.items.map((t) => {
-    const claimed = t.claim ? `<span class="q-claim">${esc(t.session?.name || t.claim.session)}</span>` : '—';
-    const sess = t.session ? `<span class="${t.session.live ? 'q-live' : 'dim'}">${t.session.live ? '● live' : '○ ended'}</span>` : '—';
-    const action = t.bucket === 'done' ? '' : t.claim && t.claim.session === 'user'
-      ? `<button data-release="${esc(t.id)}">release</button>`
-      : t.claim ? '' : `<button data-claim="${esc(t.id)}"${t.ready ? ' class="q-ready"' : ''}>claim</button>`;
-    return `<tr class="q-${esc(t.bucket)}"><td class="q-ident">${esc(t.ident)}</td><td class="q-title">${esc(t.title)}</td><td>${esc(t.status)}</td><td>${claimed}</td><td>${sess}</td><td>${esc(t.blockedBy.join(', ') || '—')}</td><td>${action}</td></tr>`;
-  }).join('');
-  return `<div class="sup-meta" style="margin:10px 0">${q.counts.ready} ready · ${q.counts.open} open · ${q.counts.claimed} claimed · ${q.counts.blocked} blocked · ${q.counts.done} done</div><table class="queue-table"><thead><tr><th>ticket</th><th>title</th><th>status</th><th>owner</th><th>session</th><th>blocked by</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="faint">No matching work.</td></tr>'}</tbody></table>`;
 }
 async function claimTicket(id) {
   try {
@@ -1755,18 +1441,9 @@ async function releaseTicket(id) {
   await loadQueue();
   await loadSessions();
 }
-const refreshAttentionLater = debounce(() => { if (S.page === 'attention') loadAttention(); }, 350);
+const refreshAttentionLater = debounce(() => loadAttention(), 350);
 const refreshRunsLater = debounce(() => { if (S.page === 'runs' || (S.drawer && runForItem(S.drawer))) loadRuns(); }, 350);
-const refreshChangesLater = debounce(() => { if (S.page === 'attention') loadChanges(); }, 350);
-const refreshQueueLater = debounce(() => { if (S.page === 'board' || (S.page === 'runs' && S.runsTab === 'queue')) loadQueue(); }, 350);
-function markSinceRead() {
-  if (CAPTURE_READONLY) return;
-  const now = Date.now();
-  S.lastVisit = now;
-  S.changes = { since: now, now, complete: true, events: [] };
-  try { localStorage.setItem(localKey('lastvisit'), String(now)); } catch {}
-  renderAttention();
-}
+const refreshQueueLater = debounce(() => loadQueue(), 350);
 function boardCounts() {
   const out = {};
   for (const it of S.items.values()) out[it.board] = (out[it.board] || 0) + 1;
@@ -1785,9 +1462,9 @@ function renderBoardMenu() {
   const order = [...new Set([...recent, ...S.boards.map((b) => b.id)])];
   const q = String(S.boardQuery || '').trim().toLowerCase();
   const attCounts = {};
-  for (const a of activeAttention().filter((x) => !x.reviewedAt)) attCounts[a.board] = (attCounts[a.board] || 0) + 1;
-  const rows = order.map((id) => S.boards.find((b) => b.id === id)).filter(Boolean).filter((b) => !q || `${b.name} ${b.id}`.toLowerCase().includes(q)).map((b) => `<div class="board-row ${b.id === S.board ? 'on' : ''}" data-board-pick="${esc(b.id)}"><span class="name">${esc(b.name)}</span><span class="count">${attCounts[b.id] ? `▲${attCounts[b.id]} ` : ''}${counts[b.id] || 0}</span></div>`).join('');
-  menu.innerHTML = `<input class="board-search" data-board-query placeholder="search boards" value="${esc(S.boardQuery)}"><div>${rows || '<div class="faint">no matching boards</div>'}</div><div class="board-actions"><button class="btn sm" data-board-add>＋ board</button><button class="btn sm" data-board-rename>rename current</button></div><section class="board-maintenance" aria-label="current board actions"><div class="board-maintenance-title">current canvas · ${esc(currentName)} · ${currentCount} item${currentCount === 1 ? '' : 's'}</div><div class="board-maintenance-action"><button class="btn sm danger" data-board-clear aria-describedby="board-clear-help" title="Move every item on this canvas to Trash and reset its dashboard metadata">clear canvas</button><div class="board-maintenance-help" id="board-clear-help">Moves all items to Trash; keeps this board and its settings. Resets dashboard, annotations, comparisons, and its custom canvas program.</div></div><div class="board-maintenance-action"><button class="btn sm danger" data-board-delete aria-describedby="board-delete-help" title="Delete this board; its items move to Trash" ${mainBoard ? 'disabled aria-disabled="true"' : ''}>delete canvas</button><div class="board-maintenance-help" id="board-delete-help">Removes this board from the switcher; its items move to Trash.${mainBoard ? ' The main board cannot be deleted.' : ''}</div></div></section>`;
+  for (const a of needsYou()) attCounts[a.board] = (attCounts[a.board] || 0) + 1;
+  const rows = order.map((id) => S.boards.find((b) => b.id === id)).filter(Boolean).filter((b) => !q || `${b.name} ${b.id}`.toLowerCase().includes(q)).map((b) => `<div class="board-row ${b.id === S.board ? 'on' : ''}" data-board-pick="${esc(b.id)}"><span class="name">${esc(b.name)}</span><span class="count">${attCounts[b.id] ? `<span class="needs-n" title="${attCounts[b.id]} need you">● ${attCounts[b.id]}</span> ` : ''}${counts[b.id] || 0}</span></div>`).join('');
+  menu.innerHTML = `<input class="board-search" data-board-query placeholder="search workspaces" value="${esc(S.boardQuery)}"><div>${rows || '<div class="faint">no matching workspaces</div>'}</div><div class="board-actions"><button class="btn sm" data-board-add>＋ workspace</button><button class="btn sm" data-board-rename>rename</button></div><section class="board-maintenance" aria-label="this workspace"><div class="board-maintenance-title">this workspace · ${esc(currentName)} · ${currentCount} item${currentCount === 1 ? '' : 's'}</div><div class="board-maintenance-action"><button class="btn sm danger" data-board-clear aria-describedby="board-clear-help" title="Move every item in this workspace to Trash">clear</button><div class="board-maintenance-help" id="board-clear-help">Moves every task and monitor to Trash; keeps the workspace and its settings.</div></div><div class="board-maintenance-action"><button class="btn sm danger" data-board-delete aria-describedby="board-delete-help" title="Delete this workspace; its items move to Trash" ${mainBoard ? 'disabled aria-disabled="true"' : ''}>delete</button><div class="board-maintenance-help" id="board-delete-help">Removes the workspace; its items move to Trash.${mainBoard ? ' The main workspace cannot be deleted.' : ''}</div></div></section>`;
   applyReadonlyControls(menu);
 }
 function toggleBoardMenu(on) {
@@ -1797,6 +1474,95 @@ function toggleBoardMenu(on) {
   $('#btn-board').setAttribute('aria-expanded', String(on));
   if (on) { S.boardQuery = ''; renderBoardMenu(); menu.querySelector('[data-board-query]')?.focus(); }
 }
+// ---------------------------------------------------------------- top bar: view toggle, needs you, more
+/** Tasks / Monitors with their counts; the toggle is the one way between the two views (l also works) */
+function renderViewToggle() {
+  const tickets = boardItems().filter((i) => i.type === 'ticket').length;
+  const monitors = canvasItems().filter((i) => i.type !== 'frame').length;
+  for (const b of $$('#view-toggle [data-view]')) {
+    const on = b.dataset.view === S.mode;
+    b.setAttribute('aria-selected', String(on));
+    b.classList.toggle('on', on);
+    const n = b.querySelector('.n');
+    if (n) n.textContent = String(b.dataset.view === 'list' ? tickets : monitors);
+  }
+}
+const NEEDS = {
+  decision: { glyph: '?', word: 'question', act: 'answer' },
+  command: { glyph: '▸', word: 'approve command', act: 'review' },
+  error: { glyph: '✕', word: 'monitor error', act: 'open' },
+  blocked: { glyph: '▲', word: 'stuck', act: 'open' },
+};
+/** what waits on the person: a question, a command to approve, a monitor in error, or a ticket an agent marked
+ * blocked with nothing to wait on. A ticket waiting on another ticket is the agents' business. */
+function needsYou() {
+  return activeAttention().filter((a) => {
+    if (!NEEDS[a.kind]) return false;
+    if (a.kind !== 'blocked') return true;
+    const it = S.items.get(a.itemId);
+    if (!it || it.autoBlocked) return false;
+    return !(it.blockedBy || []).some((b) => { const x = S.items.get(b); return x && x.status !== 'done' && x.status !== 'canceled'; });
+  });
+}
+function renderNeeds() {
+  const list = needsYou();
+  const btn = $('#btn-attention');
+  if (!btn) return;
+  $('#attention-count').textContent = String(list.length);
+  btn.classList.toggle('has', list.length > 0);
+  btn.title = list.length ? `${list.length} waiting on you (A)` : 'nothing is waiting on you (A)';
+  const pop = $('#needs');
+  if (pop.hidden) return;
+  const rows = list.map((a) => {
+    const it = S.items.get(a.itemId);
+    const n = NEEDS[a.kind];
+    const title = it ? (it.title || it.id) : (a.title || a.itemId);
+    const where = [S.boards.find((b) => b.id === (it?.board || a.board))?.name, it?.type === 'ticket' ? identOf(it) : ''].filter(Boolean).join(' · ');
+    return `<div class="needs-row" data-needs-open="${esc(a.itemId)}" tabindex="0"><span class="g">${n.glyph}</span><span class="needs-text"><span class="kind">${esc(n.word)}</span><span class="ttl">${esc(title)}</span><span class="ws">${esc(where)}</span></span><button class="btn sm" data-needs-open="${esc(a.itemId)}">${n.act}</button></div>`;
+  }).join('');
+  const html = `<div class="needs-head">${list.length ? `${list.length} waiting on you` : 'Nothing needs you.'}</div>${rows}`;
+  if (pop.dataset.sig !== html) { pop.dataset.sig = html; pop.innerHTML = html; applyReadonlyControls(pop); }
+}
+function closeMenus(except) {
+  if (except !== 'needs' && !$('#needs').hidden) toggleNeeds(false);
+  if (except !== 'more' && !$('#more-menu').hidden) toggleMore(false);
+  if (except !== 'board' && !$('#board-menu').hidden) toggleBoardMenu(false);
+}
+function toggleNeeds(on) {
+  const pop = $('#needs');
+  on = on ?? pop.hidden;
+  if (on) closeMenus('needs');
+  pop.hidden = !on;
+  $('#btn-attention').setAttribute('aria-expanded', String(on));
+  if (on) { pop.dataset.sig = ''; renderNeeds(); if (!CAPTURE_READONLY) loadAttention(); }
+}
+function toggleMore(on) {
+  const menu = $('#more-menu');
+  on = on ?? menu.hidden;
+  if (on) closeMenus('more');
+  menu.hidden = !on;
+  $('#btn-more').setAttribute('aria-expanded', String(on));
+}
+$('#view-toggle').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-view]');
+  if (b) setMode(b.dataset.view);
+});
+$('#needs').addEventListener('click', (e) => {
+  const row = e.target.closest('[data-needs-open]');
+  if (!row) return;
+  toggleNeeds(false);
+  openItemDeepLink(row.dataset.needsOpen);
+});
+$('#needs').addEventListener('keydown', (e) => {
+  const row = e.target.closest('.needs-row');
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggleNeeds(false); openItemDeepLink(row.dataset.needsOpen); }
+});
+$('#btn-more').addEventListener('click', () => toggleMore());
+// a pick from the menu runs its own handler first, then the menu closes
+$('#more-menu').addEventListener('click', (e) => { if (e.target.closest('button')) setTimeout(() => toggleMore(false), 0); });
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest?.('#board-switcher, #needs-wrap, #more-wrap')) closeMenus();
+});
 function openSearch() {
   S.searchOpen = true;
   $('#global-search').hidden = false;
@@ -1831,11 +1597,11 @@ function openItemDeepLink(id) {
   switchBoard(it.board, { page: 'board' });
   setNavHash('item', id);
   if (it.type === 'ticket' || it.type === 'project') setMode('list');
+  else if (it.type === 'monitor') setMode('canvas');
   openDrawer(id);
 }
 
-$('#btn-attention').addEventListener('click', () => setPage('attention'));
-$('#btn-runs').addEventListener('click', () => setPage('runs'));
+$('#btn-attention').addEventListener('click', () => toggleNeeds());
 $('#btn-sessions').addEventListener('click', () => { S.sessionsOpen = !S.sessionsOpen; renderSessions(); if (S.sessionsOpen) loadSessions(); });
 $('#sessions').addEventListener('click', (e) => { if (e.target.closest('[data-sessions-close]')) { S.sessionsOpen = false; renderSessions(); } });
 $('#btn-board').addEventListener('click', () => toggleBoardMenu());
@@ -1853,17 +1619,12 @@ $('#program-inspector').addEventListener('click', (e) => {
   const source = e.target.closest('[data-source-open]');
   if (source) openDrawer(source.dataset.sourceOpen);
 });
-$('#monitor-attention-strip').addEventListener('click', (e) => {
-  const button = e.target.closest('[data-strip-focus]');
-  if (!button?.dataset.stripFocus || !S.items.has(button.dataset.stripFocus)) return;
-  if (boardProgramActive()) openDrawer(button.dataset.stripFocus);
-  else focusItem(button.dataset.stripFocus);
-});
-$('#claim-widget').addEventListener('click', (e) => {
-  const button = e.target.closest('[data-claim-focus]');
-  if (!button?.dataset.claimFocus || !S.items.has(button.dataset.claimFocus)) return;
-  openDrawer(button.dataset.claimFocus);
-});
+// Record a fold on the click, before its toggle: a re-render queued by a live update can replace the drawer
+// first, and the toggle would then fire on the detached copy.
+$('#drawer').addEventListener('click', (e) => {
+  const fold = e.target.closest?.('details[data-fold] > summary')?.parentElement;
+  if (fold) !fold.open ? S.drawerFolds.add(fold.dataset.fold) : S.drawerFolds.delete(fold.dataset.fold);
+}, true);
 $('#toast').addEventListener('click', (e) => {
   const link = e.target.closest('[data-created-board-link]');
   if (link) { e.preventDefault(); openItemDeepLink(link.dataset.createdBoardLink); }
@@ -1886,14 +1647,14 @@ $('#board-menu').addEventListener('click', async (e) => {
   const pick = e.target.closest('[data-board-pick]');
   if (pick) { toggleBoardMenu(false); rememberBoard(pick.dataset.boardPick); return switchBoard(pick.dataset.boardPick); }
   if (e.target.closest('[data-board-add]')) {
-    const name = prompt('new board name');
+    const name = prompt('new workspace name');
     if (!name?.trim()) return;
     const b = await api('POST', '/api/boards', { name: name.trim() });
     upsertBoard(b); rememberBoard(b.id); toggleBoardMenu(false); return switchBoard(b.id);
   }
   if (e.target.closest('[data-board-rename]')) {
     const b = S.boards.find((x) => x.id === S.board);
-    const name = prompt('rename board', b?.name || '');
+    const name = prompt('rename workspace', b?.name || '');
     if (!name?.trim() || !b) return;
     await api('PATCH', `/api/boards/${encodeURIComponent(b.id)}`, { name: name.trim() });
     toggleBoardMenu(false);
@@ -1904,23 +1665,23 @@ $('#board-menu').addEventListener('click', async (e) => {
     const boardItemsBefore = boardItems();
     const boardItemIds = new Set(boardItemsBefore.map((item) => item.id));
     const count = boardItemsBefore.length;
-    const confirmed = confirm(`Clear canvas "${board.name}"? ${count} item${count === 1 ? '' : 's'} will move to Trash. This keeps the board and its settings, while resetting its dashboard, annotations, comparisons, and custom canvas program.`);
+    const confirmed = confirm(`Clear workspace "${board.name}"? ${count} item${count === 1 ? '' : 's'} will move to Trash. The workspace and its settings stay.`);
     if (!confirmed) return;
     toggleBoardMenu(false);
     try {
       const result = await api('POST', `/api/boards/${encodeURIComponent(board.id)}/clear`, {});
       for (const id of boardItemIds) { S.sel.delete(id); S.detail.delete(id); }
       if (S.drawer && boardItemIds.has(S.drawer)) closeDrawer();
-      toast(`cleared canvas "${board.name}" · ${Number(result?.cleared ?? count)} item${Number(result?.cleared ?? count) === 1 ? '' : 's'} moved to Trash`, 5000);
+      toast(`cleared workspace "${board.name}" · ${Number(result?.cleared ?? count)} item${Number(result?.cleared ?? count) === 1 ? '' : 's'} moved to Trash`, 5000);
     } catch (error) { toast(error.message, 5000); }
     return;
   }
   if (e.target.closest('[data-board-delete]')) {
     const board = S.boards.find((x) => x.id === S.board);
     if (!board) return;
-    if (board.id === 'main') return toast('the main board cannot be deleted', 5000);
+    if (board.id === 'main') return toast('the main workspace cannot be deleted', 5000);
     const count = boardItems().length;
-    if (!confirm(`Delete canvas "${board.name}"? This removes the board and its settings. Its ${count} item${count === 1 ? '' : 's'} will move to Trash.`)) return;
+    if (!confirm(`Delete workspace "${board.name}"? Its ${count} item${count === 1 ? '' : 's'} will move to Trash.`)) return;
     const next = S.boards.find((x) => x.id !== board.id) || S.boards.find((x) => x.id === 'main');
     toggleBoardMenu(false);
     try {
@@ -1928,45 +1689,9 @@ $('#board-menu').addEventListener('click', async (e) => {
       S.sel.clear();
       if (S.drawer) closeDrawer();
       if (S.board === board.id && next) switchBoard(next.id);
-      toast(`deleted canvas "${board.name}" · its items moved to Trash`, 5000);
+      toast(`deleted workspace "${board.name}" · its items moved to Trash`, 5000);
     } catch (error) { toast(error.message, 5000); }
   }
-});
-$('#supervision').addEventListener('click', (e) => {
-  const run = e.target.closest('[data-attention-run]');
-  if (run) {
-    const rr = (S.runs.items || []).find((x) => x.id === run.dataset.attentionRun || x.uuid === run.dataset.attentionRun);
-    return openItemDeepLink(rr?.id || run.dataset.attentionRun);
-  }
-  const open = e.target.closest('[data-attention-open], [data-run-open], [data-change-open]');
-  if (open) return openItemDeepLink(open.dataset.attentionOpen || open.dataset.runOpen || open.dataset.changeOpen);
-  const card = e.target.closest('[data-attention-id]');
-  if (card && e.target.closest('[data-attention-approve]')) return approveAttentionCommand(card);
-  if (card && e.target.closest('[data-attention-review]')) return attentionAction(card, S.attention.items.find((a) => a.id === card.dataset.attentionId)?.reviewedAt ? 'unreview' : 'review');
-  if (card && e.target.closest('[data-attention-snooze]')) {
-    const choice = e.target.closest('[data-attention-snooze]').dataset.attentionSnooze;
-    const until = choice === 'tomorrow' ? tomorrowNine() : Date.now() + Number(choice || 15) * 60e3;
-    return attentionAction(card, 'snooze', until);
-  }
-  if (e.target.closest('[data-attention-refresh]')) return loadAttention();
-  const supTab = e.target.closest('[data-sup-tab]');
-  if (supTab) { S.runsTab = supTab.dataset.supTab === 'queue' ? 'queue' : 'runs'; if (S.runsTab === 'queue') loadQueue(); return renderRuns(); }
-  const claimBtn = e.target.closest('[data-claim]');
-  if (claimBtn) return claimTicket(claimBtn.dataset.claim);
-  const releaseBtn = e.target.closest('[data-release]');
-  if (releaseBtn) return releaseTicket(releaseBtn.dataset.release);
-  if (e.target.closest('[data-mark-read]')) return markSinceRead();
-  if (e.target.closest('[data-runs-refresh]')) return loadRuns();
-  if (e.target.closest('[data-runs-completed]')) { S.runs.showCompleted = !S.runs.showCompleted; try { localStorage.setItem(localKey('show-completed-runs'), String(S.runs.showCompleted)); } catch {} return renderRuns(); }
-  const toggle = e.target.closest('[data-sup-toggle]');
-  if (toggle) {
-    const sec = toggle.closest('[data-sup-section]');
-    sec.classList.toggle('sup-collapsed');
-    toggle.textContent = sec.classList.contains('sup-collapsed') ? 'show' : 'hide';
-    S.attentionExpanded[toggle.dataset.supToggle] = !sec.classList.contains('sup-collapsed');
-  }
-  const more = e.target.closest('[data-report-more]');
-  if (more) { e.stopPropagation(); more.previousElementSibling?.classList.toggle('expanded'); }
 });
 
 // ---------------------------------------------------------------- data sync
@@ -1986,7 +1711,6 @@ async function load() {
   S.detail.clear();
   S.activity = st.activity;
   S.alerts = st.alerts || [];
-  renderAlerts();
   const hs = hashState();
   const want = CAPTURE_READONLY ? (CAPTURE_BOARD || hs.board || st.board || st.captureBoard) : hs.board || (() => {
     try {
@@ -1994,7 +1718,7 @@ async function load() {
     } catch {}
   })();
   const id = S.boards.some((b) => b.id === want) ? want : S.board && S.boards.some((b) => b.id === S.board) ? S.board : S.boards[0].id;
-  const initialPage = CAPTURE_READONLY ? 'board' : hs.page === 'runs' ? 'runs' : hs.page === 'attention' ? 'attention' : hs.page === 'item' || hs.board ? 'board' : 'board';
+  const initialPage = !CAPTURE_READONLY && hs.page === 'attention' ? 'attention' : 'board';
   if (id !== S.board) switchBoard(id, { page: initialPage, hash: false });
   else { setPage(initialPage, { hash: false }); renderAll(); loadClaims(); }
   if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
@@ -2142,14 +1866,14 @@ function onEvent(e) {
   }
   if (e.kind === 'context') {
     S.contextCache.delete(e.entry.scope);
+    for (const ref of e.entry.refs || []) S.contextCache.delete('ref:' + ref);
     for (const ref of e.entry.refs || []) for (const tree of trees.values()) tree.pulse(ref, e.entry.kind);
-    if (S.drawer) { const it = itemFor(S.drawer); if (it && scopeFor(it) === e.entry.scope) fillContext(it); }
+    if (S.drawer) { const it = itemFor(S.drawer); if (it && (scopeFor(it) === e.entry.scope || (e.entry.refs || []).includes(it.id))) fillContext(it); }
     return;
   }
   if (e.kind === 'alert') {
     S.alerts.push(e.alert);
     if (S.alerts.length > 300) S.alerts.splice(0, S.alerts.length - 300);
-    renderAlerts();
     toast(`${e.alert.to === 'done' ? '✓' : '▲'} ${e.alert.title}: ${e.alert.from} → ${e.alert.to}`, 5000);
     return;
   }
@@ -2215,14 +1939,12 @@ function onEvent(e) {
     if (drag?.ids && [...drag.ids].some((id) => !S.items.has(id))) endDragSilently();
     if (S.drawer && !S.items.has(S.drawer)) closeDrawer();
     if (S.board === e.id) switchBoard(S.boards[0]?.id);
-    renderTabs();
+    renderBoardButtons();
     renderAll();
   } else if (e.kind === 'activity') {
     S.activity.push(e.activity);
     if (S.activity.length > 500) S.activity.shift();
     renderActivity(e.activity.id);
-    renderWho();
-    refreshChangesLater();
   }
 }
 
@@ -3030,7 +2752,39 @@ function historyHTML(it) {
   const activity = (S.itact.get(it.id) || []).slice().reverse().map((a) => `<div class="history-record"><span class="time">${esc(localDT(a.t))}</span><span class="state">@${esc(a.actor || '—')}</span> ${esc(a.text || '')}</div>`).join('');
   return `<div class="sec"><h4>comments & records</h4>${comments || '<div class="faint">no comments</div>'}${activity ? `<h4>activity</h4>${activity}` : ''}</div>`;
 }
+/** a ticket's details: what it is, who has it, what it waits on, what was found, then folds for the rest */
+function ticketDrawerHTML(it) {
+  const state = needsDecision(it) ? 'decision' : it.status || 'todo';
+  const word = { decision: 'waiting on you', todo: 'todo', backlog: 'backlog', doing: 'in progress', review: 'in review', blocked: 'blocked', done: 'done', canceled: 'canceled' }[state] || state;
+  const chip = (t) => `<button class="tchip s-${esc(needsDecision(t) ? 'decision' : t.status || 'todo')}" data-go="${esc(t.id)}" title="${esc(t.title || '')}"><span class="g">${TREE_GLYPH[needsDecision(t) ? 'decision' : t.status || 'todo'] || '○'}</span>${esc(identOf(t))}</button>`;
+  const parent = it.parent && itemFor(it.parent);
+  const blockers = (it.blockedBy || []).map((id) => itemFor(id)).filter((b) => b && b.status !== 'done' && b.status !== 'canceled');
+  const kids = kidsOf(it.id);
+  const done = kids.filter((k) => k.status === 'done').length;
+  const rel = [
+    parent && `<div class="tk-rel"><span class="dim">part of</span>${chip(parent)}</div>`,
+    blockers.length && `<div class="tk-rel"><span class="dim">waits on</span>${blockers.map(chip).join('')}</div>`,
+    kids.length && `<div class="tk-rel"><span class="dim">${done}/${kids.length} done</span>${kids.map(chip).join('')}</div>`,
+  ].filter(Boolean).join('');
+  const url = location.origin + location.pathname + '#item=' + encodeURIComponent(it.uuid || it.id);
+  const fold = (key, label, body) => `<details class="tk-fold" data-fold="${key}"${S.drawerFolds.has(key) ? ' open' : ''}><summary>${label}</summary>${body}</details>`;
+  const more = `${followupHTML(it)}<div class="sec"><div class="meta">${esc(boardName(it.board))} · created ${localDT(it.createdAt)} by @${esc(it.createdBy || '—')} · updated ${localDT(it.updatedAt)} by @${esc(it.updatedBy || it.createdBy || '—')}<br>uuid ${esc(it.uuid || it.id)}${it.branch ? `<br>branch ${esc(it.branch)}` : ''}</div><button class="btn sm" data-act="copy" data-text="${esc(url)}">copy link</button></div>`;
+  return `${drawerHeaderHTML(it)}<div class="inspector-body tk">
+    <div class="sec tk-sum"><h3 class="detail-title">${esc(it.title || identOf(it))}</h3>
+      <div class="tk-line"><span class="tk-status s-${esc(state)}"><span class="g">${TREE_GLYPH[state] || '○'}</span>${esc(word)}</span><span class="claim-box" id="claim-box"></span>${it.assignee ? `<span class="dim">→ ${esc(it.assignee)}</span>` : ''}</div>
+      ${rel}</div>
+    ${decisionOverviewHTML(it)}
+    ${it.body ? `<div class="sec drawer-report tk-body">${reportHTML(it.body, 'markdown')}</div>` : ''}
+    ${runSummaryHTML(it)}
+    <div class="context-box" id="context-box"></div>
+    ${commentsOverviewHTML(it)}
+    ${fold('edit', 'edit', drawerSettingsBody(it))}
+    ${fold('history', 'history', `<div class="sec"><div class="hist" id="itact">${itemActHTML(it.id)}</div></div>`)}
+    ${fold('more', 'more', more)}
+  </div>`;
+}
 function drawerHTML(it) {
+  if (it.type === 'ticket') return ticketDrawerHTML(it);
   const jump = `<nav class="inspector-jump" aria-label="inspector sections"><button data-jump="overview">overview</button><button data-jump="activity">activity</button>${it.type === 'monitor' ? '<button data-jump="monitor">monitor</button>' : ''}<button data-jump="settings">settings</button></nav>`;
   const activity = historyHTML(it);
   return `${drawerHeaderHTML(it)}${jump}<div class="inspector-body"><section class="inspector-section" data-section="overview">${drawerOverviewHTML(it)}</section><section class="inspector-section" data-section="activity">${activity}</section>${it.type === 'monitor' ? `<section class="inspector-section" data-section="monitor">${drawerSettingsBody(it)}</section>` : `<section class="inspector-section" data-section="settings">${drawerSettingsBody(it)}</section>`}</div>`;
@@ -3087,6 +2841,7 @@ function liveHTML(it) {
 }
 
 S.chartRange = '1h';
+S.drawerFolds = new Set();
 S.trend = new Map(); // id -> trend points (fetched; not on the live stream)
 S.uptime = new Map(); // id -> {h1, h24}
 S.itact = new Map(); // ticket id -> Activity[]
@@ -3229,14 +2984,16 @@ async function fillClaim(it) {
   if (c) S.claims.set(it.id, c);
   else S.claims.delete(it.id);
   if (prev !== (c?.actor || '') && S.mode === 'list') scheduleList();
-  box.innerHTML = `<h4>claim</h4>` + (c
-    ? `<div class="claim-state held">⊕${esc(c.actor)} · ${esc(c.session)} · ${c.live ? `expires ${ago(c.expiresAt)} from now` : 'expired'}</div><div class="btns">${c.session === 'user' ? `<button class="btn" data-release="${esc(it.id)}">release</button>` : ''}</div>`
-    : `<div class="claim-state">⊕— unclaimed</div><div class="btns"><button class="btn" data-claim="${esc(it.id)}">claim</button></div>`);
+  const left = c ? Math.max(0, Math.round((c.expiresAt - Date.now()) / 1000)) : 0;
+  box.innerHTML = c
+    ? `<span class="claim-state held" title="session ${esc(c.session)} · lease ${c.live ? `${left}s left` : 'expired'}">⊕ ${esc(c.actor)} is on it</span>${c.session === 'user' ? `<button class="btn sm" data-release="${esc(it.id)}">release</button>` : ''}`
+    : `<span class="claim-state">⊕ unclaimed</span><button class="btn sm" data-claim="${esc(it.id)}">claim</button>`;
 }
 
 function scopeFor(it) {
   if (it.type === 'ticket' && (it.tags || []).some((t) => String(t).toLowerCase() === 'run')) return `run:${it.id}`;
-  if (it.type === 'ticket' && it.project) return `project:${it.project}`;
+  // agents publish on the board or run scope and ref the ticket; a ticket shows what refs it, from any scope
+  if (it.type === 'ticket') return `ref:${it.id}`;
   if (it.type === 'project') return `project:${it.id}`;
   return `board:${it.board}`;
 }
@@ -3257,7 +3014,7 @@ function contextName(id) {
 }
 
 async function readContextPage(scope, since) {
-  const q = new URLSearchParams({ scope, limit: '1000' });
+  const q = new URLSearchParams(scope.startsWith('ref:') ? { ref: scope.slice(4), limit: '1000' } : { scope, limit: '1000' });
   if (since != null) q.set('since', String(since));
   return optionalGET(`/api/context?${q}`);
 }
@@ -3276,11 +3033,16 @@ async function fillContext(it) {
   const host = $('#context-box');
   if (!host || S.drawer !== it.id) return;
   const payload = data || { entries: [], complete: false, newerMissing: true };
+  const byRef = scope.startsWith('ref:');
+  if (byRef && !(payload.entries || []).length && payload.complete === true) {
+    host.innerHTML = '<div class="context-head"><h4>findings</h4></div><div class="faint">No FACT, FAIL or STATUS refers to this ticket yet.</div>';
+    return;
+  }
   host.innerHTML = renderContextTimeline({
     entries: payload.entries || [],
     filter: S.contextKind || 'all',
-    scope,
-    where: contextWhere(it),
+    scope: byRef ? 'every scope' : scope,
+    where: byRef ? 'about this ticket' : contextWhere(it),
     esc,
     when: (t) => `${ago(t)} · ${localDT(t)}`,
     nameOf: contextName,
@@ -3767,9 +3529,9 @@ async function toggleAuto(on) {
 function renderBoardButtons() {
   const b = S.boards.find((x) => x.id === S.board);
   $('#btn-auto').classList.toggle('on', !!b?.autoOrganize);
-  $('#btn-auto').textContent = b?.autoOrganize ? 'auto' : 'manual';
-  const board = $('#btn-board');
-  if (board) board.textContent = 'board ▾';
+  $('#btn-auto').textContent = `auto layout · ${b?.autoOrganize ? 'on' : 'off'}`;
+  const name = $('#board-name');
+  if (name) name.textContent = b?.name || S.board || 'workspace';
 }
 $('#btn-organize').addEventListener('click', () => organize());
 $('#btn-auto').addEventListener('click', () => toggleAuto());
@@ -3780,18 +3542,6 @@ for (const [id, factor] of [['zoom-in', 1.2], ['zoom-out', 1 / 1.2]]) {
     zoomAt(r.left + v.w / 2, r.top + v.h / 2, S.view.z * factor);
   });
 }
-function renderAlerts() {
-  const open = S.alerts.filter((a) => !a.acked);
-  const el = $('#btn-alerts');
-  el.style.display = open.length ? '' : 'none';
-  el.textContent = `▲ ${open.length}`;
-  el.title = open.slice(-8).map((a) => `${a.itemId}: ${a.from} → ${a.to}${a.message ? ' — ' + a.message : ''}`).join('\n') + '\n\nclick to acknowledge all';
-}
-$('#btn-alerts').addEventListener('click', async () => {
-  await api('POST', '/api/alerts/ack', {}).catch(() => null);
-  S.alerts.forEach((a) => (a.acked = true));
-  renderAlerts();
-});
 
 // ---------------------------------------------------------------- activity
 function renderActivity(newId) {
@@ -3818,49 +3568,31 @@ function toggleActivity(on) {
 }
 $('#btn-activity').addEventListener('click', () => toggleActivity());
 
-function renderWho() {
-  const since = Date.now() - 10 * 60 * 1000;
-  const who = [...new Set(S.activity.filter((a) => a.t > since && a.actor !== ME && a.actor !== SYSTEM).map((a) => a.actor))];
-  $('#who').textContent = who.length ? who.map((w) => '◆ ' + w).join('  ') : '';
-}
 
 // ---------------------------------------------------------------- help
-const HELP = `<b>hud</b> — live canvas of tickets, monitors, notes and frames
+const HELP = `<b>hud</b> — what your agents are doing, and what needs you
 
-<b>canvas</b>
-  fixed 1600 × 900 board, letterboxed to the window · fit is the zoom-out limit · 300% zoom-in limit
-  layout: auto fills the board · switch to manual for deliberate placement
-  drag empty space        pan          scroll / two-finger    pan
-  ⌘/ctrl + scroll, pinch  zoom         + / - / 0              zoom in / out / 100%
-  .                       fit board    shift + drag           select box
-  double-click empty      add here     double-click item      scrollable details
-  drag item               move (frames carry their contents; alt = no snap)
-  corner handle           resize       space + drag           pan
+<b>two views</b>  (the toggle in the top bar, or l)
+  Tasks       the live ticket tree: gray todo · yellow in progress · green done · red blocked
+              a ring is an agent holding the ticket · a ripple is a new finding · click a node for details
+  Monitors    charts and readings; drag to pan, ⌘/ctrl + scroll to zoom, . to fit
+
+<b>top bar</b>
+  workspace ▾   switch, add, rename, clear       ● need you   questions, approvals, errors (A)
+  search        everything (⌘/ctrl + k)          ⋯            agents, activity, sources, trash, help
 
 <b>keys</b>
-  t  m  n  f  w           new ticket / monitor / note / frame / widget (util) at cursor
-  ⏎                       open selected        ⌫ / del    delete selected (to trash)
-  u  or  ⌘/ctrl + z       undo delete          arrows     nudge selected
-  l                       canvas / ticket list (remembered per board)
-  v                       cycle monitor view
-  A / R                   attention / runs     Home / End first / last rail or list row
-  [ ]                     prev / next board
-  o                       organize board       O          toggle auto-organize
-  ⌘a                      select all           esc        close / clear
-  :                       command line         ?          this help
-
-<b>commands</b>  (press :)
-  new &lt;type&gt; [title]      t|m|n|f|u &lt;title&gt;   board &lt;name&gt;   (switch or create)
-  rename &lt;name&gt;          board rm &lt;id&gt;       go &lt;id&gt;        fit    zoom &lt;pct&gt;
-  organize                group into frames + tidy    auto [on|off]   keep board organized
-  group &lt;name&gt;            set group of selected       arrange   fit board layout
-  rm                      delete selected
-  push &lt;id&gt; &lt;value&gt;       status &lt;s&gt;  (selected tickets)
+  l                 Tasks / Monitors           [ ]        previous / next workspace
+  t                 new ticket                 m n f w    new monitor / note / frame / widget
+  ⏎                 open selected              ⌫          delete selected (to trash)
+  u  or  ⌘/ctrl + z undo delete                v          cycle a monitor's chart
+  o  /  O           organize monitors / auto   esc        close
+  ?                 this help
 
 <b>agents</b>
   MCP     hud mcp install · hud mcp reconnect (/mcp in Claude Code)
-  CLI     hud ls · hud add ticket "…" · hud push &lt;id&gt; 42 · hud guide [decentralized|lead] [--section anchor]
-  HTTP    GET /api/guide[?section=&playbook=]
+  CLI     hud ls · hud queue · hud guide decentralized
+  HTTP    GET /api/guide
 
 esc to close`;
 function toggleHelp(on) {
@@ -3872,104 +3604,8 @@ function toggleHelp(on) {
 $('#btn-help').addEventListener('click', () => toggleHelp());
 $('#help').addEventListener('click', () => toggleHelp(false));
 
-// ---------------------------------------------------------------- command line
-const cmdInput = $('#cmd');
-const cmdHistory = [];
-let cmdIdx = 0;
-function openCmd(prefill = '') {
-  document.body.classList.add('cmd');
-  cmdInput.value = prefill;
-  cmdInput.focus();
-  cmdIdx = cmdHistory.length;
-  setModeHint();
-}
-function closeCmd() {
-  document.body.classList.remove('cmd');
-  cmdInput.blur();
-  setModeHint();
-}
-cmdInput.addEventListener('keydown', (e) => {
-  e.stopPropagation();
-  if (e.key === 'Escape') return closeCmd();
-  if (e.key === 'ArrowUp') {
-    cmdIdx = Math.max(0, cmdIdx - 1);
-    cmdInput.value = cmdHistory[cmdIdx] ?? '';
-    e.preventDefault();
-  }
-  if (e.key === 'ArrowDown') {
-    cmdIdx = Math.min(cmdHistory.length, cmdIdx + 1);
-    cmdInput.value = cmdHistory[cmdIdx] ?? '';
-    e.preventDefault();
-  }
-  if (e.key === 'Enter') {
-    const v = cmdInput.value.trim();
-    closeCmd();
-    if (v) {
-      cmdHistory.push(v);
-      runCmd(v).catch((err) => toast(err.message));
-    }
-  }
-});
-cmdInput.addEventListener('blur', () => setTimeout(() => document.body.classList.contains('cmd') && closeCmd(), 100));
 
 const TYPE_ALIAS = { t: 'ticket', ticket: 'ticket', m: 'monitor', monitor: 'monitor', n: 'note', note: 'note', f: 'frame', frame: 'frame', u: 'util', util: 'util' };
-async function runCmd(line) {
-  const [c, ...rest] = line.split(/\s+/);
-  const arg = rest.join(' ');
-  const center = () => {
-    const r = canvas.getBoundingClientRect();
-    return toWorld(r.left + r.width / 2 - 120, r.top + r.height / 2 - 70);
-  };
-  if (c === 'new' || TYPE_ALIAS[c]) {
-    const type = c === 'new' ? TYPE_ALIAS[rest[0]] : TYPE_ALIAS[c];
-    if (!type) throw new Error(`usage: new ticket|monitor|note|frame|util [${UTIL_KINDS.join('|')}] [title]`);
-    const tail = c === 'new' ? rest.slice(1) : rest;
-    const kind = type === 'util' && UTIL_KINDS.includes(tail[0]) ? tail.shift() : undefined;
-    const title = tail.join(' ');
-    if (TREE_TYPES.has(type)) return newTicketInList(); // tasks belong to the tree, not the canvas
-    const frame = [...S.sel].map((id) => S.items.get(id)).find((i) => i?.type === 'frame');
-    return createAt(type, frame ? null : center(), { title, kind, ...(frame ? { frame: frame.id } : {}) });
-  }
-  if (c === 'board' || c === 'b') {
-    if (rest[0] === 'rm' || rest[0] === 'delete') {
-      const id = rest[1];
-      if (!id) throw new Error('usage: board rm <id>  (name the board explicitly)');
-      const n = [...S.items.values()].filter((i) => i.board === id).length;
-      if (!confirm(`Delete board "${id}" and its ${n} item${n === 1 ? '' : 's'}? (it goes to the trash)`)) return;
-      await api('DELETE', `/api/boards/${encodeURIComponent(id)}`);
-      return toast(`deleted board ${id}`);
-    }
-    if (!arg) return toast(S.boards.map((b) => b.id).join('  '));
-    const b = S.boards.find((x) => x.id === arg || x.name === arg) || (await api('POST', '/api/boards', { name: arg }));
-    upsertBoard(b);
-    return switchBoard(b.id);
-  }
-  if (c === 'rename') return api('PATCH', `/api/boards/${encodeURIComponent(S.board)}`, { name: arg });
-  if (c === 'fit') return fit();
-  if (c === 'zoom' || c === 'z') {
-    const r = canvas.getBoundingClientRect();
-    return zoomAt(r.left + r.width / 2, r.top + r.height / 2, (Number(arg) || 100) / 100);
-  }
-  if (c === 'go') return focusItem(arg);
-  if (c === 'arrange') {
-    const frame = [...S.sel].map((id) => S.items.get(id)).find((i) => i?.type === 'frame');
-    return api('POST', '/api/arrange', frame ? { frame: frame.id } : { board: S.board });
-  }
-  if (c === 'rm' || c === 'delete') return deleteItems(arg ? rest : [...S.sel]);
-  if (c === 'organize' || c === 'tidy' || c === 'o') return organize();
-  if (c === 'auto') return toggleAuto(arg ? arg === 'on' : undefined);
-  if (c === 'group' || c === 'g') {
-    const ids = [...S.sel].filter((id) => S.items.get(id)?.type !== 'frame');
-    return Promise.all(ids.map((id) => patchItem(id, { group: arg })));
-  }
-  if (c === 'push') return api('POST', `/api/monitors/${encodeURIComponent(rest[0])}/push`, { value: parseVal(rest.slice(1).join(' ')), board: S.board });
-  if (c === 'status' || c === 's') {
-    const ids = [...S.sel].filter((id) => S.items.get(id)?.type === 'ticket');
-    return Promise.all(ids.map((id) => patchItem(id, { status: arg })));
-  }
-  if (c === 'help' || c === 'h') return toggleHelp(true);
-  throw new Error(`unknown command: ${c}  (? for help)`);
-}
 
 /**
  * Live leases for ownership marks. Same shape as claimsList({ session?, board? }) → { items, now }.
@@ -4006,11 +3642,8 @@ function setMode(m) {
   S.mode = m === 'list' ? 'list' : 'canvas';
   S.sel.clear();
   for (const el of els.values()) el.classList.remove('sel');
-  setModeHint();
   document.body.classList.toggle('list', S.mode === 'list');
-  const b = $('#btn-view');
-  b.classList.toggle('on', S.mode === 'list');
-  b.textContent = S.mode === 'list' ? 'board' : 'tickets';
+  renderViewToggle();
   if (!CAPTURE_READONLY) try { localStorage.setItem('hud.mode.' + S.board, S.mode); } catch {}
   if (S.page === 'board') { ensureBoardProgramHost(); updateChrome(); queueProgramsMount(); }
   if (S.mode === 'list') renderList();
@@ -4039,7 +3672,7 @@ function lfGet() {
   try {
     f = JSON.parse(localStorage.getItem(lfKey()) || '{}') || {};
   } catch {}
-  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  const shape = ['list', 'tree'].includes(f.shape) ? f.shape : 'tree';
   S.lf = { board: S.board, f: { ...LF_DEFAULT, ...f, shape } };
   return S.lf.f;
 }
@@ -4080,10 +3713,14 @@ function renderFilterBar(all, projects) {
   const uniq = (xs) => [...new Set(xs.filter(Boolean))].sort();
   const sel = (k, label, opts) => `<select data-f="${k}"><option value="">${label}</option>${opts.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>`;
   const chips = `<span class="pchips" role="tablist" aria-label="projects">${[['*', 'all'], ...projects.map((p) => [p.id, p.key || p.title])].map(([v, l]) => `<button type="button" class="btn sm pchip" data-proj-switch="${esc(v)}" role="tab">${esc(l)}</button>`).join('')}</span>`;
-  const shapes = `<span class="shapes" role="tablist" aria-label="ticket view">${['list', 'tree', 'board'].map((v) => `<button type="button" class="btn sm" data-shape="${v}" role="tab">${v}</button>`).join('')}</span>`;
+  const SHAPE_ICON = { tree: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="1.5" width="5" height="3.5" rx="1.2"/><rect x="1" y="11" width="5" height="3.5" rx="1.2"/><rect x="10" y="11" width="5" height="3.5" rx="1.2"/><path d="M8 5v3M3.5 11V8h9v3"/></svg>', list: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 3.5h9M5.5 8h9M5.5 12.5h9"/><circle cx="2.2" cy="3.5" r=".9"/><circle cx="2.2" cy="8" r=".9"/><circle cx="2.2" cy="12.5" r=".9"/></svg>' };
+  const shapes = `<span class="shapes" role="tablist" aria-label="tasks layout">${['tree', 'list'].map((v) => `<button type="button" class="btn sm" data-shape="${v}" role="tab" title="${v}" aria-label="${v}">${SHAPE_ICON[v]}</button>`).join('')}</span>`;
+  const extra = [f.status, f.assignee, f.priority, f.tag, f.overdue, f.completed, f.sort !== 'status'].filter(Boolean).length;
   const html = [
     chips,
     shapes,
+    `<button class="btn sm" data-f-toggle aria-expanded="${!!S.lfOpen}" title="status, assignee, priority, tag, sort">filter${extra ? ` · ${extra}` : ''}</button>`,
+    '<span class="lf-adv">',
     sel('status', 'status', STATUSES.map((s) => [s, s])),
     sel('assignee', 'assignee', [['-', '(none)'], ...uniq(all.map((t) => t.assignee)).map((a) => [a, a])]),
     sel('project', 'project', [['-', '(none)'], ...projects.map((p) => [p.id, p.key || p.title])]),
@@ -4093,6 +3730,7 @@ function renderFilterBar(all, projects) {
     `<button class="btn sm" data-f-completed title="include done and canceled tickets">completed ${all.filter(t => ['done', 'canceled'].includes(t.status)).length}</button>`,
     `<select data-f="sort" title="sort"><option value="status">sort: status</option><option value="priority">sort: priority</option><option value="updated">sort: updated</option><option value="target">sort: target</option></select>`,
     `<button class="btn sm" data-f-clear>clear</button>`,
+    '</span>',
   ].join('');
   const sig = html;
   if (bar.dataset.sig !== sig) {
@@ -4101,13 +3739,14 @@ function renderFilterBar(all, projects) {
     bar.innerHTML = `<input type="search" data-f="q" placeholder="search tickets ( / )" spellcheck="false">${html}`;
     if (focus) bar.querySelector(`[data-f="${focus}"]`)?.focus();
   }
+  bar.classList.toggle('lf-open', !!S.lfOpen);
   for (const c of $$('[data-f]', bar)) if (c.value !== (f[c.dataset.f] ?? '')) c.value = f[c.dataset.f] ?? '';
   $('[data-f-overdue]', bar).classList.toggle('on', f.overdue);
   $('[data-f-completed]', bar).classList.toggle('on', f.completed);
   $('[data-f-completed]', bar).setAttribute('aria-pressed', String(f.completed));
   $('[data-f-clear]', bar).style.display = lfActive(f) || f.sort !== 'status' ? '' : 'none';
   const projectOn = f.project || '*';
-  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  const shape = ['list', 'tree'].includes(f.shape) ? f.shape : 'tree';
   for (const c of $$('[data-proj-switch]', bar)) {
     const on = c.dataset.projSwitch === projectOn;
     c.classList.toggle('on', on);
@@ -4134,7 +3773,7 @@ function renderList() {
   const f = lfGet();
   const active = lfActive(f);
   const projectsById = new Map(projects.map((p) => [p.id, p]));
-  const shape = ['list', 'tree', 'board'].includes(f.shape) ? f.shape : 'list';
+  const shape = ['list', 'tree'].includes(f.shape) ? f.shape : 'tree';
   // the tree keeps finished work in place: a green branch is progress, not clutter to tuck away
   const tickets = allTickets.filter((t) => lfMatch(t, shape === 'tree' ? { ...f, completed: true } : f, projectsById));
   const ticketIds = new Set(tickets.map((t) => t.id));
@@ -4170,19 +3809,6 @@ function renderList() {
     const present = [...new Set(list.map((t) => t.status || 'todo'))];
     return [...LIST_ORDER.filter((x) => present.includes(x)), ...present.filter((x) => !LIST_ORDER.includes(x))];
   };
-  const boardHTML = (project, list) => {
-    const cols = statusesOf(list).map((s) => {
-      const at = lfSort(list.filter((t) => (t.status || 'todo') === s), f);
-      const cards = at.map((t) => `<button type="button" class="kcard s-${esc(t.status || 'todo')}${needsDecision(t) ? ' needs-decision' : ''}" data-open="${esc(t.id)}">
-          <div class="kid">${esc(identOf(t))}</div>
-          <div class="kttl">${esc(t.title) || '<span class="faint">untitled</span>'}</div>
-          ${t.parent ? `<div class="kpar">↳ ${esc(nameOf(t.parent))}</div>` : ''}
-          ${ownershipHTML(t)}
-        </button>`).join('');
-      return `<div class="kcol"><div class="kh"><span class="sg">${STATUS_GLYPH[s] || '[·]'}</span> ${esc(s)} <span class="dim">${at.length}</span><button type="button" class="btn sm" data-new="${esc(project?.id ?? '')}|${esc(s)}" title="new ${esc(s)} ticket">＋</button></div>${cards}</div>`;
-    }).join('');
-    return `<div class="kboard">${cols}</div>`;
-  };
 
   const groupHTML = (project, list) => {
     const label = project ? `${esc(project.key || '—')} <span class="pn">${esc(project.title)}</span>` : `<span class="pn">${projects.length ? 'no project' : 'All tickets'}</span>`;
@@ -4192,7 +3818,6 @@ function renderList() {
       <span class="pc">${list.length} ticket${list.length === 1 ? '' : 's'}</span>
       <button class="btn sm" data-new="${esc(project?.id ?? '')}|todo">＋ ticket</button></div>`;
     if (!list.length) return head + `<div class="tnone">${active ? 'no matching tickets' : 'no tickets'}</div>`;
-    if (shape === 'board') return head + boardHTML(project, list);
     const out = [head];
     if (shape === 'tree') return head + `<div class="ttree-host" data-tree-key="${esc(project?.id ?? '')}"></div>`;
     if (f.sort !== 'status') {
@@ -4219,7 +3844,7 @@ function renderList() {
   if (active && !tickets.length) html.push('<div class="tnone">no tickets match — <span class="go" data-f-clear>clear filters</span></div>');
   else if (!projects.length && !loose.length) html.push(`<div class="tnone">${allTickets.length ? 'No active tickets. Use completed above to see finished work.' : 'No tickets yet — add a ticket or project.'}</div>`);
   const out = `<div class="lwrap shape-${shape}">
-    <div class="lhead"><span>tickets</span><span class="dim">${tickets.length} shown · ${allTickets.length} total</span><button class="btn sm" data-new="|todo">＋ ticket</button><button class="btn sm" data-new-project="1">＋ project</button></div>
+    <div class="lhead"><span class="dim">${tickets.length === allTickets.length ? `${tickets.length} tickets` : `${tickets.length} of ${allTickets.length} tickets`}</span><button class="btn sm" data-new="|todo">＋ ticket</button><button class="btn sm" data-new-project="1">＋ project</button></div>
     ${html.join('')}
   </div>`;
   if (host.dataset.sig !== out) {
@@ -4348,6 +3973,7 @@ $('#list').addEventListener('click', (e) => {
   if (projSwitch) return lfSet({ project: projSwitch.dataset.projSwitch === '*' ? '' : projSwitch.dataset.projSwitch });
   const shapeBtn = e.target.closest('[data-shape]');
   if (shapeBtn) return lfSet({ shape: shapeBtn.dataset.shape });
+  if (e.target.closest('[data-f-toggle]')) { S.lfOpen = !S.lfOpen; return renderList(); }
   if (e.target.closest('[data-f-completed]')) return lfSet({ completed: !lfGet().completed });
   if (e.target.closest('[data-f-overdue]')) return lfSet({ overdue: !lfGet().overdue });
   if (e.target.closest('[data-f-clear]')) return lfSet({ ...LF_DEFAULT });
@@ -4374,7 +4000,6 @@ $('#list').addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]');
   if (open) return openDrawer(open.dataset.open);
 });
-$('#btn-view').addEventListener('click', () => setMode(S.mode === 'list' ? 'canvas' : 'list'));
 
 // ---------------------------------------------------------------- keyboard
 const typing = () => {
@@ -4425,10 +4050,9 @@ window.addEventListener('keydown', (e) => {
     return undoDelete();
   }
   if (mod || e.altKey) return;
-  if (e.key === 'A') return setPage('attention');
-  if (e.key === 'R') return setPage('runs');
+  if (e.key === 'A') return toggleNeeds();
   if (e.key === 'l') return setMode(S.mode === 'list' ? 'canvas' : 'list');
-  if (S.page !== 'board' && !['?', ':', ';'].includes(e.key)) return;
+  if (S.page !== 'board' && !['?'].includes(e.key)) return;
   const r = canvas.getBoundingClientRect();
   const k = e.key;
   // the canvas shortcuts act on a canvas selection and a canvas cursor, neither of which exists in the list
@@ -4436,11 +4060,7 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return $('#list [data-f="q"]')?.focus();
   }
-  if (S.mode === 'list' && !['a', 'u', 't', 'T', '?', ':', ';', '[', ']'].includes(k)) return;
-  if (k === ':' || k === ';') {
-    e.preventDefault();
-    return openCmd();
-  }
+  if (S.mode === 'list' && !['a', 'u', 't', 'T', '?', '[', ']'].includes(k)) return;
   if (k === '?') return toggleHelp();
   if (k === 't') {
     e.preventDefault();
@@ -4513,24 +4133,13 @@ window.addEventListener('keyup', (e) => {
 if (!CAPTURE_READONLY) setInterval(() => {
   // relative times + staleness
   for (const it of boardItems()) if (!(drag && drag.ids?.has(it.id))) renderItem(it, true);
-  renderWho();
   renderConnection();
-  renderMonitorAttentionStrip();
-  renderClaimWidget();
   renderProgramInspector();
   loadReadout();
   loadSessions();
-  if (S.page === 'board' || (S.page === 'runs' && S.runsTab === 'queue')) loadQueue();
+  loadQueue();
 }, 5000);
 if (!CAPTURE_READONLY) setInterval(heartbeatSelf, 20000);
-if (!CAPTURE_READONLY) setInterval(() => {
-  if (S.page !== 'attention') return;
-  const now = Date.now();
-  if (snoozedAttention(now).length || activeAttention(S.attention.now).length !== activeAttention(now).length) {
-    S.attention.now = now;
-    renderAttention();
-  }
-}, 15000);
 let spinI = 0;
 if (!CAPTURE_READONLY) setInterval(() => {
   spinI = (spinI + 1) % SPIN.length;
@@ -4556,8 +4165,6 @@ if (!CAPTURE_READONLY) {
 // ---------------------------------------------------------------- boot
 if (!CAPTURE_READONLY) try {
   if (localStorage.getItem('hud.activity') === '1') toggleActivity(true);
-  S.lastVisit = Number(localStorage.getItem(localKey('lastvisit')) || 0) || 0;
-  S.runs.showCompleted = localStorage.getItem(localKey('show-completed-runs')) === 'true';
 } catch {}
 // the human is a participant too: register presence so agents can see who is live
 if (!CAPTURE_READONLY) api('POST', '/api/sessions', { id: 'user', kind: 'human', actor: 'user' }).catch(() => {});
@@ -4595,7 +4202,6 @@ async function boot() {
       console.error('event failed', e?.kind, err);
     }
   }
-  renderWho();
   if (CAPTURE_READONLY) {
     const report = await mountProgramsNow(true);
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -4603,8 +4209,7 @@ async function boot() {
     const hasCustom = !!document.querySelector('.hud-program');
     window.__hudCapture = { ready: true, errors, customReady: !hasCustom || errors.length === 0 };
     applyReadonlyControls();
-  } else if (S.page === 'attention') { loadAttention(); loadChanges(); }
-  else if (S.page === 'runs') loadRuns();
+  } else loadAttention();
 }
 boot();
 window.addEventListener('hashchange', () => {

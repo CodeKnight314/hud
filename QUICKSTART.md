@@ -2,8 +2,8 @@
 
 hud runs as one local server with a browser board. Agents use the contract in [GUIDE.md](GUIDE.md).
 
-- [Install](#install) · [First run](#first-run) · [Settings](#settings) · [Attention](#attention) ·
-  [Tickets](#tickets) · [Updating](#updating) · [Agents](#agents)
+- [Install](#install) · [First run](#first-run) · [Settings](#settings) · [Needs you](#needs-you) ·
+  [Tasks and Monitors](#tasks-and-monitors) · [Updating](#updating) · [Agents](#agents)
 
 ## Install
 
@@ -44,6 +44,12 @@ Your board, backups and the single-server lock live in the per-user data directo
 The server logs to `<data>/server.log`. Command monitors run with your permissions, so treat anything an agent asks
 hud to execute the way you would treat a pasted shell command.
 
+The browser has one top bar. The **workspace picker** names the current workspace (the CLI and agents call it a
+*board*) and lists the others with their "needs you" counts, plus new, rename, clear and delete; `[` and `]` step
+through them. Next come the [Tasks / Monitors](#tasks-and-monitors) toggle, the [needs you](#needs-you) badge,
+search (`⌘/Ctrl+K`, across every workspace) and the connection pill. The **⋯** menu holds the live agent sessions,
+organize and auto-organize, sources, activity, trash and help (`?` lists every key).
+
 ## Settings
 
 There is no settings window: the install directory holds the program, the data directory holds the board. What a
@@ -57,22 +63,38 @@ desktop Settings screen used to do is a command:
 | Remove the entries again | `hud mcp uninstall` |
 | Open the data directory | `hud reveal` |
 
-## Attention
+## Needs you
 
-The rail's **Attention** page is the human inbox: decisions waiting on you, blocked tickets, monitor warnings and
-errors, stale monitors, and command monitors that an agent created and needs approved. Reviewing an alert in the
-inbox does not acknowledge agent alerts, and reviewing a command item does not approve it: approval is its own button,
-and only the browser at the board can press it.
+The **needs you** badge counts what waits on you across every workspace; click it or press `A` for the list:
 
-A command monitor runs a shell command as you, so it stays pending until you approve the exact command and working
-directory shown. Editing the command later re-opens the approval.
+- **decision**: an agent asked a question and waits for you to pick an option.
+- **command**: an agent added or changed a command monitor, which will not run until you approve it.
+- **error**: a monitor is in error.
+- **blocked**: an agent marked a ticket blocked and it waits on no other ticket, so it waits on you.
 
-## Tickets
+A ticket that only waits on another ticket is left out: it clears itself when that ticket finishes. Each row has one
+action that switches to its workspace and opens the details panel: **answer**, **review** for a command, or **open**. Approval
+is its own button, and only the browser at the board can press it: a command monitor runs a shell command as you, so it
+stays pending until you approve the exact command and working directory shown, and editing the command re-opens the
+approval. Agents still read every kind, warnings and stale monitors included, with `hud attention`.
 
-Press `l` for the ticket list, or use the board canvas. A project key (`KEY`) gives its tickets `KEY-n` idents;
-sub-tickets nest under their parent, blocked tickets name what they wait on, and the list tucks finished work away.
-Every row shows the assignee (`→name`) and the live claimer (`⊕name`). `hud ls tickets` prints the same structure in
-the terminal, and `hud queue` is the ready/open/claimed view agents work from.
+## Tasks and Monitors
+
+The icon toggle in the top bar switches a workspace between its two views, and `l` does the same. Each workspace
+remembers its view; one that has tickets opens on Tasks.
+
+**Tasks** is the work, drawn as a live tree. A project key (`KEY`) gives its tickets `KEY-n` idents, and each node is
+an ident with a status glyph: gray is todo, yellow in progress, green done, red blocked or waiting on your decision. An
+elbow joins a sub-ticket to its parent, an arrow marks a ticket that waits on another, a ring means an agent holds the
+ticket, and a ripple means an agent just published context about it. Hover a node for its title, assignee and claimer;
+click it for details. **list** shows the same work as rows: sub-tickets nest under their parent, each row shows the
+assignee (`→name`) and live claimer (`⊕name`), and finished work is tucked away. Search, project chips and the
+tree/list switch stay in view; status, assignee, project, priority, tag, overdue and sort sit behind **filter**. `t`
+adds a ticket. `hud ls tickets` prints the same tree in a terminal; `hud queue` is the ready work agents pull from.
+
+**Monitors** is the canvas: monitor cards and the frames, notes and utilities around them, on a fixed 1600 × 900
+surface. Fit (`.`) and zoom (`+` `−`) sit in its bottom-right corner, `m` `n` `f` `w` add a monitor, note, frame or
+widget, and double-clicking a card opens its details.
 
 ## Updating
 

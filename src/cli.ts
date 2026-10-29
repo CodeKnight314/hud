@@ -6,7 +6,7 @@ import { isBundle, isElectron } from './assets.ts';
 import { guideText, quickstartText } from './docs.ts';
 import { coordinationDoc, GuideError, renderGuide } from './guide.ts';
 import { guiLaunchEnv } from './electron-runtime.ts';
-import { Hud } from './client.ts';
+import { ensureTicketWorktree, Hud, worktreeText } from './client.ts';
 import { applyAttachment } from './apply.ts';
 import type { ProgramAction, SearchQuery } from './client.ts';
 import { config } from './config.ts';
@@ -88,8 +88,9 @@ usage:
                                      work queue: open, claimed and done tickets with owner and session state
   hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1]
                                      register presence for coordination (default: list)
-  hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]
-                                     take an exclusive lease on a ticket; --start also moves it to doing
+  hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--worktree]
+                                     take an exclusive lease on a ticket; --start also moves it to doing;
+                                     --worktree adds a git worktree ../<repo>-<ident> on the ticket's branch (local)
   hud claim status <id>              the lease on one ticket (holder, expiry, live)
   hud claim list [--session s] [--board b] [--all]   this session's leases; --all lists every lease
   hud claim renew <id> [--ttl sec]   extend the lease this session already holds
@@ -135,7 +136,7 @@ usage:
                                      --export snapshots runs this call finishes; pass ids to include an already
                                      finished run; --all with --export snapshots every owned done or canceled run
   hud run <id>                       run an automatic monitor now
-  hud approve <id> --revision v      approve a command monitor waiting in Attention
+  hud approve <id> --revision v      approve a command monitor waiting under "needs you"
                                      (only actor user; an agent calling this is refused)
   hud rm <id...>                     delete items (moved to the trash, recoverable)
   hud trash [--board b]              list deleted items;  hud restore <id>;  hud purge <id> | --all  (permanent)
@@ -151,7 +152,7 @@ usage:
                                      clear keeps the board/settings; rm deletes the board
   hud guide [decentralized|lead] [--section a] [--json]
                                      full guide, one TOC section, or one playbook
-  hud quickstart                     human quickstart (install, Settings, Attention, Tickets)
+  hud quickstart                     human quickstart (install, Settings, Needs you, Tasks and Monitors)
   hud views [--json]                 chart renderer modules available to display:"view:<name>"
   hud view list | show <name> | generate <name> --spec '<json>' [--write] [--display monitor]
            | set <name> --code-file path [--overwrite] | approve <name> --proposal id --sha sha256
@@ -181,7 +182,7 @@ examples:
 
 class UsageError extends Error {}
 
-const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export', 'open']);
+const BOOL = new Set(['json', 'ack', 'all', 'off', 'merge', 'list', 'overdue', 'dry-run', 'no-organize', 'help', 'start', 'takeover', 'peek', 'create', 'force', 'include-self', 'write', 'overwrite', 'export', 'open', 'worktree']);
 const STR_KEYS = new Set(['command', 'title', 'body', 'text', 'message', 'details', 'id', 'label', 'group', 'name', 'key', 'lead', 'assignee', 'target', 'branch', 'project', 'parent', 'q', 'reason', 'note', 'question', 'board', 'frame', 'format', 'messageFormat', 'questionFormat', 'summaryMonitor', 'version', 'revision', 'file', 'out', 'code-file', 'action', 'language', 'description', 'left', 'right', 'relation', 'expected-revision', 'session', 'kind', 'run', 'ttl', 'scope', 'data', 'corrects', 'attach', 'refs', 'since', 'limit', 'base', 'expected', 'mime', 'ticket', 'sessions', 'kinds', 'timeout', 'spec', 'sha', 'section', 'playbook', 'ref']);
 const FILTERS = ['board', 'type', 'status', 'priority', 'assignee', 'owner', 'project', 'tag', 'overdue', 'limit', 'parent'];
 
@@ -256,7 +257,7 @@ const CMDS: Record<string, { u: string; min?: number; max?: number; f: string[] 
   runs: { u: 'hud runs [--json]', max: 0, f: ['json'] },
   queue: { u: 'hud queue [board] [--status s,s] [--project KEY] [--assignee a] [--owner o] [--all] [--limit n] [--json]', max: 1, f: ['status', 'project', 'assignee', 'owner', 'all', 'limit', 'board', 'json'] },
   session: { u: 'hud session [start|heartbeat|end|list] [name] [--kind agent|cli|human] [--run EGO-1] [--json]', max: 2, f: ['kind', 'run', 'json'] },
-  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] | hud claim status <id> | hud claim list [--session s] [--board b] [--all] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'board', 'all', 'json'] },
+  claim: { u: 'hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--worktree] | hud claim status <id> | hud claim list [--session s] [--board b] [--all] | hud claim renew <id> [--ttl sec]', min: 1, max: 2, f: ['session', 'ttl', 'start', 'takeover', 'worktree', 'board', 'all', 'json'] },
   release: { u: 'hud release <id> [--session s] [--reason text] [--json]', min: 1, max: 1, f: ['session', 'reason', 'json'] },
   context: { u: 'hud context read [--scope s] [--since n] [--kind FACT,FAIL] [--limit n] [--peek] [--ref id] [--open] | hud context publish --scope s --kind FACT --text t [--data JSON] [--refs ids] [--attach id] [--corrects id] | hud context scopes [--board b] | hud context export <run> | hud context exports [run]', max: 2, f: '*' },
   attach: { u: 'hud attach list [--scope s] [--board b] | hud attach add <file> [--scope s] [--target path] [--base id] | hud attach get|content|expand <id> | hud attach apply <id> --target path [--expected sha] [--create] | hud attach rm <id> [--force]', max: 2, f: '*' },
@@ -675,6 +676,7 @@ async function main() {
     }
     case 'claim': {
       const sub = rest[0];
+      if (flags.worktree && (sub === 'list' || sub === 'status' || sub === 'renew')) throw new UsageError('--worktree goes with hud claim <id>');
       if (sub === 'list') {
         if (flags.all && flags.session) throw new UsageError('hud claim list takes --session or --all, not both');
         const whose = flags.all ? undefined : (typeof flags.session === 'string' ? flags.session : session);
@@ -695,7 +697,11 @@ async function main() {
         return emit(c, `${c.ident} renewed until ${new Date(c.expiresAt).toLocaleTimeString()} live=${c.live} sessionLive=${c.sessionLive}`);
       }
       const c = await hud.claim(sub!, { session, ttl: flags.ttl === undefined ? undefined : Number(flags.ttl), start: !!flags.start, takeover: !!flags.takeover });
-      return emit(c, `${c.ident} "${c.title}" claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleTimeString()}${flags.start ? '; ticket moved to doing' : ''}`);
+      const claimed = `${c.ident} "${c.title}" claimed by ${c.session} until ${new Date(c.expiresAt).toLocaleTimeString()}${flags.start ? '; ticket moved to doing' : ''}`;
+      if (!flags.worktree) return emit(c, claimed);
+      // local git, after the claim: a failure is reported, never undoes the claim
+      const w = await ensureTicketWorktree(hud, c.ticket, process.cwd());
+      return emit({ ...c, worktree: w }, `${claimed}\n${worktreeText(w)}`);
     }
     case 'release': {
       const c = await hud.releaseClaim(rest[0]!, { session, reason: flags.reason });

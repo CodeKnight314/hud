@@ -66,6 +66,7 @@ assert.match(css, /#persistence-banner\[hidden\]\s*\{[^}]*display:\s*none/);
 assert.match(css, /body\.persistence-alert/);
 assert.match(css, /--chrome-top:\s*calc\(var\(--top-height\)\s*\+\s*var\(--persistence-banner-height/);
 assert.match(css, /#canvas\s*\{[^}]*var\(--chrome-top\)/);
-assert.match(css, /#rail\s*\{[^}]*var\(--chrome-top\)/);
+assert.match(css, /#list\s*\{[^}]*var\(--chrome-top\)/);
+assert.match(css, /#drawer\s*\{[^}]*var\(--chrome-top\)/);
 
 console.log('PASS: persistence banner is loud, non-dismissible, and tied to saveError / recoveredFrom');

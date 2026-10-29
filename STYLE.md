@@ -14,7 +14,7 @@ Tokens live on `:root` in `web/style.css`. Use the tokens; do not invent a secon
 | Token | Role |
 |---|---|
 | `--bg` | Board canvas and page background |
-| `--chrome` | Top bar, sidebar and status bar |
+| `--chrome` | Top bar |
 | `--panel` | Drawers, menus and popovers |
 | `--card` | Cards and rows that sit on the canvas |
 | `--raised` | Hover and pressed fills |
@@ -35,7 +35,7 @@ with `--hi` text, or a 2px `--accent` focus ring. Do not invert a control to a l
 ## Type
 
 - UI chrome, tickets, notes and Settings use `--font`. Inter is preferred when it is installed; otherwise the system sans is used. Do not ship a webfont.
-- Identifiers, measurements, code, the command line and chart labels use `--font-mono`.
+- Identifiers, measurements, code, command text and chart labels use `--font-mono`.
 - Section labels may be small and uppercase. Keep tracking tight. Do not set the whole UI in a monospace face.
 
 ## Status

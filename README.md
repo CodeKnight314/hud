@@ -35,13 +35,12 @@ From a checkout: `npm install`, then `npm run dev` (Electron on a scratch port) 
 ## What you get
 
 - **Tickets with real structure.** A project key gives its tickets `KEY-n` idents; a parent owns its decomposition.
-  Dependencies, assignees, decisions and a Linear-style list view; a `run` ticket can summarize a whole job.
+  Dependencies, assignees, decisions and a live tree (or list) view; a `run` ticket can summarize a whole job.
 - **Monitors that stay honest.** Command, HTTP, probe and cron-heartbeat sources with thresholds, staleness, history,
   24 h uptime and alerts. Readings carry provenance, evidence and freshness.
 - **A live board.** Frames, notes, utilities, annotations, comparisons, and a fixed 1600 × 900 surface that you and
   agents arrange together.
-- **Attention and runs.** One inbox for decisions, blocked work, warnings, errors and stale monitors; a run view with
-  explicit progress and ETA.
+- **Needs you.** One badge for agent questions, command approvals, monitor errors and tickets blocked on you.
 - **Coordination for several agents.** The board enforces exclusive leases. A silent agent loses its hold, and a
   live lease stays with its holder. A queue, typed context, attachments and an event-driven wait let agents share findings.
 
@@ -81,8 +80,9 @@ See [GUIDE.md](GUIDE.md#coordination) and [PLAYBOOKS.md](PLAYBOOKS.md).
 
 ## Everyday use
 
-Press `?` for the full key map. The left rail switches Attention, Runs and boards; `⌘/Ctrl+K` searches everything;
-`l` toggles canvas and list; `:` opens the command palette. One inspector scrolls overview, activity and settings.
+Press `?` for the full key map. One top bar holds the workspace picker (the API calls a workspace a board), the
+Tasks/Monitors toggle (`l`), the "needs you" badge (`A`), search (`⌘/Ctrl+K`) and the ⋯ menu. One inspector scrolls
+overview, activity and settings.
 
 ## Learn more
 

@@ -906,7 +906,7 @@ route('POST', '/api/monitors/:id/run', async (_r, _s, [id], q) => {
   });
   return Store.lite(store.get(mid));
 });
-/** The browser actor `user` approves the command currently shown in Attention. */
+/** The browser actor `user` approves the command currently shown under "needs you". */
 route('POST', '/api/monitors/:id/approve', async (req, _s, [id], q) => {
   const b = await readObj(req);
   if (typeof b.revision !== 'string' || !b.revision) throw new HudError(400, 'revision must be a string');

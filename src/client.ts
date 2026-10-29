@@ -6,9 +6,9 @@
  *   const hud = new Hud({ actor: 'etl-job' });
  *   await hud.push('etl-progress', { progress: 42, message: 'batch 42/100' });
  */
-import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { existsSync, mkdirSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { asset } from './assets.ts';
 import { config, scratch } from './config.ts';
 import { childEnv, cliInvocation } from './electron-runtime.ts';
@@ -763,4 +763,100 @@ export class Hud {
   deleteBoardProgram(board: string, expectedRevision?: string): Promise<ProgramResult> {
     return this.request('DELETE', `/api/boards/${enc(board)}/program`, expectedRevision ? { expectedRevision } : undefined);
   }
+}
+
+// ---------- ticket worktrees ----------
+
+/** A claimed ticket's git worktree. `ok: false` carries the reason; the claim stands either way. */
+export type TicketWorktree =
+  | { ok: true; ticket: string; ident: string; repo: string; path: string; branch: string; reused: boolean; newBranch: boolean }
+  | { ok: false; ticket: string; ident: string; repo?: string; path?: string; branch?: string; error: string };
+
+function git(args: string[], cwd: string): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000, windowsHide: true }).trim();
+}
+
+/** git's own fatal/error line, not the progress chatter around it */
+function gitError(e: unknown): string {
+  const err = e as { code?: string; stderr?: string | Buffer; message?: string };
+  if (err.code === 'ENOENT') return 'git is not installed or not on PATH';
+  const lines = String(err.stderr ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const fatal = lines.filter((l) => /^(fatal|error):/.test(l));
+  return (fatal.length ? fatal : lines.slice(-1)).join('; ') || err.message || String(e);
+}
+
+const samePath = (a: string, b: string) => {
+  const real = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  return real(a) === real(b);
+};
+
+/**
+ * Create (or reuse) the git worktree for a ticket at `<parent of repo root>/<repo>-<ident>`, on the ticket's `branch`
+ * (the lowercased ident when it has none). Runs git in this process, never on the server, like attachment apply.
+ * Never throws and never touches the claim: a failure comes back as `ok: false`.
+ */
+export async function ensureTicketWorktree(hud: Hud, ticket: string, cwd = process.cwd()): Promise<TicketWorktree> {
+  let it: Item & { ident?: string };
+  try {
+    it = await hud.get(ticket);
+  } catch (e) {
+    return { ok: false, ticket, ident: ticket, error: `could not read ${ticket}: ${(e as Error).message}` };
+  }
+  const ident = it.ident ?? ticket;
+  const base = { ticket: it.id, ident };
+  // EGO-3 → ego-3; a project-less #12 → t12, the prefix its generated branch uses
+  const slug = ident.toLowerCase().replace(/^#/, 't').replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '') || it.id.slice(0, 8);
+  const branch = it.branch || slug;
+  if (branch.startsWith('-')) return { ...base, ok: false, branch, error: `branch "${branch}" is not a valid git branch name` };
+  if (!existsSync(cwd)) return { ...base, ok: false, branch, error: `${cwd} does not exist` };
+  let repo: string;
+  try {
+    repo = resolve(git(['rev-parse', '--show-toplevel'], cwd));
+  } catch (e) {
+    const why = gitError(e);
+    return { ...base, ok: false, branch, error: /not a git repository/i.test(why) ? `${cwd} is not in a git repository` : why };
+  }
+  const path = join(dirname(repo), `${basename(repo)}-${slug}`);
+  const fail = (error: string): TicketWorktree => ({ ...base, ok: false, repo, path, branch, error });
+  try {
+    if (existsSync(path)) {
+      let entry: { branch?: string } | undefined;
+      for (const line of git(['worktree', 'list', '--porcelain'], repo).split('\n')) {
+        if (line.startsWith('worktree ')) {
+          if (entry) break;
+          if (samePath(line.slice(9), path)) entry = {};
+        } else if (entry && line.startsWith('branch ')) entry.branch = line.slice(7).replace(/^refs\/heads\//, '');
+      }
+      if (!entry) return fail(`${path} already exists and is not a worktree of ${repo}`);
+      if (entry.branch !== branch) return fail(`${path} is a worktree of ${repo} on ${entry.branch ? `branch ${entry.branch}` : 'a detached HEAD'}, not ${branch}`);
+      return { ...base, ok: true, repo, path, branch, reused: true, newBranch: false };
+    }
+    let exists = true;
+    try {
+      git(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repo);
+    } catch {
+      exists = false;
+    }
+    git(exists ? ['worktree', 'add', path, branch] : ['worktree', 'add', path, '-b', branch], repo);
+    return { ...base, ok: true, repo, path, branch, reused: false, newBranch: !exists };
+  } catch (e) {
+    return fail(gitError(e));
+  }
+}
+
+const shellArg = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+/** The lines the CLI and MCP print after a claim with the worktree flag. */
+export function worktreeText(w: TicketWorktree): string {
+  if (!w.ok) return `worktree not created: ${w.error}\nThe claim on ${w.ident} stands; it was not released.`;
+  const how = w.reused
+    ? `reused: already a worktree of ${w.repo} on branch ${w.branch}`
+    : `created on ${w.newBranch ? 'new' : 'existing'} branch ${w.branch}`;
+  return `worktree ${w.path} ${how}\ncd ${shellArg(w.path)}`;
 }

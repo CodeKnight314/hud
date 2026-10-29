@@ -7,7 +7,7 @@
 import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { Hud, HudRequestError } from './client.ts';
+import { ensureTicketWorktree, Hud, HudRequestError, worktreeText } from './client.ts';
 import { parseGuideResource } from './guide.ts';
 import { applyAttachment } from './apply.ts';
 import { asset } from './assets.ts';
@@ -47,7 +47,7 @@ const ITEM_FIELDS = {
   source: {
     type: 'object',
     description:
-      'monitor source: {kind:"manual"} | {kind:"push"} | {kind:"heartbeat", period?, grace?} | {kind:"command", command, cwd?, interval?, timeout?} (a non-user command does NOT run until the human approves it in Attention; changing command or cwd requires approval again; do not set actor to user) | {kind:"http", url, method?, headers?, body?, expectStatus?, jsonPath?, interval?} | {kind:"probe", probe, config?, interval?}. Seconds.',
+      'monitor source: {kind:"manual"} | {kind:"push"} | {kind:"heartbeat", period?, grace?} | {kind:"command", command, cwd?, interval?, timeout?} (a non-user command does NOT run until the human approves it under "needs you" in the browser; changing command or cwd requires approval again; do not set actor to user) | {kind:"http", url, method?, headers?, body?, expectStatus?, jsonPath?, interval?} | {kind:"probe", probe, config?, interval?}. Seconds.',
   },
   display: {
     type: 'string',
@@ -253,13 +253,13 @@ const TOOLS = [
   },
   {
     name: 'hud_quickstart',
-    description: 'Human quickstart: install, Settings, Attention and Tickets. Guide links in this text point at GET /api/guide.',
+    description: 'Human quickstart: install, Settings, Needs you, Tasks and Monitors. Guide links in this text point at GET /api/guide.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'hud_create',
     description:
-      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe, or template disk|tls|http|cron-heartbeat), note, frame, util, or project. Position is automatic. A monitor with source.kind "command" does not run until the human approves that command and cwd in Attention. Changing command or cwd later requires approval again; do not set actor to "user" and do not approve it yourself. Built-in templates do not run a shell command. Monitors may take a custom id (slug) for external pushes. The tls template also needs host or source.config.host.',
+      'Create an item: ticket, monitor (manual/push/heartbeat/command/http/probe, or template disk|tls|http|cron-heartbeat), note, frame, util, or project. Position is automatic. A monitor with source.kind "command" does not run until the human approves that command and cwd under "needs you" in the browser. Changing command or cwd later requires approval again; do not set actor to "user" and do not approve it yourself. Built-in templates do not run a shell command. Monitors may take a custom id (slug) for external pushes. The tls template also needs host or source.config.host.',
     inputSchema: {
       type: 'object',
       required: ['type'],
@@ -274,7 +274,7 @@ const TOOLS = [
   },
   {
     name: 'hud_update',
-    description: 'Patch an existing item (fields as hud_create, except type/id). Setting source.kind "command", or changing its command or cwd, does not run the shell until the human approves it in Attention. Do not set actor to user.',
+    description: 'Patch an existing item (fields as hud_create, except type/id). Setting source.kind "command", or changing its command or cwd, does not run the shell until the human approves it under "needs you" in the browser. Do not set actor to user.',
     inputSchema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, ...ITEM_FIELDS } },
   },
   {
@@ -334,7 +334,7 @@ const TOOLS = [
   },
   {
     name: 'hud_attention',
-    description: 'Human-attention queue, separate from agent alert acknowledgement. action=list reads open items; review/unreview/snooze require the current revision from the list. Snooze requires until (epoch milliseconds). Reviewing does not acknowledge old agent alerts. kind "command" is a shell waiting for the human to approve it in Attention; review or snooze does not start it.',
+    description: 'Human-attention queue, separate from agent alert acknowledgement. action=list reads open items; review/unreview/snooze require the current revision from the list. Snooze requires until (epoch milliseconds). Reviewing does not acknowledge old agent alerts. The browser shows a filtered "needs you" view of this queue (decision, command, error, and blocked tickets with nothing to wait on); this tool returns every kind. kind "command" is a shell waiting for the human to approve it in the browser; review or snooze does not start it.',
     inputSchema: {
       type: 'object',
       required: ['action'],
@@ -456,7 +456,7 @@ const TOOLS = [
   },
   {
     name: 'hud_approve_command',
-    description: 'Approve a command monitor waiting in Attention. Only the human at the board (actor exactly "user") can approve. Agents must not set their actor to user or call this to start their own shell; the human approves it in Attention. revision comes from hud_attention {action:"list"}.',
+    description: 'Approve a command monitor waiting for approval (listed under "needs you" in the browser). Only the human at the board (actor exactly "user") can approve. Agents must not set their actor to user or call this to start their own shell; the human approves it in the browser. revision comes from hud_attention {action:"list"}.',
     inputSchema: {
       type: 'object',
       required: ['id', 'revision'],
@@ -527,7 +527,7 @@ const TOOLS = [
   {
     name: 'hud_claim',
     description:
-      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board. Status changes, finish and delete of a claimed ticket are holder-only; leases stop renewing after 15 min without hud calls.',
+      'Take an exclusive, time-limited lease on a ticket so peers do not duplicate the work. First claim wins; one unfinished claim per session; a lease is released when the session ends, the ticket finishes, or it expires. Pass start:true to also move the ticket to doing (refused while blocked). status and list show the holder, expiry, and whether the lease and its session are still live. list returns this session\'s leases; pass all:true for every lease, or session to read one holder. A list is at most 60000 characters, including the omission line. It keeps whole lease lines and says how many were omitted; narrow it with session or board. Status changes, finish and delete of a claimed ticket are holder-only; leases stop renewing after 15 min without hud calls. worktree:true then creates a git worktree for the ticket in this MCP process (not the server): <parent of repo root>/<repo>-<ident lowercased> on the ticket\'s branch, from the repo of this process\'s working directory, reused when it is already there. The result names the path and branch and ends with cd <path>. A git failure is reported and the claim stands.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -537,6 +537,7 @@ const TOOLS = [
         ttl: { type: 'number', description: 'lease seconds (default 120, 15-900)' },
         start: { type: 'boolean', description: 'also set the ticket to doing' },
         takeover: { type: 'boolean', description: 'take a lease whose holder is no longer live' },
+        worktree: { type: 'boolean', description: 'claim: also create or reuse the git worktree ../<repo>-<ident> on the ticket\'s branch (local git; a failure is reported and the claim stands)' },
         reason: { type: 'string', description: 'release: short reason recorded on the claim event' },
         board: { type: 'string', description: 'list: limit leases to one board' },
         all: { type: 'boolean', description: 'list: every lease. Default list is this session only' },
@@ -779,7 +780,7 @@ function attentionMarkdown(r: any): string {
   const items = Array.isArray(r?.items) ? r.items : [];
   if (!items.length) return `## Human attention\n\nNo open human-attention items.\n\n_checked ${localTime(Number(r?.now) || Date.now())}_`;
   const rows = items.map((a: any) => `| ${mdCell(a.kind)} | ${mdCell(a.itemId)} | ${mdCell(a.title)} | ${mdCell(a.owner)} | ${mdCell(a.priority)} | ${a.reviewedAt ? 'yes' : 'no'} | ${a.snoozedUntil ? mdCell(a.snoozedUntil) : '—'} | ${mdCell(a.runTitle ?? a.runId)} | ${mdCell(a.revision)} | ${mdCell(a.message)} |`);
-  return [`## Human attention`, ``, `Reviewing this queue does not acknowledge old agent alerts. A kind of command is a shell waiting for the human to approve it in Attention; review does not start it.`, ``, `| Kind | Item | Title | Owner | Priority | Reviewed | Snoozed until | Run | Revision | Message |`, `|---|---|---|---|---:|---|---:|---|---|---|`, ...rows, ``, `_updated ${localTime(Number(r?.now) || Date.now())}_`].join('\n');
+  return [`## Human attention`, ``, `Reviewing this queue does not acknowledge old agent alerts. A kind of command is a shell waiting for the human to approve it under "needs you" in the browser; review does not start it.`, ``, `| Kind | Item | Title | Owner | Priority | Reviewed | Snoozed until | Run | Revision | Message |`, `|---|---|---|---|---:|---|---:|---|---|---|`, ...rows, ``, `_updated ${localTime(Number(r?.now) || Date.now())}_`].join('\n');
 }
 
 function attentionRecordMarkdown(record: any): string {
@@ -1162,7 +1163,10 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       if (action !== 'claim') throw new Error('action must be claim|renew|release|status|list');
       const c = await hud.claim(args.ticket, { session: name, ttl: args.ttl, start: args.start, takeover: args.takeover });
       held.set(c.ticket, c.ident);
-      return `${c.ident} "${c.title}" claimed by ${c.session} until ${localTime(c.expiresAt)}${args.start ? '; ticket moved to doing' : ''}`;
+      const claimed = `${c.ident} "${c.title}" claimed by ${c.session} until ${localTime(c.expiresAt)}${args.start ? '; ticket moved to doing' : ''}`;
+      if (args.worktree !== true) return claimed;
+      // local git, after the claim: a failure is reported, never undoes the claim
+      return `${claimed}\n${worktreeText(await ensureTicketWorktree(hud, c.ticket, process.cwd()))}`;
     }
     case 'hud_queue': {
       await needBoard(args.board, hud);
@@ -1383,7 +1387,7 @@ async function call(name: string, a: any): Promise<string | RichToolResult> {
       return briefReport(await hud.run(args.id));
     case 'hud_approve_command': {
       if (!args.id) throw new Error('missing required argument "id"');
-      if (!args.revision) throw new Error('revision is required; call hud_attention {action:"list"} first. Agents cannot approve their own command: the human approves it in Attention.');
+      if (!args.revision) throw new Error('revision is required; call hud_attention {action:"list"} first. Agents cannot approve their own command: the human approves it under "needs you" in the browser.');
       const it = await hud.approveCommand(String(args.id), String(args.revision));
       return `approved ${it.id}. The command may now run. Do not set actor to user to bypass this.`;
     }
@@ -1522,13 +1526,13 @@ const INSTRUCTIONS =
   'For monitoring work, start with hud_readout, then use hud_dashboard, hud_annotate, and hud_compare as needed; run hud_lint after changes and hud_snapshot to retain a view. For custom renderers, inspect with hud_graph/hud_canvas, preview before apply, and bind only the required metric data. Read the hud://guide resource or call hud_guide for schemas and examples. ' +
   'To reset a board while keeping its identity and settings, use hud_clear_canvas or hud_board {action:"clear",id}; hud_board {action:"delete",id} deletes the board. ' +
   'Visual style: hud is a dark desktop surface (see STYLE.md). Use the layered dark palette, a sans-serif UI, and monospace only for identifiers, code and measurements. Reserve red for stated blocked/error/attention conditions, yellow for a ticket in progress, and green for stated done/ok conditions. Every status color must have a readable label or glyph. Do not use a terminal, CRT, or inverse-video look. Panels should stay concise and legible. ' +
-  'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); use hud_runs for run summaries and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
-  'Tickets and projects are list objects: never place or size them on the canvas. The Tickets view switches across projects and between list, tree and board; every task shows its assignee and claimer. It tucks away completed work by default. Dashboard shows monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no dashboard space. Use hud_tickets and hud_get for all ticket details, including completed tickets. hud_tickets and hud_search filter by project and owner. ' +
+  'Use hud_attention for the human-attention queue (review is separate from acknowledging old agent alerts); the human sees a filtered "needs you" badge of it (decisions, command approvals, monitor errors, tickets marked blocked with nothing to wait on), not tickets waiting on other tickets. Use hud_runs for run summaries, hud_queue for ready and claimed work (both are agent/CLI reads; the browser has no runs or queue page), and hud_changes {since} for incremental sync. These reports are readable structured Markdown tables/lists, while numeric value/progress stays numeric in item data. ' +
+  'Tickets and projects are list objects: never place or size them on the canvas. The browser has two views per workspace (the UI word for a board), toggled in the top bar or with l: Tasks shows the ticket tree (or a list) across projects, with a ring on each claimed ticket and the assignee and claimer on each task; the list tucks away completed work by default. Monitors is the canvas of monitors, notes, utilities and visual frames; double-click opens the same sidebar. Ticket-only groups take no canvas space. Use hud_tickets and hud_get for all ticket details, including completed tickets. hud_tickets and hud_search filter by project and owner. ' +
   'Visual layout: every board is a fixed 1600×900 surface with bounded zoom. Auto layout is enabled by default and fills the surface as cards accumulate; small collections are centered. Group related training/job monitors by a run tag, create a concise run-summary ticket first, set its summaryMonitor to the one explicit progress/ETA source, then add detail charts and linked tickets. Use concise titles with units, keep numeric value/progress separate from the short message headline, put a longer Markdown report in details, and set staleAfter or a heartbeat so freshness is visible. Call hud_organize after a batch. Reading updates preserve positions. For a deliberate sparse layout, use hud_organize {auto:false} then hud_update x/y/w/h within the board; keep cards readable and nonoverlapping. Respect a human-selected manual layout, and split crowded runs into separate boards. Tickets have an immutable uuid that can be copied with the SVG button; paste it anywhere an id or KEY-n is accepted. ' +
   'Work with tickets through the Linear-style tools, not the canvas: hud_tickets / hud_search list work with KEY-n idents and filter by project and owner, hud_project makes and updates projects, hud_tree reads and reparents the ticket tree, hud_create {type:"ticket", project, title, body} adds one, hud_link sets project/parent/blockers/refs, hud_update moves it (status/priority/assignee/target). Reference tickets by ident (EGO-12). A ticket waiting on unfinished work is auto-blocked: use hud_link {blockedBy} rather than setting status blocked, and use hud_ask when you need a human decision. Decision answers require the current decisionVersion from hud_get/hud_ask; never guess or silently fetch a newer version. Use hud_push for progress, hud_comment for notes (format plain or markdown). Deletes go to the trash (hud_trash restores). ' +
   'When several agents share a board, follow one coordination playbook and no other protocol: hud_guide {playbook:"decentralized"} (everyone pulls ready work) or hud_guide {playbook:"lead"} (one lead links and assigns). The playbook is claim, publish a FACT, wait, finish, plus an expired lease, a blocked ticket, and an assignee conflict. ' +
   'Prefer hud_monitor_templates when adding a disk, TLS, HTTP, or cron heartbeat monitor. Those templates use safe local defaults and do not run a shell command; the tls template connects only after host or source.config.host is set. ' +
-  'A monitor with source.kind "command" does not run until the human approves that command and cwd in Attention. Changing the command or cwd requires approval again. Do not set actor to "user" and do not approve it yourself. ' +
+  'A monitor with source.kind "command" does not run until the human approves that command and cwd under "needs you" in the browser. Changing the command or cwd requires approval again. Do not set actor to "user" and do not approve it yourself. ' +
   'Alerts from monitors this session watches (hud_watch) or from hud_ask answers arrive as <channel source="hud"> messages: look (hud_get), act if it is yours, tell the user, then hud_alerts ack=true. This session is named by HUD_SESSION, else <actor>-<ppid>.';
 
 // ---------- presence ----------
@@ -1676,7 +1680,7 @@ async function handleOne(msg: any): Promise<void> {
         return void reply({
           resources: [
             { uri: 'hud://guide', name: 'Hud guide', description: 'Full hud usage guide: metric fields, dashboard schemas, and rendering conventions. Append #<anchor> for one table-of-contents section. Quickstart links point at /api/quickstart.', mimeType: 'text/markdown' },
-            { uri: 'hud://quickstart', name: 'Hud quickstart', description: 'Human quickstart: install, Settings, Attention and Tickets.', mimeType: 'text/markdown' },
+            { uri: 'hud://quickstart', name: 'Hud quickstart', description: 'Human quickstart: install, Settings, Needs you, Tasks and Monitors.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/decentralized', name: 'Decentralized coordination playbook', description: 'Copy-paste runbook: claim, publish a FACT, wait, finish. No lead. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
             { uri: 'hud://playbook/lead', name: 'Lead coordination playbook', description: 'Copy-paste runbook for a lead who links and assigns work, and for workers who pull. Includes expired lease, blocked ticket, and assignee conflict.', mimeType: 'text/markdown' },
           ],

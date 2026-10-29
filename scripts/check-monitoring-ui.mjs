@@ -187,6 +187,14 @@ async function programFrameState(win, selector, script) {
   return null;
 }
 
+/** open ⋯ and pick one entry; the menu must show it, and must close after the pick */
+async function moreMenuPick(win, id) {
+  await pageEval(win, `document.querySelector('#btn-more')?.click()`);
+  await waitForPage(win, `(() => { const m = document.querySelector('#more-menu'); const b = m?.querySelector('#${id}'); return !!(m && !m.hidden && b && b.getBoundingClientRect().width > 0); })()`, `#${id} visible in the more menu`);
+  await pageEval(win, `document.querySelector('#more-menu #${id}').click()`);
+  await waitForPage(win, `document.querySelector('#more-menu').hidden`, `more menu closes after #${id}`);
+}
+
 async function settlePaint(win) {
   await pageEval(win, `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
 }
@@ -292,10 +300,10 @@ async function runUI(base, seedData, artifactDir) {
     assert.equal(retryMount.renderedIframe, true, 'second mount creates and renders a real custom-program session');
     assert.equal(retryMount.fixtureRemoved, true, 'retry fixture is removed after the regression');
 
-    const chrome = await pageEval(win, `(() => ({ top: document.querySelector('#top')?.getBoundingClientRect().height, bar: document.querySelector('#bar')?.getBoundingClientRect().height }))()`);
-    assert(chrome.top > 0 && chrome.bar > 0, 'native navigation and status chrome remain visible around the custom board');
-    await waitForPage(win, `(() => document.querySelector('#btn-source')?.getBoundingClientRect().width > 0)()`, 'source inspector control');
-    await pageEval(win, `document.querySelector('#btn-source')?.click()`);
+    const chrome = await pageEval(win, `(() => ({ top: document.querySelector('#top')?.getBoundingClientRect().height, ctl: document.querySelector('#canvas-ctl')?.getBoundingClientRect().height, fit: document.querySelector('#canvas-ctl #btn-fit')?.getBoundingClientRect().width, leftover: !!document.querySelector('#bar, #rail, #mode, #pos, #btn-view') }))()`);
+    assert(chrome.top > 0 && chrome.ctl > 0 && chrome.fit > 0, 'native top bar and fit/zoom control remain visible around the custom board');
+    assert.equal(chrome.leftover, false, 'the bottom bar and the rail are gone');
+    await moreMenuPick(win, 'btn-source');
     const inspector = await waitForPage(win, `(() => { const e=document.querySelector('#program-inspector'); return e && !e.hidden && e.textContent.includes('monitoring UI board renderer') && e.textContent.includes(${JSON.stringify(seedData.metricId)}); })()`, 'visible native source inspector with bindings');
     assert.equal(inspector, true, 'source inspector exposes the program description and bound metric');
     await settlePaint(win);
@@ -327,7 +335,8 @@ async function runUI(base, seedData, artifactDir) {
     assert(Date.now() - refreshedAt <= 10_000, 'custom program receives the reading within ten seconds');
     assert.deepEqual([changedState.filter, changedState.filterState], ['keep-local-filter', 'keep-local-filter'], 'onData updates preserve local filter interaction state');
 
-    await pageEval(win, `document.querySelector('#btn-source')?.click()`);
+    await moreMenuPick(win, 'btn-source');
+    await waitForPage(win, `document.querySelector('#program-inspector')?.hidden === true`, 'sources toggles the inspector closed');
     const disabled = await request(base, `/api/boards/${encodeURIComponent(seedData.board.id)}/program`, {
       method: 'POST', body: { action: 'disable', expectedRevision: seedData.boardProgramApplied.revision },
     });
@@ -344,10 +353,17 @@ async function runUI(base, seedData, artifactDir) {
     const tableBefore = await pageEval(win, `(() => {
       const card = document.querySelector('.item[data-id="${seedData.tableId}"]');
       const table = card?.querySelector('.monitor-data table');
-      return { rows: table?.querySelectorAll('tbody tr[data-monitor-row]').length, columns: table?.querySelectorAll('thead th').length, sortButtons: table?.querySelectorAll('thead button[data-monitor-sort]').length, footer: card?.querySelector('.readout-footer')?.textContent || '' };
+      const footer = card?.querySelector(':scope > .ft');
+      return { rows: table?.querySelectorAll('tbody tr[data-monitor-row]').length, columns: table?.querySelectorAll('thead th').length, sortButtons: table?.querySelectorAll('thead button[data-monitor-sort]').length, footerShown: !!footer && getComputedStyle(footer).display !== 'none' && footer.getBoundingClientRect().height > 0 };
     })()`);
     assert.deepEqual([tableBefore.rows, tableBefore.columns, tableBefore.sortButtons], [12, 9, 9], 'table retains all twelve rows, nine columns, and sortable headers');
-    assert.match(tableBefore.footer, /source .*evidence .*age .*coverage .*Twelve synthetic worker/si, 'table keeps the provenance footer');
+    assert.equal(tableBefore.footerShown, false, 'monitor cards no longer draw the provenance footer');
+    // the provenance the footer used to carry is in the details panel
+    await pageEval(win, `document.querySelector('.item[data-id="${seedData.tableId}"]')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))`);
+    const tableProvenance = await waitForPage(win, `(() => { const d = document.querySelector('#drawer.open'); return d && d.querySelector('.detail-title')?.textContent === 'Twelve by nine table' ? d.querySelector('.monitor-current')?.textContent || '' : false; })()`, 'table details panel');
+    assert.match(tableProvenance, /source .*evidence .*age .*coverage .*Twelve synthetic worker/si, 'details panel shows the table source, evidence, age, coverage and definition');
+    await pageEval(win, `document.querySelector('#drawer [data-act="close"]')?.click()`);
+    await waitForPage(win, `!document.querySelector('#drawer.open')`, 'table details panel closes');
     await pageEval(win, `document.querySelector('.item[data-id="${seedData.tableId}"] thead button[data-monitor-sort="0"]')?.click()`);
     const sortedFirst = await waitForPage(win, `(() => document.querySelector('.item[data-id="${seedData.tableId}"] tbody tr[data-monitor-row] td')?.textContent.trim() === '12')()`, 'local numeric table sort');
     assert.equal(sortedFirst, true, 'local table sort orders the numeric value column');
@@ -364,14 +380,14 @@ async function runUI(base, seedData, artifactDir) {
     assert(Math.abs(drawingSize.width - drawingSize.expectedWidth) <= 1 && Math.abs(drawingSize.height - drawingSize.expectedHeight) <= 1, 'percentage-sized SVG drawings use the custom canvas viewport');
     const cardGeometry = await pageEval(win, `(() => {
       const card = document.querySelector('.item[data-id="${seedData.metricId}"]');
-      const body = card?.querySelector('.bd'), footer = card?.querySelector('.readout-footer');
+      const body = card?.querySelector('.bd'), footer = card?.querySelector(':scope > .ft');
       const frame = body?.querySelector('.hud-program iframe');
-      const b = body?.getBoundingClientRect(), f = frame?.getBoundingClientRect();
-      return { contained: !!b && !!f && f.left >= b.left - 1 && f.top >= b.top - 1 && f.right <= b.right + 1 && f.bottom <= b.bottom + 1, body: b ? { width:b.width, height:b.height } : null, frame: f ? { width:f.width, height:f.height } : null, footer: footer?.textContent || '', footerHeight: footer?.getBoundingClientRect().height || 0 };
+      const b = body?.getBoundingClientRect(), f = frame?.getBoundingClientRect(), c = card?.getBoundingClientRect();
+      return { contained: !!b && !!f && f.left >= b.left - 1 && f.top >= b.top - 1 && f.right <= b.right + 1 && f.bottom <= b.bottom + 1, inCard: !!b && !!c && b.bottom <= c.bottom + 1, body: b ? { width:b.width, height:b.height } : null, frame: f ? { width:f.width, height:f.height } : null, footerHeight: footer?.getBoundingClientRect().height || 0 };
     })()`);
-    assert.equal(cardGeometry.contained, true, 'custom-card iframe is contained by its body after the metadata footer');
-    assert(cardGeometry.footerHeight > 0, 'custom-card metadata footer remains visible below the iframe body');
-    assert.match(cardGeometry.footer, /source .*evidence .*age .*coverage .*Synthetic request rate/si, 'custom-card footer exposes source, evidence, age, coverage, and definition');
+    assert.equal(cardGeometry.contained, true, 'custom-card iframe is contained by its body');
+    assert.equal(cardGeometry.inCard, true, 'custom-card body stays inside the card');
+    assert.equal(cardGeometry.footerHeight, 0, 'custom-card draws no provenance footer; the details panel carries it');
     await settlePaint(win);
     screenshots.push(await saveScreenshot(win, artifactDir, 'monitoring-board-native.png'));
 
@@ -386,8 +402,15 @@ async function runUI(base, seedData, artifactDir) {
       return card.classList.contains('sel');
     })()`);
     assert.equal(selected, true, 'native metric can be selected before clearing');
+    // ⏎ opens the one selected item; after the clear the same key must open nothing
+    await pageEval(win, `(() => { document.activeElement?.blur?.(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+    await waitForPage(win, `document.querySelector('#drawer.open .detail-title')?.textContent === 'Custom program metric'`, 'enter opens the selected monitor');
+    await pageEval(win, `document.querySelector('#drawer [data-act="close"]')?.click()`);
+    await waitForPage(win, `!document.querySelector('#drawer.open')`, 'details closed before double-click');
     await pageEval(win, `(() => { const el = document.querySelector('.item[data-id="${seedData.metricId}"]'); el?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })); return true; })()`);
     await waitForPage(win, `(() => document.querySelector('#drawer.open') !== null)()`, 'open monitor details before board clear');
+    const metricProvenance = await waitForPage(win, `document.querySelector('#drawer.open .monitor-current')?.textContent || false`, 'metric provenance in the details panel');
+    assert.match(metricProvenance, /source .*evidence reported .*age .*coverage .*Synthetic request rate/si, `details panel exposes the card source, evidence, age, coverage, and definition: ${metricProvenance}`);
 
     const extraMetricId = `ui-compare-${seedData.nonce}`;
     await request(base, '/api/items', { method: 'POST', body: {
@@ -429,13 +452,13 @@ async function runUI(base, seedData, artifactDir) {
       const del = document.querySelector('#board-menu [data-board-delete]');
       return { clear:clear?.textContent.trim(), delete:del?.textContent.trim(), clearHelp:document.getElementById('board-clear-help')?.textContent, deleteHelp:document.getElementById('board-delete-help')?.textContent, deleteDisabled:!!del?.disabled };
     })()`);
-    assert.deepEqual([maintenance.clear, maintenance.delete, maintenance.deleteDisabled], ['clear canvas', 'delete canvas', false], 'clear and delete are separate, enabled actions for this board');
-    assert.match(maintenance.clearHelp, /move.*Trash.*keeps this board and its settings/i, 'clear help explains Trash and board preservation');
-    assert.match(maintenance.deleteHelp, /removes this board.*items move to Trash/i, 'delete help explains board removal and Trash');
+    assert.deepEqual([maintenance.clear, maintenance.delete, maintenance.deleteDisabled], ['clear', 'delete', false], 'clear and delete are separate, enabled actions for this workspace');
+    assert.match(maintenance.clearHelp, /move.*Trash.*keeps the workspace and its settings/i, 'clear help explains Trash and workspace preservation');
+    assert.match(maintenance.deleteHelp, /removes the workspace.*items move to Trash/i, 'delete help explains workspace removal and Trash');
     await pageEval(win, `document.querySelector('#board-menu [data-board-clear]')?.click()`);
     const clearConfirm = await pageEval(win, `window.__confirmMessages.at(-1) || ''`);
-    assert.match(clearConfirm, /Clear canvas .*move to Trash/i, 'clear confirmation explains that items move to Trash');
-    assert.match(clearConfirm, /keeps the board and its settings/i, 'clear confirmation explains that the board is retained');
+    assert.match(clearConfirm, /^Clear workspace .*move to Trash/i, 'clear confirmation explains that items move to Trash');
+    assert.match(clearConfirm, /workspace and its settings stay/i, 'clear confirmation explains that the workspace is retained');
     await waitFor(async () => (await request(base, `/api/items?board=${encodeURIComponent(seedData.board.id)}`)).length === 0, 'board clear removes all canvas items', 20_000);
     const clearedBoard = (await request(base, '/api/boards')).find((board) => board.id === seedData.board.id);
     assert(clearedBoard, 'clear preserves the board identity');
@@ -450,18 +473,23 @@ async function runUI(base, seedData, artifactDir) {
     const clearedProgram = await request(base, boardProgramPath);
     assert.equal(clearedProgram.program?.disabled, true, 'clear disables the full-board program');
     await waitForPage(win, `(() => !document.querySelector('#board-program-root') && !document.querySelector('#world .item') && !document.querySelector('#drawer.open'))()`, 'empty native board after clear');
-    const clearUI = await pageEval(win, `({ blank:document.body.classList.contains('blank'), mode:document.querySelector('#mode')?.textContent.trim() })`);
+    const clearUI = await pageEval(win, `({ blank:document.body.classList.contains('blank'), canvas:!document.body.classList.contains('list'), selected:document.querySelectorAll('.item.sel').length })`);
     assert.equal(clearUI.blank, true, 'clear returns the native board to its blank-canvas state');
-    assert.equal(clearUI.mode, 'NORMAL', 'clear removes the active selection');
+    assert.equal(clearUI.canvas, true, 'the cleared workspace stays on Monitors, where enter acts on the selection');
+    assert.equal(clearUI.selected, 0, 'no card is drawn selected after the clear');
+    await pageEval(win, `(() => { document.activeElement?.blur?.(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+    await wait(300);
+    assert.equal(await pageEval(win, `document.querySelector('#drawer.open') === null`), true, 'clear removes the active selection (enter opens nothing)');
 
     const deleteItemId = `ui-delete-${seedData.nonce}`;
     await request(base, '/api/items', { method: 'POST', body: { id: deleteItemId, type: 'note', board: seedData.board.id, title: 'Delete fixture', text: 'This item must go to Trash with its deleted board.' } });
     await waitForPage(win, `(() => !!document.querySelector('.item[data-id="${deleteItemId}"]'))()`, 'disposable item before board deletion');
     await pageEval(win, `document.querySelector('#btn-board')?.click()`);
-    await waitForPage(win, `(() => !!document.querySelector('#board-menu [data-board-delete]:not([disabled])'))()`, 'enabled delete canvas action');
+    await waitForPage(win, `(() => !!document.querySelector('#board-menu [data-board-delete]:not([disabled])'))()`, 'enabled delete workspace action');
     await pageEval(win, `document.querySelector('#board-menu [data-board-delete]')?.click()`);
     const deleteConfirm = await pageEval(win, `window.__confirmMessages.at(-1) || ''`);
-    assert.match(deleteConfirm, /Delete canvas .*removes the board and its settings/i, 'delete confirmation distinguishes board deletion from clear');
+    assert.match(deleteConfirm, /^Delete workspace "/, 'delete confirmation names workspace deletion, not a clear');
+    assert.doesNotMatch(deleteConfirm, /settings stay/i, 'delete confirmation does not promise to keep the workspace');
     assert.match(deleteConfirm, /item will move to Trash/i, 'delete confirmation explains item Trash behavior');
     await waitFor(async () => !(await request(base, '/api/boards')).some((board) => board.id === seedData.board.id), 'board deletion from the switcher', 20_000);
     const allTrash = await request(base, '/api/trash');
@@ -469,7 +497,7 @@ async function runUI(base, seedData, artifactDir) {
     const validBoardIds = new Set((await request(base, '/api/boards')).map((board) => board.id));
     const activeHash = await waitForPage(win, `(() => decodeURIComponent(location.hash.replace(/^#/, '')) === 'main' ? 'main' : false)()`, 'navigation to the protected main board after deletion');
     assert(validBoardIds.has(activeHash), `deleted board navigation resolved to a valid board: ${activeHash}`);
-    assert.equal(await pageEval(win, `document.querySelector('#board-list .board-row.on .name')?.textContent.trim()`), (await request(base, '/api/boards')).find((board) => board.id === activeHash)?.name, 'rail reflects the surviving board');
+    assert.equal(await pageEval(win, `document.querySelector('#board-name')?.textContent.trim()`), (await request(base, '/api/boards')).find((board) => board.id === activeHash)?.name, 'workspace picker names the surviving workspace');
     await pageEval(win, `document.querySelector('#btn-board')?.click()`);
     await waitForPage(win, `(() => !!document.querySelector('#board-menu [data-board-delete]'))()`, 'main board maintenance controls');
     const mainActions = await pageEval(win, `(() => {
@@ -480,7 +508,7 @@ async function runUI(base, seedData, artifactDir) {
     assert.equal(activeHash, 'main', 'deleting a disposable board navigates to the protected main board');
     assert.equal(mainActions.clearDisabled, false, 'main board can still be cleared');
     assert.equal(mainActions.deleteDisabled, true, 'main board delete action is visibly disabled');
-    assert.match(mainActions.deleteHelp, /main board cannot be deleted/i, 'main board disable state has an explanation');
+    assert.match(mainActions.deleteHelp, /main workspace cannot be deleted/i, 'main workspace disable state has an explanation');
 
     return { consoleErrors, screenshots, board: seedData.board.id, metricId: seedData.metricId, tableId: seedData.tableId };
   } catch (error) {
@@ -508,7 +536,7 @@ async function main() {
   const result = await runUI(base, seedData, artifactDir);
   assert.deepEqual(result.consoleErrors, [], `renderer/module errors: ${result.consoleErrors.join(' | ')}`);
   console.log(`PASS: real Electron monitoring UI on ${base.origin} (scratch ${health.dataDir})`);
-  console.log('PASS: 1600×900 custom board/native chrome and source inspector; program action/audit and live onData state; native fallback and 12×9 table sort; distinct clear/delete actions, Trash behavior, metadata reset, and valid navigation');
+  console.log('PASS: 1600×900 custom board/native chrome and source inspector from the more menu; program action/audit and live onData state; native fallback and 12×9 table sort; provenance in the details panel; distinct clear/delete actions, Trash behavior, metadata reset, cleared selection, and valid navigation');
   console.log(`board: ${result.board}; metric: ${result.metricId}; table: ${result.tableId}`);
   console.log(`artifacts: ${result.screenshots.join(', ')}`);
 }

@@ -26,7 +26,7 @@ A claim is a lease the store grants. A second caller gets `409` `claimed`. The h
 
 The queue is the read model: ready work, then claimed, then done. A lead may pre-assign and link; everyone else pulls a ready row. Both are policies over the same leases.
 
-Landed: [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) is [PLAYBOOKS.md](PLAYBOOKS.md), the copy-paste playbook for those two policies (claim, publish a fact, wait, finish), including expired lease, blocked ticket and assignee conflict. [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) is the canvas queue widget: the holder, the remaining lease, and the ready count. Open work: the claim/release smoke in [RIC-10](https://linear.app/richards-project-space/issue/RIC-10/complete-mcp-surface-for-trees-projects-claims) keeps lease visibility on the shared tool matrix (that issue's criterion is one contract).
+Landed: [RIC-13](https://linear.app/richards-project-space/issue/RIC-13/define-agent-coordination-playbooks-decentralized-vs-lead) is [PLAYBOOKS.md](PLAYBOOKS.md), the copy-paste playbook for those two policies (claim, publish a fact, wait, finish), including expired lease, blocked ticket and assignee conflict. [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) was the canvas queue widget: the holder, the remaining lease, and the ready count. The 2026-10-28 UI revamp removed that widget in favor of claim rings on the Tasks tree, whose tooltip names the holder; `hud_queue` and `hud queue` still report the ready count and lease times. Open work: the claim/release smoke in [RIC-10](https://linear.app/richards-project-space/issue/RIC-10/complete-mcp-surface-for-trees-projects-claims) keeps lease visibility on the shared tool matrix (that issue's criterion is one contract).
 
 ## Reclaim of stuck agents
 
@@ -53,7 +53,7 @@ Open work:
 Agent-authored command monitors and view modules wait for an explicit approval. Updates apply only after the person confirms. A failed save stays on screen. A local auth token exists for people who want one, and it stays off unless they turn it on.
 
 - [RIC-16](https://linear.app/richards-project-space/issue/RIC-16/one-click-in-app-update-apply-still-user-approved) — download, verify, prompt, replace. No silent auto-update.
-- [RIC-18](https://linear.app/richards-project-space/issue/RIC-18/confirm-before-run-ux-for-agent-authored-command-monitors) — a non-user command monitor waits for approval in Attention.
+- [RIC-18](https://linear.app/richards-project-space/issue/RIC-18/confirm-before-run-ux-for-agent-authored-command-monitors) — a non-user command monitor waits for approval under "needs you".
 - [RIC-19](https://linear.app/richards-project-space/issue/RIC-19/trust-gate-for-installing-views-renderer-modules) — landed. An agent-written view lands only after a reviewed diff.
 - [RIC-20](https://linear.app/richards-project-space/issue/RIC-20/surface-saveerror-recoveredfrom-loudly-in-app-chrome) — `saveError` or `recoveredFrom` keeps a banner up, with the data directory and restore.
 - [RIC-21](https://linear.app/richards-project-space/issue/RIC-21/optional-local-auth-token-for-httpmcp-clients) — optional per-install token on HTTP and MCP. Default off.
@@ -72,12 +72,12 @@ A feature lands on HTTP, the CLI and MCP together, and the guide names it. Human
 
 ### A person can read the board
 
-The same state the agents use is glanceable: canvas, attention, context, tickets and monitors.
+The same state the agents use is glanceable: the Tasks tree, the Monitors canvas, the "needs you" badge, and context.
 
 - [RIC-11](https://linear.app/richards-project-space/issue/RIC-11/dark-mode-smooth-desktop-ui-leave-terminal-look) — landed. The board is a dark desktop UI ([STYLE.md](STYLE.md)). Light mode stays deferred.
 - [RIC-23](https://linear.app/richards-project-space/issue/RIC-23/first-run-sample-board-for-agents-humans) — a first-run sample project, run, and monitors so `hud_overview` is useful immediately.
 - [RIC-26](https://linear.app/richards-project-space/issue/RIC-26/scale-or-letterbox-the-1600900-board-to-window-size) — letterbox the fixed 1600×900 layout to the window.
-- [RIC-27](https://linear.app/richards-project-space/issue/RIC-27/attention-inbox-polish-bulk-snoozeack-keyboard) — bulk ack, snooze and review from the keyboard.
+- [RIC-27](https://linear.app/richards-project-space/issue/RIC-27/attention-inbox-polish-bulk-snoozeack-keyboard) — superseded. The 2026-10-28 UI revamp replaced the Attention inbox with "needs you": only decisions, command approvals, monitor errors and tickets marked blocked with nothing to wait on, one action per row. Review and snooze stay on `hud_attention`.
 - [RIC-28](https://linear.app/richards-project-space/issue/RIC-28/human-friendly-shared-context-timeline-in-inspector) — landed. The inspector shows a FACT/FAIL/SUMMARY timeline with a handoff copy.
 - [RIC-29](https://linear.app/richards-project-space/issue/RIC-29/saved-ticket-filters-views-assignee-run-overdue) — a few named ticket filters in the UI and the CLI.
 - [RIC-30](https://linear.app/richards-project-space/issue/RIC-30/ticket-git-branch-status-hint-local) — a read-only local hint that the ticket's branch exists or is checked out.
@@ -119,13 +119,13 @@ Snapshot 2026-10-27, updated for the squash-merges now on 0.2.0. Each issue maps
 | [RIC-24](https://linear.app/richards-project-space/issue/RIC-24/expand-mcp-install-targets-beyond-claudecodexopencode) | More MCP install targets | One contract |
 | [RIC-25](https://linear.app/richards-project-space/issue/RIC-25/machine-readable-guide-slices-for-tools) | Guide slices for tools | One contract |
 | [RIC-26](https://linear.app/richards-project-space/issue/RIC-26/scale-or-letterbox-the-1600900-board-to-window-size) | Letterbox the 1600×900 board | A person can read the board |
-| [RIC-27](https://linear.app/richards-project-space/issue/RIC-27/attention-inbox-polish-bulk-snoozeack-keyboard) | Attention bulk actions | A person can read the board |
+| [RIC-27](https://linear.app/richards-project-space/issue/RIC-27/attention-inbox-polish-bulk-snoozeack-keyboard) | Attention bulk actions | A person can read the board (superseded by "needs you") |
 | [RIC-28](https://linear.app/richards-project-space/issue/RIC-28/human-friendly-shared-context-timeline-in-inspector) | Shared-context timeline | A person can read the board (landed) |
 | [RIC-29](https://linear.app/richards-project-space/issue/RIC-29/saved-ticket-filters-views-assignee-run-overdue) | Saved ticket filters | A person can read the board |
 | [RIC-30](https://linear.app/richards-project-space/issue/RIC-30/ticket-git-branch-status-hint-local) | Local git branch hint | A person can read the board |
 | [RIC-31](https://linear.app/richards-project-space/issue/RIC-31/built-in-monitor-templates-gallery) | Monitor templates | A person can read the board (landed) |
 | [RIC-32](https://linear.app/richards-project-space/issue/RIC-32/alert-routing-desktop-notification-optional-webhook) | Alert routing | A person can read the board |
-| [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) | Claim and queue visibility | Board-enforced leases (landed) |
+| [RIC-33](https://linear.app/richards-project-space/issue/RIC-33/claimqueue-visibility-on-the-board-canvas) | Claim and queue visibility | Board-enforced leases (landed; widget since replaced by tree claim rings) |
 | [RIC-34](https://linear.app/richards-project-space/issue/RIC-34/context-retention-and-export-for-finished-runs) | Export a finished run | A person can read the board (landed) |
 | [RIC-35](https://linear.app/richards-project-space/issue/RIC-35/split-human-quickstart-from-agent-guide) | Human quickstart | One contract |
 | [RIC-36](https://linear.app/richards-project-space/issue/RIC-36/align-version-mentions-across-readmeguidereleases) | Version mentions | One contract (landed) |

@@ -1,7 +1,7 @@
 # hud — agent guide
 
-This is the agent contract for MCP, CLI and HTTP. Humans install the app and use Settings, Attention and Tickets
-from [QUICKSTART.md](QUICKSTART.md).
+This is the agent contract for MCP, CLI and HTTP. Humans install the app and use Settings, Needs you, Tasks and
+Monitors from [QUICKSTART.md](QUICKSTART.md).
 
 hud is a local, live canvas shared between a human and agents. It holds **tickets**, **monitors**,
 **notes** and **frames** on one or more **boards**. The product contract — board-enforced leases,
@@ -35,7 +35,7 @@ is that heading and its body, through the line before the next table-of-contents
   `hud_context`, `hud_attach`, `hud_wait`, `hud_view`, `hud_tree`, `hud_approve_command`, `hud_guide`, `hud_quickstart`. MCP also exposes the
   `hud://guide` and `hud://quickstart` resources. Served guide text rewrites quickstart links to `GET /api/quickstart`.
   Times in tool output are in the machine's local time zone. `source.kind: "command"` does not run until the human
-  approves that command and cwd in Attention. Do not set your actor to `user` and do not approve it yourself.
+  approves that command and cwd in the browser (**needs you**). Do not set your actor to `user` and do not approve it yourself.
 - **CLI**: `hud ls`, `hud add`, `hud set`, `hud push`, `hud project`, `hud tree`, `hud attention`, `hud runs`, `hud queue`, `hud session`,
   `hud claim`, `hud release`, `hud context`, `hud attach`, `hud wait`, `hud view`, `hud changes`, `hud readout`,
   `hud snapshot`, `hud dashboard`, `hud annotate`, `hud compare`, `hud lint`, `hud graph`, `hud canvas`, `hud board clear <id>`,
@@ -60,7 +60,7 @@ is that heading and its body, through the line before the next table-of-contents
     `POST /api/items/:id/unlink {project?,parent?,blockedBy?,refs?}` · `POST /api/items/:id/comments {text,format?}` ·
     `PATCH /api/items/:id/comments/:cid {text,format?}` · `DELETE /api/items/:id/comments/:cid`
   - monitors: `POST /api/monitors/:id/push {value,state,message,messageFormat,details,progress,...}` · `POST /api/monitors/:id/run` ·
-    `POST /api/monitors/:id/approve {revision}` (actor `user` only; approves the command currently waiting in Attention) ·
+    `POST /api/monitors/:id/approve {revision}` (actor `user` only; approves the command currently waiting for approval) ·
     heartbeat **`/ping/:id`** (see Monitors)
   - decisions and runs: `POST /api/items/:id/ask {question?,questionFormat?,options}` ·
     `POST /api/items/:id/decide {optionId,note?,decisionVersion}` ·
@@ -105,7 +105,7 @@ MCP, the CLI and HTTP call the same store methods. A `KEY-n` ident is accepted a
 | Detach a sub-ticket | `hud_tree {action:"detach", id}` | `hud tree detach <id>` | `POST /api/tree {action:"detach", id}` |
 | Set links | `hud_link {id, project?, parent?, blockedBy?, refs?, branch?}` | `hud link <id> parent=EGO-1 ...` | `POST /api/items/:id/link` |
 | Clear links | `hud_link` with `parent:""`, `project:""`, `blockedBy:[]` or `refs:[]` | `hud unlink <id> [parent blockedBy refs project]` | `POST /api/items/:id/unlink {parent?, project?, blockedBy?, refs?}` |
-| Claim a ticket | `hud_claim {action:"claim", ticket, session?, ttl?, start?, takeover?}` | `hud claim <id> [--session s] [--ttl sec] [--start] [--takeover]` | `POST /api/items/:id/claim {session, ttl?, start?, takeover?}` |
+| Claim a ticket | `hud_claim {action:"claim", ticket, session?, ttl?, start?, takeover?, worktree?}` | `hud claim <id> [--session s] [--ttl sec] [--start] [--takeover] [--worktree]` | `POST /api/items/:id/claim {session, ttl?, start?, takeover?}`; `worktree` runs git in the client, no route |
 | Renew a lease | `hud_claim {action:"renew", ticket, ttl?}` | `hud claim renew <id> [--ttl sec]` | `POST /api/items/:id/claim` again as the holder |
 | Lease on one ticket | `hud_claim {action:"status", ticket}` | `hud claim status <id>` | `GET /api/items/:id/claim` |
 | List leases | `hud_claim {action:"list", all?:true, session?, board?}` | `hud claim list [--session s] [--board b] [--all]` | `GET /api/claims?session=&board=` |
@@ -163,22 +163,34 @@ A tree node is `{id, ident, title, status, project?, parent?, children}`. Roots 
 | `hud_guide` | `hud guide` | `GET /api/guide` |
 
 ## Browser navigation
-The app opens on the last board. A persistent **left rail** switches **Attention**, **Runs** and boards; the board rows
-show their item counts and double-click to rename, and `+` creates one. Attention groups command approvals, current decisions, blocked
-work, warnings, errors and stale reporters by board and run. A command card shows the shell and an **approve** button;
-review keeps another issue active, it only records human review and does not start a command. Runs lists tickets tagged `run` with their explicit `summaryMonitor`, progress, ETA and linked work. Its
-**queue** tab lists open, claimed and done work with owner, live session, blockers and a claim/release action.
-The board canvas keeps the same glance in a compact corner widget: the ready count, and each current claim's
-session name, ticket and remaining lease, soonest lease first. ● is a live holder with time left on the lease;
-○ is an ended session or an expired lease. The holder's name and presence come from the newer snapshot:
-the session list only when its time is later than the queue snapshot, and the queue row otherwise.
-The corner scrolls instead of dropping claims. Choosing a claim opens that ticket in the inspector and stays on the canvas.
-A quiet board with nothing ready and nothing claimed leaves the corner empty.
-Completed runs are hidden until **show completed** is selected.
+The browser has one top bar and nothing else around the content:
 
-The top bar holds **search** (`⌘/Ctrl+K`), the live actor count, the session popover and the connection pill. Search is
-cross-board: titles, ids, UUIDs, ticket idents, bodies and notes. Opening a result switches to its board and opens the
-inspector without acknowledging attention or alerts.
+    hud   WORKSPACE ▾   [⑂ Tasks | 〜 Monitors]            ● N need you   search ⌘K   ● live   ⋯
+
+The UI says **workspace** where MCP, the CLI and HTTP say **board**: they are the same object (`board` fields,
+`hud board`, `hud_board`, `/api/boards`). The app opens on the last workspace.
+
+- **Workspace picker** names the current workspace. Its menu lists every workspace with its "needs you" count, then
+  new, rename, clear and delete. `[` and `]` step between workspaces.
+- **Tasks / Monitors** toggles the two views of a workspace (also `l`). **Tasks** is the ticket tree, or a list (see
+  [Projects, tickets and links](#projects-tickets-and-links)). **Monitors** is the canvas of monitors, notes,
+  utilities and frames, with fit and zoom in a small control at its bottom-right corner. The choice is remembered per
+  workspace; a workspace with tickets and no remembered choice opens on Tasks.
+- **Needs you** is a count and a popover (`A`) of what waits on the human in any workspace: a `decision` (an agent
+  question), a `command` monitor to approve, a monitor in `error`, and a ticket an agent marked `blocked` that waits on
+  no unfinished `blockedBy`. A ticket blocked only by other tickets is left out. The browser filters
+  `GET /api/attention` for this view; the route, `hud_attention` and `hud attention` keep every kind (see
+  [Attention, runs and changes](#attention-runs-and-incremental-changes)). Each row names its kind, title and
+  workspace and has one action (**answer**, **review** for a command, **open**); each switches workspace and opens the inspector, where a command shows its exact text and the approve button.
+  Nothing waiting reads "Nothing needs you."
+- **Search** (`⌘/Ctrl+K`) is cross-workspace: titles, ids, UUIDs, ticket idents, bodies and notes. Opening a result
+  switches to its workspace and opens the inspector without acknowledging attention or alerts.
+- **● live** is the connection pill.
+- **⋯** holds agents (the live sessions), organize, auto-organize, sources, activity, trash and help (`?`).
+
+The browser has no runs page and no queue panel. `hud_runs` / `hud runs` / `GET /api/runs` and `hud_queue` /
+`hud queue` / `GET /api/queue` are agent and CLI reads. In Tasks, a claimed ticket wears a ring and its tooltip names
+the holder.
 
 While `GET /api/health` reports `saveError` or `recoveredFrom`, a banner sits under the top bar. It is not a toast and
 it has no close control: it stays until health stops reporting that field (`saveError` clears on the next successful
@@ -198,12 +210,12 @@ window. Auto layout is on by default; omit coordinates and let hud place and siz
 **Tickets are list objects, not canvas cards.** A ticket or project never carries a position: `hud_create`,
 `hud add ticket --x …`, or a `PATCH` with `x`/`y`/`w`/`h` is a 400 (`a ticket lives in the ticket tree, not on the
 canvas`). The canvas menu and the `t` shortcut open a new ticket row in the tree instead of placing a card. Use
-**Tickets** (or `l`) to search and manage them; clicking a row opens
-the inspector. Done and canceled tickets are hidden by default; **completed** reveals them, and an explicit status
-filter or search also finds them. The canvas shows monitors, notes, utilities and their frames. Double-click any
-visual card to open the inspector. Ticket-only frames and projects do not take canvas space. Ticket-heavy boards
-initially open the list; view choice is remembered per board. Ticket identities, groups and relationships remain
-shared with agents. Never size or position tickets to improve visual layout.
+**Tasks** (or `l`) to search and manage them; clicking a node or row opens the inspector. The tree keeps done work in
+place. The list hides done and canceled tickets by default; **completed** reveals them, and an explicit status filter
+or search also finds them. **Monitors** (the canvas) shows monitors, notes, utilities and their frames. Double-click
+any visual card to open the inspector. Ticket-only frames and projects do not take canvas space. A workspace with
+tickets and no remembered choice opens on Tasks; the view choice is remembered per workspace. Ticket identities,
+groups and relationships remain shared with agents. Never size or position tickets to improve visual layout.
 
 Tickets have an immutable `uuid`. New ticket ids are UUIDs unless a custom id is supplied. Existing ids and
 `KEY-n` identifiers remain valid; existing tickets gain a UUID alias without breaking links. Use the SVG copy
@@ -212,8 +224,8 @@ is accepted. `hud_get` returns the full UUID.
 
 ### Details sidebar
 Opening an item shows one scrolling **inspector** with **overview**, **activity** and **settings** sections, plus jump
-links at the top; the source inspector for a board opens in the same place from the rail. There are no tabs. The
-inspector can be resized with its grip or keyboard: it stays between **360 px** and **900 px**, capped by the window
+links at the top; the source inspector for a board opens in the same place from **sources** in the ⋯ menu. There
+are no tabs. The inspector can be resized with its grip or keyboard: it stays between **360 px** and **900 px**, capped by the window
 width, and the chosen width is remembered in that browser. Overview carries the current report, linked run, decision,
 claim and the shared-context timeline; activity carries readings, report history and the audit log; settings edits fields and
 configuration. Resizing or opening details does not move cards or acknowledge attention.
@@ -234,7 +246,7 @@ count `tickets`, and `moved`. Tickets do not reduce the space available for moni
 Use **Clear canvas** to empty a board while keeping its identity and settings: items move to Trash, the managed
 dashboard is removed, annotations and comparisons are tombstoned, and the canvas program is disabled with any draft
 removed. Use **Delete board** when the board itself should be removed; its items go to Trash, and `main` cannot be
-deleted. The UI exposes these as separate actions. CLI is `hud board clear <id>`; MCP supports `hud_clear_canvas {board}` and
+deleted. The workspace picker's menu exposes these as separate actions (clear, delete). CLI is `hud board clear <id>`; MCP supports `hud_clear_canvas {board}` and
 `hud_board {action:"clear",id}`. The HTTP route is `POST /api/boards/:id/clear`; the client method is
 `clearBoard(board)` and returns `{board,cleared,removed}`.
 
@@ -254,7 +266,7 @@ deleted. The UI exposes these as separate actions. CLI is `hud board clear <id>`
   at 300% (or Fit on an unusually large display), and panning cannot lose the board. A remembered zoom above
   that letterbox is discarded on open. A camera at or under the fit keeps its pan, clamped so the board stays visible.
   Switching boards closes the inspector first and keeps that pan. Resizing the window, or returning to the board,
-  refits a centered letterbox only; a kept pan or a zoom stays. Coming back from the ticket list with the
+  refits a centered letterbox only; a kept pan or a zoom stays. Coming back from Tasks with the
   inspector still open uses that full-window camera, then fits a centered letterbox into the remaining strip.
 
 Existing boards are backed up before migration to this layout. Their cards and relationships are retained,
@@ -300,7 +312,7 @@ Tickets are the work tracker, and they do not need the canvas at all. A **projec
 create a ticket already in its place. Anything that takes an item id also accepts a `KEY-12` ident (resolved as exact id, then `KEY-n`, then `#n`/`n` among
 loose tickets on the board). Rename a project's key with `hud_project {action:"update", id, key}`, `hud project set <id> --key NEW`, or `PATCH /api/projects/:id`. Tickets keep their numbers and their idents follow the new key.
 
-- **`parent`** makes a sub-ticket. Subtrees nest in the list view and in `hud_tickets`; `ident` and `rollup` report
+- **`parent`** makes a sub-ticket. Subtrees nest in the Tasks tree and list and in `hud_tickets`; `ident` and `rollup` report
   progress (`3/5 done`) for the parent.
 - **`blockedBy`** is the dependency edge. A ticket waiting on unfinished blockers is moved to `blocked`
   automatically (also when created with `blockedBy`), with a comment naming them, and returns to `todo` when they finish
@@ -326,14 +338,16 @@ the board's loose sequence); deleting a ticket removes it from other tickets' `p
 **Notifications.** A ticket with a non-empty `notify` list raises an alert (to those sessions) when someone *not* in that
 list comments on it, changes its status or changes its assignee. The alert's `to` is `comment`, `status` or `assigned`.
 
-The human reads the same structure in the **Tickets view** (or press `l` on a board). The human walkthrough — chips,
-list/tree/board, the completed filter — is [Tickets](QUICKSTART.md#tickets). Project chips switch
-the view to one project (or all of them); the project filter does the same. **list** groups by status, **tree**
-draws the ticket tree live (each node is an ident and a status glyph; elbows are `parent`, arrows are `blockedBy`,
-siblings run left to right in dependency order; gray is todo, yellow in progress, green done, red blocked; done work
-stays in the tree; a claimed node wears a ring, and context entries ripple from the tickets they ref), and **board** is a column per status. In list and board every task shows its assignee
-(`→name`) and its live claimer (`⊕name`); a dash means that side is unset. In the tree they are in the node's tooltip. `＋` beside a status adds a ticket
-inline. `hud ls tickets` prints the same ownership on each line. Filter that list with `project` and `owner`:
+The human reads the same structure in the **Tasks** view (the top-bar toggle, or `l`). The human walkthrough is
+[Tasks and Monitors](QUICKSTART.md#tasks-and-monitors). Search, project chips and the tree/list switch stay visible;
+project chips switch the view to one project (or all of them). Status, assignee, project, priority, tag, overdue and
+sort sit behind one **filter** button. **tree** (the default) draws the ticket tree live: each node is an ident and a
+status glyph; elbows are `parent`, arrows are `blockedBy`, siblings run left to right in dependency order; gray is
+todo, yellow in progress, green done, red blocked or awaiting a decision; done work stays in the tree; a claimed node
+wears a ring, and context entries ripple from the tickets they ref. The assignee and claimer are in the node's
+tooltip. **list** groups by status, and every task shows its assignee (`→name`) and its live claimer (`⊕name`); a
+dash means that side is unset. `＋` beside a status adds a ticket inline. `hud ls tickets` prints the same ownership
+on each line. Filter that list with `project` and `owner`:
 `owner` is the claimer while a lease is held, otherwise the assignee, and `owner=none` (or `-`) matches tickets
 with neither.
 
@@ -343,7 +357,7 @@ the agents decide the work.
 
     hud_session {action: "start" | "heartbeat" | "end" | "list", name?, kind?, run?}
     hud_queue   {board?, status?, project?, assignee?, owner?, includeDone?, limit?}
-    hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?, reason?, board?, all?}
+    hud_claim   {action?: "claim" | "renew" | "release" | "status" | "list", ticket?, session?, ttl?, start?, takeover?, worktree?, reason?, board?, all?}
 
 - **Presence is automatic.** An MCP client registers a session on `initialize` and renews it every 20 s; the framework
   records the session, never the agent. A session that stops renewing expires after 90 s, and its claims are released.
@@ -358,6 +372,17 @@ the agents decide the work.
   `all:true` for every lease, or `session` for one holder. `GET /api/claims` lists every lease unless `session` is set.
   MCP list text is at most 60,000 characters, including the omission line. It keeps whole lease lines and says how many
   were omitted; narrow with `session` or `board`. `release` takes an optional `reason`.
+- **One worktree per claim.** A claim stops two agents taking the same ticket; it does not stop them editing the same
+  files. `hud_claim {ticket, worktree: true}` or `hud claim <id> --worktree` claims, then creates a git worktree for the
+  ticket. Like attachment `apply`, this runs in the agent's process (MCP/CLI), not on the server, so there is no HTTP
+  route: over HTTP, claim and then run `git worktree add` yourself. `git rev-parse --show-toplevel` in that process's
+  working directory gives the repo. The path is `<parent of repo root>/<repo>-<ident lowercased>`, for example
+  `../hud-ego-3`. The branch is the ticket's `branch`, or the lowercased ident when it has none. An existing local
+  branch is checked out; otherwise `-b` creates it from `HEAD`. A path that is already a worktree of the repo on that
+  branch is reused, and the result says so. The result names the path and branch and ends with `cd <path>`;
+  `--json` adds a `worktree` object (`ok`, `path`, `branch`, `reused`, `newBranch`, or `error`). A working directory
+  outside a git repository, or a git failure, is reported in the result. The claim stands and is not released. An MCP
+  client's subagents share its session, so they cannot each hold a claim: each agent is its own top-level session.
 - **Ownership is explicit.** A live lease is never stolen, even with `takeover: true`. `takeover` only applies to a claim
   whose session is no longer live; an expired lease is released automatically. A ticket's `assignee` is durable human
   ownership: an agent cannot claim work assigned to someone else.
@@ -379,8 +404,8 @@ the agents decide the work.
   session as that agent's MCP), otherwise `<actor>-<pid>` of the first non-shell ancestor process, else `<actor>-cli`.
 - **The queue is the read model.** `hud_queue` returns `open`, `claimed` and `done` rows with owner, live session state,
   blockers and a `ready` flag (open, unblocked, unclaimed). Sort order is ready first, then priority, then recency.
-  `hud_queue {includeDone: true}` includes finished tickets. Each claimed row names the holding session. The board
-  canvas shows that ready count and each claim's session name, ticket and lease time without opening Runs.
+  `hud_queue {includeDone: true}` includes finished tickets. Each claimed row names the holding session. The
+  browser has no queue panel: the Tasks tree rings each claimed ticket and names the holder in its tooltip.
   A row adds `openChildren` (direct children not finished; `ready` needs `0`, so a parent returns to the queue for the
   whole-task check once its split is done) and, on claimed rows, `note` (the newest `STATUS` entry that refs the ticket
   since the claim). The result adds `leads` (open `run` tickets with a live claim: `ticket`, `ident`, `title`, `scope`,
@@ -504,11 +529,11 @@ Built-in templates (`hud add monitor --template`, Settings → Templates, `GET /
   `markdown`.
 - `command` — `{kind:"command", command, cwd?, interval?=30, timeout?=30}` runs in a shell. A command written by the
   human in the browser (actor `user`) is approved by that edit. A command created or changed by anyone else, including
-  an agent, the CLI, or a custom program, does not run until the human approves it in Attention. The gate is the
-  command and cwd: changing either asks again; changing interval or timeout does not. Approval is
-  `POST /api/monitors/:id/approve {revision}` with actor `user` and the current Attention revision (`hud approve <id>
-  --revision v` does the same, and is refused for any other actor). Reviewing or snoozing the Attention card does not
-  start the command. stdout that is a JSON
+  an agent, the CLI, or a custom program, does not run until the human approves it under **needs you** in the
+  browser. The gate is the command and cwd: changing either asks again; changing interval or timeout does not.
+  Approval is `POST /api/monitors/:id/approve {revision}` with actor `user` and the current attention revision
+  (`hud approve <id> --revision v` does the same, and is refused for any other actor). Reviewing or snoozing the
+  attention item does not start the command. stdout that is a JSON
   object like `{"value":3,"state":"warn","message":"…","messageFormat":"plain","details":"## report\n…","progress":50}` is used as-is; otherwise the last line is the
   value (number if numeric). Non-zero exit → `error`.
 - `http` — `{kind:"http", url, method?, headers?, body?, expectStatus?, contains?, jsonPath?, maxBytes?=5MB, interval?}`.
@@ -687,7 +712,7 @@ session. Subscribe a session with `hud_watch {ids|boards, name?}` (`hud watch <n
 session name: `HUD_SESSION` if set, else `<actor>-<parent pid>`, so concurrent sessions don't receive each other's alerts.
 In Claude Code, alerts arrive live in the conversation as `<channel source="hud">` messages when
 claude is launched with `--dangerously-load-development-channels server:hud`. Alerts are also always queued for
-`hud_alerts` (`hud alerts [--ack]`), shown as a badge in the UI, and passed to `HUD_ALERT_CMD` (a shell hook) if set: the alert JSON arrives on stdin and `HUD_ALERT_ID`, `_TITLE`,
+`hud_alerts` (`hud alerts [--ack]`) and passed to `HUD_ALERT_CMD` (a shell hook) if set: the alert JSON arrives on stdin and `HUD_ALERT_ID`, `_TITLE`,
 `_STATE`, `_FROM`, `_MESSAGE`, `_BOARD` are set.
 When you receive one: inspect it (`hud_get`), act if it's yours, tell the user, then `hud_alerts ack=true`.
 
@@ -1024,18 +1049,22 @@ State is ordinary item state, so it persists and survives a reload; a running ti
 
 ## Attention, runs and incremental changes
 `hud_attention {action:"list"}` (or `hud attention`) is the human-attention queue for command approvals, decisions,
-blocked work, warnings, errors and stale monitors. The inbox UI is [Attention](QUICKSTART.md#attention). It is
+blocked work, warnings, errors and stale monitors. The browser shows a filtered view of it, the **needs you** badge
+([Needs you](QUICKSTART.md#needs-you)): decisions, command approvals, monitor errors, and tickets an agent marked
+blocked that wait on no other ticket. Warnings, stale monitors and dependency-blocked tickets stay in this queue for
+agents but are not in the badge. The queue is
 intentionally separate from `hud_alerts`: reviewing an attention item does not acknowledge old agent alerts, and
 reviewing a `command` item does not approve or start the shell. Use the returned `revision` when calling
 `hud_attention` with `action:"review"`,
 `"unreview"`, or `"snooze"`; snoozing requires `until` as an epoch-millisecond deadline. A changed or stale revision is
-rejected so one agent cannot overwrite a newer human-review state. The human approves a pending command in the Attention
-UI (or `POST /api/monitors/:id/approve` as actor `user`).
+rejected so one agent cannot overwrite a newer human-review state. The human approves a pending command from needs
+you in the browser (or `POST /api/monitors/:id/approve` as actor `user`).
 
 `hud_runs` lists tickets tagged `run`, their linked monitors/tickets, and the explicit `summaryMonitor` progress/ETA
 source. Keep numeric `value` and `progress` in the monitor fields; use the short `message` for a headline and `details`
 for a longer Markdown report. Set `staleAfter` or a heartbeat on expected reporters so run freshness is meaningful.
 There is no direct job-launch command in the run surface: jobs report into hud through push or heartbeat monitors.
+Runs, like `hud_queue`, are an agent and CLI read; the browser has no runs page.
 
 `hud_changes --since <epoch-ms>` (or `GET /api/changes?since=<epoch-ms>`) returns `{since, now, complete, events}`.
 Use the returned `now` as the next cursor. MCP renders attention, runs and changes as readable Markdown tables/lists;
@@ -1044,7 +1073,7 @@ the JSON/HTTP responses retain numeric values, progress, and event details.
 ## Decisions (when you're blocked)
 When you need a human to choose, don't just comment — propose options and let them click one.
 `hud_ask {id, question?, questionFormat?, options:[{label, detail?, status?}]}` (or `hud ask <id> --option A --option B --question "…"`)
-stores the options, marks the ticket `blocked`, and highlights the pending decision in the Attention landing and ticket
+stores the options, marks the ticket `blocked`, and lists the pending decision under **needs you** and in the ticket
 sidebar. Each option's `status` is where
 the ticket moves when that option is chosen (default `doing`; use `done` for options that finish the work). The question
 and option details use `plain` by default or Markdown when `questionFormat: "markdown"`; `hud_ask` returns the current
@@ -1111,7 +1140,7 @@ dir (`hud.lock`); a second one refuses to start.
 
 ## Install and connect
 
-Humans install hud from a terminal and use the board, Attention and Tickets in a browser — see
+Humans install hud from a terminal and use Tasks, Monitors and the needs-you badge in a browser — see
 [QUICKSTART.md](QUICKSTART.md). This file is the agent contract. The install serves the quickstart at
 `GET /api/quickstart` (`hud quickstart`, `hud_quickstart`); `GET /api/guide` and `hud guide` rewrite the relative links
 in this file to that URL.
@@ -1135,7 +1164,7 @@ The installed bundle runs the same local server the CLI and MCP use. It keeps da
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
 (one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
-directory. This tree's version is 0.4.0 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+directory. This tree's version is 0.5.0 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
 `hud version` prints it.
 
 ### Connections
@@ -1171,13 +1200,13 @@ esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `S
 against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
 `install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
 
-For v0.4.0, leave every published stable release unchanged. The four version fields already agree at 0.4.0.
+For v0.5.0, leave every published stable release unchanged. The four version fields already agree at 0.5.0.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.4.0`. CI verifies the tag against the four version fields, runs the test
+1. A person pushes the stable tag `v0.5.0`. CI verifies the tag against the four version fields, runs the test
    matrix, and builds the tarball.
 2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
-3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.4.0.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.5.0.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder
