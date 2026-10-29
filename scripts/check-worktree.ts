@@ -24,7 +24,8 @@ if (external) {
 
 // The repo under test is the temp one: an inherited GIT_DIR would point every git call elsewhere.
 for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete process.env[k];
-const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'hud-worktree-')));
+// .native expands Windows 8.3 short names (RUNNER~1), so paths match what git prints.
+const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'hud-worktree-')));
 // git must not find a repo above the temp dir, or the non-git case would pass through it
 process.env.GIT_CEILING_DIRECTORIES = tmp;
 const git = (args: string[], cwd: string) => execFileSync('git', ['-c', 'user.name=hud-check', '-c', 'user.email=hud-check@localhost', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
