@@ -24,7 +24,10 @@ if (external) {
 
 // The repo under test is the temp one: an inherited GIT_DIR would point every git call elsewhere.
 for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete process.env[k];
-const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'hud-worktree-')));
+// .native expands Windows 8.3 short names (RUNNER~1), so paths match what git prints.
+const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'hud-worktree-')));
+// The cd line quotes a path the shell would split or escape (every Windows path, for its backslashes).
+const cdLine = (p: string) => `cd ${/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`}`;
 // git must not find a repo above the temp dir, or the non-git case would pass through it
 process.env.GIT_CEILING_DIRECTORIES = tmp;
 const git = (args: string[], cwd: string) => execFileSync('git', ['-c', 'user.name=hud-check', '-c', 'user.email=hud-check@localhost', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -146,14 +149,14 @@ try {
   assert.equal(head(w1.path), full1.branch, 'the worktree is on the ticket branch');
   const text1 = worktreeText(w1);
   assert.ok(text1.includes(`worktree ${w1.path} created on new branch ${full1.branch}`), text1);
-  assert.equal(text1.split('\n').at(-1), `cd ${w1.path}`);
+  assert.equal(text1.split('\n').at(-1), cdLine(w1.path));
 
   // 2. Reuse: a second call, from a subdirectory and by uuid, finds the same worktree and says so.
   const again = okTree(await ensureTicketWorktree(a, c1.ticket, join(repo, 'sub')));
   assert.equal(again.path, w1.path);
   assert.equal(again.reused, true);
   assert.match(worktreeText(again), /reused: already a worktree of .* on branch /);
-  assert.equal(worktreeText(again).split('\n').at(-1), `cd ${w1.path}`);
+  assert.equal(worktreeText(again).split('\n').at(-1), cdLine(w1.path));
 
   // 3. An existing local branch is checked out, not recreated.
   const b = new Hud({ url: base, actor: 'worktree-check', session: `wt-b-${tag}`, autostart: false });
@@ -206,7 +209,7 @@ try {
   const p4 = pathFor(full4.ident);
   assert.ok(run4.out.includes(`claimed by wt-cli-${tag}`), run4.out);
   assert.ok(run4.out.includes(`worktree ${p4} created on new branch ${full4.branch}`), run4.out);
-  assert.equal(run4.out.trimEnd().split('\n').at(-1), `cd ${p4}`);
+  assert.equal(run4.out.trimEnd().split('\n').at(-1), cdLine(p4));
   assert.equal(head(p4), full4.branch);
   const t6 = await ticket('CLI outside git');
   const run6 = await cli(['claim', t6.id, '--worktree', '--session', `wt-cli2-${tag}`, '--json'], plain);
@@ -235,7 +238,7 @@ try {
   const out5: string = r5.content[0].text;
   assert.ok(out5.includes(`${full5.ident} "Claim from MCP" claimed by `), out5);
   assert.ok(out5.includes(`worktree ${p5} created on new branch ${full5.branch}`), out5);
-  assert.ok(out5.trimEnd().split('\n').includes(`cd ${p5}`), out5);
+  assert.ok(out5.trimEnd().split('\n').includes(cdLine(p5)), out5);
   assert.equal(head(p5), full5.branch);
   assert.ok(existsSync(join(p5, '.git')));
 
