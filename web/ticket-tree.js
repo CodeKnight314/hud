@@ -8,6 +8,9 @@ const CHAR_W = 7.3;
 const H_GAP = 16;
 const V_GAP = 62;
 const PAD = 22;
+const ROW_GAP = 10; // between stacked leaves
+const STACK_IN = 14; // room left of a stacked column for its spine
+const SHELF_GAP = 40; // between wrapped rows of root trees
 const STIFF = 150;
 const DAMP = 22;
 
@@ -42,9 +45,11 @@ function step(s, dt) {
 
 /**
  * Siblings are ordered by dependency rank (a ticket after the siblings it waits on), then by number, so a pipeline
- * reads left to right. Returns {pos: id -> {x, y, w}, width, height}.
+ * reads left to right. To fit `maxWidth`, root trees wrap onto shelves, and a family wider than that stacks its leaf
+ * children into columns hanging off a spine (`spine` is the spine's offset left of the node centre).
+ * Returns {pos: id -> {x, y, w, spine?}, width, height}.
  */
-export function layoutTree(nodes) {
+export function layoutTree(nodes, maxWidth = Infinity) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const kids = new Map();
   const roots = [];
@@ -72,38 +77,71 @@ export function layoutTree(nodes) {
   const seen = new Set();
   // subtree width first, then place each parent centered over its children
   const widthOf = new Map();
+  const fam = new Map(); // id -> {row, cols, colW}
+  const rowW = (list) => list.reduce((s, c, i) => s + widthOf.get(c.id) + (i ? H_GAP : 0), 0);
+  const famW = ({ row, cols, colW }) => rowW(row) + (row.length && cols.length ? H_GAP : 0) + cols.length * colW + Math.max(0, cols.length - 1) * H_GAP;
   const measure = (n) => {
     if (seen.has(n.id)) return 0;
     seen.add(n.id);
-    const ch = order(kids.get(n.id) || []);
-    const own = nodeWidth(n.ident);
-    const sum = ch.reduce((s, c, i) => s + measure(c) + (i ? H_GAP : 0), 0);
-    const w = Math.max(own, sum);
+    const live = order(kids.get(n.id) || []).filter((c) => measure(c) > 0);
+    let f = { row: live, cols: [], colW: 0 };
+    const leaves = live.filter((c) => !kids.get(c.id)?.some((k) => widthOf.has(k.id)));
+    if (rowW(live) > maxWidth && leaves.length > 1) {
+      const row = live.filter((c) => !leaves.includes(c));
+      const colW = Math.max(...leaves.map((c) => widthOf.get(c.id))) + STACK_IN;
+      const room = maxWidth - rowW(row) - (row.length ? H_GAP : 0);
+      const k = Math.max(1, Math.min(leaves.length, Math.floor((room + H_GAP) / (colW + H_GAP))));
+      const per = Math.ceil(leaves.length / k);
+      const cols = [];
+      for (let i = 0; i < leaves.length; i += per) cols.push(leaves.slice(i, i + per));
+      f = { row, cols, colW };
+    }
+    fam.set(n.id, f);
+    const w = Math.max(nodeWidth(n.ident), famW(f));
     widthOf.set(n.id, w);
     return w;
   };
-  const place = (n, left, depth) => {
-    if (pos.has(n.id)) return;
+  /** returns the lowest node centre placed in this subtree */
+  const place = (n, left, y) => {
+    if (pos.has(n.id)) return y;
     const w = widthOf.get(n.id) ?? nodeWidth(n.ident);
-    pos.set(n.id, { x: left + w / 2, y: depth * (NODE_H + V_GAP), w: nodeWidth(n.ident) });
-    const ch = order(kids.get(n.id) || []).filter((c) => widthOf.has(c.id));
-    const sum = ch.reduce((s, c, i) => s + widthOf.get(c.id) + (i ? H_GAP : 0), 0);
-    let x = left + (w - sum) / 2;
-    for (const c of ch) {
-      place(c, x, depth + 1);
+    pos.set(n.id, { x: left + w / 2, y, w: nodeWidth(n.ident) });
+    const f = fam.get(n.id) ?? { row: [], cols: [], colW: 0 };
+    let x = left + (w - famW(f)) / 2;
+    let bottom = y;
+    const cy = y + NODE_H + V_GAP;
+    for (const c of f.row) {
+      bottom = Math.max(bottom, place(c, x, cy));
       x += widthOf.get(c.id) + H_GAP;
     }
+    for (const col of f.cols) {
+      col.forEach((c, i) => {
+        const cw = nodeWidth(c.ident);
+        const cyi = cy + i * (NODE_H + ROW_GAP);
+        pos.set(c.id, { x: x + STACK_IN + cw / 2, y: cyi, w: cw, spine: cw / 2 + STACK_IN / 2 });
+        bottom = Math.max(bottom, cyi);
+      });
+      x += f.colW + H_GAP;
+    }
+    return bottom;
   };
   let left = 0;
-  let depthMax = 0;
+  let top = 0;
+  let shelf = 0;
+  let width = 0;
   for (const r of order(roots)) {
     const w = measure(r);
     if (!w) continue;
-    place(r, left, 0);
+    if (left > 0 && left + w > maxWidth) {
+      top += shelf + NODE_H + SHELF_GAP;
+      left = 0;
+      shelf = 0;
+    }
+    shelf = Math.max(shelf, place(r, left, top) - top);
+    width = Math.max(width, left + w);
     left += w + H_GAP * 2;
   }
-  for (const p of pos.values()) depthMax = Math.max(depthMax, p.y);
-  return { pos, width: Math.max(0, left - H_GAP * 2), height: pos.size ? depthMax + NODE_H : 0 };
+  return { pos, width, height: pos.size ? top + shelf + NODE_H : 0 };
 }
 
 export function createTicketTree({ onOpen } = {}) {
@@ -124,6 +162,12 @@ export function createTicketTree({ onOpen } = {}) {
   let model = [];
   let raf = 0;
   let last = 0;
+  let fitW = 0;
+  // re-wrap to the new width rather than scrolling sideways
+  const resize = typeof ResizeObserver === 'function'
+    ? new ResizeObserver(() => { if (root.clientWidth && Math.abs(root.clientWidth - fitW) > 1) update(model); })
+    : null;
+  resize?.observe(root);
 
   const kick = () => {
     if (raf) return;
@@ -168,7 +212,8 @@ export function createTicketTree({ onOpen } = {}) {
 
   function update(next) {
     model = next;
-    const { pos, width, height } = layoutTree(next);
+    fitW = root.clientWidth;
+    const { pos, width, height } = layoutTree(next, fitW ? fitW - PAD * 2 : Infinity);
     const instant = reduced();
     const seen = new Set();
     for (const n of next) {
@@ -192,6 +237,7 @@ export function createTicketTree({ onOpen } = {}) {
       if (!fresh && (before.status !== n.status || !!before.decision !== !!n.decision)) r.s.vel += instant ? 0 : 5.5;
       r.x.t = p.x;
       r.y.t = p.y;
+      r.spine = p.spine;
       r.s.t = 1;
       r.o.t = n.status === 'canceled' ? 0.6 : 1;
       r.ringO.t = n.claimer ? 1 : 0;
@@ -246,6 +292,21 @@ export function createTicketTree({ onOpen } = {}) {
     return `M${px},${bottom} V${bus - r} Q${px},${bus} ${px + sx * r},${bus} H${cx - sx * r} Q${cx},${bus} ${cx},${bus + r} V${top}`;
   }
 
+  /** parent bus, across to the column's spine, down it, then into the stacked leaf's left side */
+  function spineEdge(p, c) {
+    const bottom = p.y.v + NODE_H / 2;
+    const bus = bottom + V_GAP / 2;
+    const sx = c.x.v - c.spine;
+    const cy = c.y.v;
+    const dx = sx - p.x.v;
+    const r = Math.min(9, Math.abs(dx) / 2, (bus - bottom) / 1.2);
+    const head = Math.abs(dx) < 1 || r < 1
+      ? `M${p.x.v},${bottom} V${bus} H${sx}`
+      : `M${p.x.v},${bottom} V${bus - r} Q${p.x.v},${bus} ${p.x.v + Math.sign(dx) * r},${bus} H${sx - Math.sign(dx) * r} Q${sx},${bus} ${sx},${bus + r}`;
+    const k = Math.max(0, Math.min(6, cy - bus - r));
+    return `${head} V${cy - k} Q${sx},${cy} ${sx + k},${cy} H${c.x.v - nodeWidth(c.data.ident) / 2}`;
+  }
+
   function arc(a, b) {
     // siblings in a row: a shallow arc under the row; anything else: a soft S-curve between the nodes
     const wa = nodeWidth(a.data.ident) / 2;
@@ -292,7 +353,7 @@ export function createTicketTree({ onOpen } = {}) {
         if (br && b !== r.id && !isAncestor(r.id, b)) deps.push([br, r]);
       }
     }
-    syncPaths(edgeLayer, edges, 'tt-edge', ([c, p]) => elbow(p.x.v, p.y.v, c.x.v, c.y.v), ([c, p]) => Math.min(c.o.v, p.o.v));
+    syncPaths(edgeLayer, edges, 'tt-edge', ([c, p]) => (c.spine ? spineEdge(p, c) : elbow(p.x.v, p.y.v, c.x.v, c.y.v)), ([c, p]) => Math.min(c.o.v, p.o.v));
     syncPaths(depLayer, deps, 'tt-dep', ([a, b]) => arc(a, b), ([a, b]) => Math.min(a.o.v, b.o.v) * (FINISHED.has(a.data.status) ? 0.45 : 1), true);
   }
 
@@ -334,6 +395,7 @@ export function createTicketTree({ onOpen } = {}) {
     destroy() {
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
+      resize?.disconnect();
       root.remove();
     },
     get model() { return model; },

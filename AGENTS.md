@@ -318,8 +318,8 @@ smoke-tests the installer against that tarball. A tag must be a stable `vX.Y.Z` 
 and `install.ps1`, and CI creates a draft release. A person reviews and publishes that draft; `hud update` ignores
 drafts and prereleases.
 
-The package version is 0.5.0 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
-Leave published stable releases unchanged. A person publishes 0.5.0 by pushing the tag `v0.5.0`, reviewing the draft
+The package version is 0.5.1 in `package.json`, `appdir/package.json` and both version fields in `package-lock.json`.
+Leave published stable releases unchanged. A person publishes 0.5.1 by pushing the tag `v0.5.1`, reviewing the draft
 CI creates (the tarball, its checksums and the two install scripts), and publishing that draft by hand.
 Do not create the tag, publish the release, or run a release on merge to `main` or `0.2.0`. Branch pushes and manual dispatch build temporary artifacts but do not create a release.
 

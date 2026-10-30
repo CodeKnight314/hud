@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const release = '0.5.0';
+const release = '0.5.1';
 const tag = `v${release}`;
 const tarball = `hud-${release}.tar.gz`;
 const members = ['hud.mjs', 'package.json', 'web/index.html', 'GUIDE.md', 'QUICKSTART.md', 'views/README.md', 'PLAYBOOKS.md', 'STYLE.md', 'PRODUCT.md'];
@@ -64,8 +64,8 @@ for (const [source, version] of [
 
 const agreed = runRelease(['--check-version', tag]);
 ok(agreed.status === 0, `version check for ${tag} failed: ${agreed.stderr || agreed.stdout}`);
-const mismatched = runRelease(['--check-version', 'v0.5.1']);
-ok(mismatched.status !== 0 && /does not match package version 0\.5\.0/.test(mismatched.stderr), 'a newer tag is rejected');
+const mismatched = runRelease(['--check-version', 'v0.5.2']);
+ok(mismatched.status !== 0 && /does not match package version 0\.5\.1/.test(mismatched.stderr), 'a newer tag is rejected');
 const bare = runRelease(['--check-version']);
 ok(bare.status === 0 && bare.stdout.includes(release), 'package versions agree without a tag');
 
@@ -143,11 +143,11 @@ ok(readme.includes('install.sh'), 'README installs from the terminal');
 ok(readme.includes('hud update'), 'README documents hud update');
 ok(!/\.dmg|SmartScreen|Open Anyway/.test(readme), 'README no longer describes app installers or Gatekeeper');
 ok(quickstart.includes('install.sh') && quickstart.includes('hud update'), 'QUICKSTART covers install and update');
-ok(guide.includes("This tree's version is 0.5.0"), 'GUIDE states the version');
+ok(guide.includes("This tree's version is 0.5.1"), 'GUIDE states the version');
 ok(guide.includes('hud update'), 'GUIDE documents updates');
-ok(guide.includes('tag `v0.5.0`'), 'GUIDE names the manual tag');
+ok(guide.includes('tag `v0.5.1`'), 'GUIDE names the manual tag');
 ok(guide.includes('leave every published stable release unchanged'), 'GUIDE keeps the shared release phrase');
-ok(agents.includes('package version is 0.5.0'), 'AGENTS states the package version');
+ok(agents.includes('package version is 0.5.1'), 'AGENTS states the package version');
 ok(agents.includes('published stable releases unchanged'), 'AGENTS keeps the shared release phrase');
 ok(agents.includes('Do not create the tag, publish the release, or run a release on merge'), 'AGENTS forbids automatic publication');
 ok(!/v0\.1\.0/.test(agents), 'AGENTS does not treat v0.1.0 as the standing release');
