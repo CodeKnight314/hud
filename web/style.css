@@ -135,6 +135,7 @@ body.list #empty { display: none !important; }
 .lfbar .lf-adv { display: none; }
 .lfbar.lf-open .lf-adv { display: contents; }
 .shapes .btn { display: inline-flex; align-items: center; padding: 4px 7px; }
+.lfbar [data-f-hidedone][hidden] { display: none; }
 /* a monitor card shows the reading; where it came from lives in the details panel */
 .item.monitor > .ft { display: none; }
 #conn.off { color: var(--faint); }
@@ -672,9 +673,13 @@ body.drawer-wide #trash { right: calc(min(900px, 100vw) + 10px); }
 .copyrow { display: flex; gap: 6px; align-items: center; }
 .copyrow code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* animated ticket tree (web/ticket-tree.js): idents as nodes, elbows for parent, arcs for blockedBy */
-.ttree { overflow-x: auto; overflow-y: hidden; padding: 4px 0 10px; }
+/* animated radial ticket tree (web/ticket-tree.js): parents on depth rings, leaves on the outer ring,
+   radial curves for parent, chords for blockedBy */
+.ttree { overflow: auto; padding: 4px 0 10px; }
 .ttree-svg { display: block; margin: 0 auto; }
+.tt-orbit { fill: none; stroke: var(--line); stroke-width: 1; }
+.tt-hub { fill: var(--line2); }
+.tt-hit { fill: transparent; }
 .tt-edge { fill: none; stroke: var(--line2); stroke-width: 1.4; }
 .tt-dep { fill: none; stroke: var(--dim); stroke-width: 1.1; stroke-opacity: 0.55; }
 .tt-arrowhead { fill: none; stroke: var(--dim); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
@@ -699,6 +704,16 @@ body.drawer-wide #trash { right: calc(min(900px, 100vw) + 10px); }
 .tt-ripple rect { opacity: 0; fill: none; stroke: var(--hi); stroke-width: 1.4; transform-box: fill-box; transform-origin: center; }
 .tt-ripple.k-fail rect { stroke: var(--red); }
 .tt-fail { opacity: 0; font: 12px var(--font); fill: var(--red); }
+/* leaves: a status disc with an outward label; finished leaves shrink to a dot (hollow when canceled) */
+.tt-node.k-leaf .tt-box, .tt-node.k-dot .tt-box { stroke: var(--bg); stroke-width: 1.4; }
+.tt-node.k-leaf .tt-label { font-size: 11.5px; }
+.tt-node.k-leaf.s-todo .tt-box, .tt-node.k-leaf.s-backlog .tt-box { fill: var(--panel); stroke: var(--faint); }
+.tt-node.k-leaf.s-doing .tt-box, .tt-node.k-leaf.s-review .tt-box { fill: var(--yellow); stroke: var(--bg); }
+.tt-node.k-leaf.s-blocked .tt-box, .tt-node.k-leaf.s-decision .tt-box { fill: var(--red); stroke: var(--bg); }
+.tt-node.k-leaf.s-done .tt-box, .tt-node.k-dot.s-done .tt-box { fill: var(--green); fill-opacity: 0.85; stroke: none; }
+.tt-node.k-dot.s-canceled .tt-box { fill: var(--bg); stroke: var(--faint); stroke-width: 1.2; }
+.tt-node.k-leaf:hover .tt-box, .tt-node.k-dot:hover .tt-box { stroke: var(--hi); }
+.tt-node.k-leaf:focus-visible .tt-box, .tt-node.k-dot:focus-visible .tt-box { stroke: var(--accent); stroke-width: 2; }
 @keyframes tt-breathe { 0%, 100% { stroke-opacity: 0.35; } 50% { stroke-opacity: 0.95; } }
 @media (prefers-reduced-motion: reduce) { .tt-node.claimed .tt-ring { animation: none; stroke-opacity: 0.8; } }
 

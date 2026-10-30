@@ -1,5 +1,5 @@
 // hud — canvas client. No build step; plain ES module.
-import { createTicketTree, TREE_GLYPH } from './ticket-tree.js';
+import { createTicketTree, TREE_GLYPH, withoutFinished } from './ticket-tree.js';
 import { persistenceBannerHTML, persistenceNotice, restoreTarget } from './persistence-banner.js';
 import { autoDisplay, renderChart as renderChartView, hitsOf, dropHits, setHits, helpers, DISPLAY_KINDS, seriesOf, rangeOf, isAnimated } from './views.js';
 import { contextCacheable, contextHandoff, loadContextPages, renderContextTimeline } from './context-timeline.js';
@@ -82,7 +82,7 @@ const canvas = $('#canvas');
 const world = $('#world');
 const els = new Map(); // id -> element
 
-const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-board, #btn-search, #btn-more, [data-view], [data-needs-open], #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket], [data-proj-switch], [data-shape]';
+const READONLY_SAFE_CONTROLS = '#btn-attention, #btn-board, #btn-search, #btn-more, [data-view], [data-needs-open], #btn-source, #btn-fit, #zoom-in, #zoom-out, #btn-help, #btn-activity, #board-list, #btn-new-board, [data-board-pick], [data-search-close], [data-search-open], [data-open], [data-run-open], [data-attention-open], [data-attention-run], [data-run-summary-open], [data-change-open], [data-jump], [data-strip-focus], [data-claim-focus], [data-source-open], [data-source-close], [data-created-board-link], [data-monitor-sort], [data-act="close"], [data-act="focus"], [data-act="expand"], [data-act="copy-handoff"], [data-chips="context-kind"] .chip, [data-drawer], [data-copy-ticket], [data-proj-switch], [data-shape], [data-f-hidedone]';
 function applyReadonlyControls(root = document) {
   if (!CAPTURE_READONLY) return;
   for (const control of $$('button, input, select, textarea', root)) {
@@ -3664,7 +3664,7 @@ function scheduleList() {
   });
 }
 
-const LF_DEFAULT = { q: '', status: '', assignee: '', project: '', priority: '', tag: '', overdue: false, completed: false, sort: 'status' };
+const LF_DEFAULT = { q: '', status: '', assignee: '', project: '', priority: '', tag: '', overdue: false, completed: false, hideDone: false, sort: 'status' };
 const lfKey = () => `hud.lf.${S.board}`;
 function lfGet() {
   if (S.lf?.board === S.board) return S.lf.f;
@@ -3719,6 +3719,7 @@ function renderFilterBar(all, projects) {
   const html = [
     chips,
     shapes,
+    `<button class="btn sm" data-f-hidedone title="hide finished branches of the tree">hide done</button>`,
     `<button class="btn sm" data-f-toggle aria-expanded="${!!S.lfOpen}" title="status, assignee, priority, tag, sort">filter${extra ? ` · ${extra}` : ''}</button>`,
     '<span class="lf-adv">',
     sel('status', 'status', STATUSES.map((s) => [s, s])),
@@ -3757,6 +3758,10 @@ function renderFilterBar(all, projects) {
     c.classList.toggle('on', on);
     c.setAttribute('aria-selected', String(on));
   }
+  const hideDone = $('[data-f-hidedone]', bar);
+  hideDone.hidden = shape !== 'tree';
+  hideDone.classList.toggle('on', !!f.hideDone);
+  hideDone.setAttribute('aria-pressed', String(!!f.hideDone));
 }
 
 function renderList() {
@@ -3852,12 +3857,12 @@ function renderList() {
     host.innerHTML = out;
     applyReadonlyControls(host);
   }
-  syncTrees(host, shape === 'tree' ? [...groups.map((g) => [g.project.id, g.list]), ...(loose.length ? [['', loose]] : [])] : []);
+  syncTrees(host, shape === 'tree' ? [...groups.map((g) => [g.project.id, g.list]), ...(loose.length ? [['', loose]] : [])] : [], !!f.hideDone);
 }
 
 /** one animated tree per project group, kept across renders so its nodes move instead of being rebuilt */
 const trees = new Map();
-function syncTrees(host, groups) {
+function syncTrees(host, groups, hideDone = false) {
   const live = new Set();
   for (const [key, list] of groups) {
     const slot = host.querySelector(`.ttree-host[data-tree-key="${CSS.escape(key)}"]`);
@@ -3867,10 +3872,11 @@ function syncTrees(host, groups) {
     if (!tree) trees.set(key, (tree = createTicketTree({ onOpen: (id) => openDrawer(id) })));
     if (tree.el.parentNode !== slot) slot.appendChild(tree.el);
     const notes = new Map((S.queue?.items || []).map((r) => [r.id, r.note]));
-    tree.update(list.map((t) => ({
+    const nodes = list.map((t) => ({
       id: t.id, ident: identOf(t), title: t.title || '', status: t.status || 'todo', parent: t.parent || null,
       blockedBy: t.blockedBy || [], assignee: t.assignee || null, claimer: S.claims.get(t.id)?.actor || null, decision: needsDecision(t), note: notes.get(t.id) || null,
-    })));
+    }));
+    tree.update(hideDone ? withoutFinished(nodes) : nodes);
   }
   for (const [key, tree] of trees) if (!live.has(key)) { tree.destroy(); trees.delete(key); }
 }
@@ -3975,6 +3981,7 @@ $('#list').addEventListener('click', (e) => {
   if (shapeBtn) return lfSet({ shape: shapeBtn.dataset.shape });
   if (e.target.closest('[data-f-toggle]')) { S.lfOpen = !S.lfOpen; return renderList(); }
   if (e.target.closest('[data-f-completed]')) return lfSet({ completed: !lfGet().completed });
+  if (e.target.closest('[data-f-hidedone]')) return lfSet({ hideDone: !lfGet().hideDone });
   if (e.target.closest('[data-f-overdue]')) return lfSet({ overdue: !lfGet().overdue });
   if (e.target.closest('[data-f-clear]')) return lfSet({ ...LF_DEFAULT });
   const cyc = e.target.closest('[data-cycle]');

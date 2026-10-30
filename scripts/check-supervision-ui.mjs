@@ -647,7 +647,13 @@ async function runUI(seed, artifactDir) {
     if (!(await browserEval(win, `!!document.querySelector('.lwrap.shape-tree')`))) await click(win, '#list [data-shape="tree"]');
     assert.equal(await browserEval(win, `document.querySelector('#list [data-f-completed]')?.getAttribute('aria-pressed')`), 'false', 'completed filter is off');
     await waitForDOM(win, `[...document.querySelectorAll('#list .tt-node title')].some((t) => t.textContent.includes(${JSON.stringify(seed.doneChildTitle)}))`, 'the tree shows the done ticket with completed off');
+    // "hide done" drops the finished branch from the tree, then brings it back
+    await click(win, '#list [data-f-hidedone]');
+    await waitForDOM(win, `document.querySelector('#list [data-f-hidedone]')?.getAttribute('aria-pressed') === 'true' && ![...document.querySelectorAll('#list .tt-node title')].some((t) => t.textContent.includes(${JSON.stringify(seed.doneChildTitle)}))`, 'hide done drops the done ticket from the tree');
+    await click(win, '#list [data-f-hidedone]');
+    await waitForDOM(win, `[...document.querySelectorAll('#list .tt-node title')].some((t) => t.textContent.includes(${JSON.stringify(seed.doneChildTitle)}))`, 'hide done off restores the done ticket');
     await click(win, '#list [data-shape="list"]');
+    assert.equal(await browserEval(win, `document.querySelector('#list [data-f-hidedone]')?.hidden`), true, 'hide done is a tree-only control');
     await waitForDOM(win, `!!document.querySelector('.lwrap.shape-list .trow')`, 'list shape');
     const activeText = await browserEval(win, `document.querySelector('#list')?.textContent || ''`);
     assert.equal(activeText.includes(seed.doneChildTitle), false, 'completed ticket is hidden from the list by default');
