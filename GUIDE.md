@@ -211,7 +211,7 @@ window. Auto layout is on by default; omit coordinates and let hud place and siz
 `hud add ticket --x …`, or a `PATCH` with `x`/`y`/`w`/`h` is a 400 (`a ticket lives in the ticket tree, not on the
 canvas`). The canvas menu and the `t` shortcut open a new ticket row in the tree instead of placing a card. Use
 **Tasks** (or `l`) to search and manage them; clicking a node or row opens the inspector. The tree keeps done work in
-place. The list hides done and canceled tickets by default; **completed** reveals them, and an explicit status filter
+place unless **hide done** is on. The list hides done and canceled tickets by default; **completed** reveals them, and an explicit status filter
 or search also finds them. **Monitors** (the canvas) shows monitors, notes, utilities and their frames. Double-click
 any visual card to open the inspector. Ticket-only frames and projects do not take canvas space. A workspace with
 tickets and no remembered choice opens on Tasks; the view choice is remembered per workspace. Ticket identities,
@@ -341,10 +341,11 @@ list comments on it, changes its status or changes its assignee. The alert's `to
 The human reads the same structure in the **Tasks** view (the top-bar toggle, or `l`). The human walkthrough is
 [Tasks and Monitors](QUICKSTART.md#tasks-and-monitors). Search, project chips and the tree/list switch stay visible;
 project chips switch the view to one project (or all of them). Status, assignee, project, priority, tag, overdue and
-sort sit behind one **filter** button. **tree** (the default) draws the ticket tree live: each node is an ident and a
-status glyph; elbows are `parent`, arrows are `blockedBy`, siblings run left to right in dependency order; gray is
-todo, yellow in progress, green done, red blocked or awaiting a decision; done work stays in the tree; a claimed node
-wears a ring, and context entries ripple from the tickets they ref. The assignee and claimer are in the node's
+sort sit behind one **filter** button. **tree** (the default) draws the ticket tree live and radially, scaled to fit the
+window: the root is in the centre (several roots hang off a hub), parents sit on depth rings, and every leaf is on the
+outer ring with its ident and status glyph. Curves are `parent`, arrows are `blockedBy`, siblings run clockwise in
+dependency order; gray is todo, yellow in progress, green done, red blocked or awaiting a decision; done work stays in
+the tree as green dots unless **hide done** drops fully finished branches; a claimed node wears a ring, and context entries ripple from the tickets they ref. The assignee and claimer are in the node's
 tooltip. **list** groups by status, and every task shows its assignee (`→name`) and its live claimer (`⊕name`); a
 dash means that side is unset. `＋` beside a status adds a ticket inline. `hud ls tickets` prints the same ownership
 on each line. Filter that list with `project` and `owner`:
@@ -1164,7 +1165,7 @@ The installed bundle runs the same local server the CLI and MCP use. It keeps da
 (`~/Library/Application Support/hud`, `%APPDATA%\hud`, `$XDG_DATA_HOME/hud` or `~/.local/share/hud`) and seeds example
 probes and renderers into `<data>/probes` and `<data>/views` on first run. The port and data directory are fixed
 (one board, one server); `HUD_*` path and port overrides apply only with `HUD_SCRATCH=1`. `HUD_HOME` moves the install
-directory. This tree's version is 0.5.1 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
+directory. This tree's version is 0.5.2 (`package.json`, `appdir/package.json`, both `package-lock.json` fields);
 `hud version` prints it.
 
 ### Connections
@@ -1200,13 +1201,13 @@ esbuild bundle plus `web/`, `views/`, `probes/` and the shipped docs), writes `S
 against it. A stable `vX.Y.Z` tag also creates a GitHub draft release with `hud-<version>.tar.gz`, `SHA256SUMS`,
 `install.sh` and `install.ps1`; it does not publish that draft, and nothing is signed.
 
-For v0.5.1, leave every published stable release unchanged. The four version fields already agree at 0.5.1.
+For v0.5.2, leave every published stable release unchanged. The four version fields already agree at 0.5.2.
 Merging does not create a tag or a GitHub release.
 
-1. A person pushes the stable tag `v0.5.1`. CI verifies the tag against the four version fields, runs the test
+1. A person pushes the stable tag `v0.5.2`. CI verifies the tag against the four version fields, runs the test
    matrix, and builds the tarball.
 2. CI validates the tarball, its checksums and both install scripts, then creates a draft release. It does not publish it.
-3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.5.1.
+3. Review the draft's four assets and generated notes, then publish it manually. Only then does `hud update` offer 0.5.2.
 
 ## Connect your agent
     hud mcp reconnect               # one-shot checklist after an update; clears the reminder

@@ -121,12 +121,12 @@ async function runUI(seedData) {
       const y = (t) => {
         const g = [...document.querySelectorAll('.tt-node')].find((n) => n.querySelector('title').textContent.includes(t));
         const m = g && /translate\\(([-\\d.]+) ([-\\d.]+)\\)/.exec(g.getAttribute('transform'));
-        return m ? Number(m[2]) : null;
+        return m ? Math.hypot(Number(m[1]), Number(m[2])) : null;
       };
       return { parent: y(${JSON.stringify(ship)}), child: y(${JSON.stringify(nested)}) };
     })())`);
     const { parent, child } = JSON.parse(ys);
-    assert.ok(parent !== null && child !== null && child > parent, `nested node sits below its parent (${child} > ${parent})`);
+    assert.ok(parent !== null && child !== null && child > parent, `nested node sits outside its parent's ring (${child} > ${parent})`);
     const tips = await browserEval(win, `[...document.querySelectorAll('.tt-node title')].map((t) => t.textContent).join(' | ')`);
     assert.match(tips, /assignee bob/);
     assert.match(tips, /claimed by ui-tickets-check/);

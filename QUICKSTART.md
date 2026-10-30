@@ -83,11 +83,11 @@ approval. Agents still read every kind, warnings and stale monitors included, wi
 The icon toggle in the top bar switches a workspace between its two views, and `l` does the same. Each workspace
 remembers its view; one that has tickets opens on Tasks.
 
-**Tasks** is the work, drawn as a live tree. A project key (`KEY`) gives its tickets `KEY-n` idents, and each node is
-an ident with a status glyph: gray is todo, yellow in progress, green done, red blocked or waiting on your decision. An
-elbow joins a sub-ticket to its parent, an arrow marks a ticket that waits on another, a ring means an agent holds the
-ticket, and a ripple means an agent just published context about it. Hover a node for its title, assignee and claimer;
-click it for details. **list** shows the same work as rows: sub-tickets nest under their parent, each row shows the
+**Tasks** is the work, drawn as a live radial tree that fits the window. A project key (`KEY`) gives tickets `KEY-n`
+idents. The root sits in the centre, parents on rings, every leaf on the outer ring; finished leaves are green dots.
+Gray is todo, yellow in progress, green done, red blocked or awaiting you. A curve joins a sub-ticket to its parent, an
+arrow marks a wait, a ring means an agent holds it, a ripple means fresh context. **hide done** drops finished branches.
+Hover a node for its title, assignee and claimer; click it for details. **list** shows the same work as rows: sub-tickets nest under their parent, each row shows the
 assignee (`→name`) and live claimer (`⊕name`), and finished work is tucked away. Search, project chips and the
 tree/list switch stay in view; status, assignee, project, priority, tag, overdue and sort sit behind **filter**. `t`
 adds a ticket. `hud ls tickets` prints the same tree in a terminal; `hud queue` is the ready work agents pull from.
